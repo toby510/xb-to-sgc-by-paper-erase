@@ -8,19 +8,19 @@
   "roles": {
     "pattern": {
       "provider": "dashscope",
-      "prompt": "references/pattern-prompt-v1.md"
+      "prompt": "references/pattern-prompt-v2.md"
     },
     "locate": {
       "provider": "dashscope",
-      "prompt": "references/locate-prompt-v1.md"
+      "prompt": "references/locate-prompt-v2.md"
     },
     "verify": {
       "provider": "dashscope",
-      "prompt": "references/verify-prompt-v1.md"
+      "prompt": "references/verify-prompt-v2.md"
     },
     "audit": {
       "provider": "dashscope",
-      "prompt": "references/audit-prompt-v1.md"
+      "prompt": "references/audit-prompt-v2.md"
     }
   },
   "providers": {
