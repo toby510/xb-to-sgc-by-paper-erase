@@ -62,8 +62,9 @@ public class ExamPipelineTest {
         fake.auditFailPages.add("p6");
         fake.locateManualPages.add("p7");
         fake.lowDirectionConfidencePages.add("p8");
+        fake.validationRejectedPages.add("p9");
 
-        ExamOutcome outcome = new ExamPipeline(fake).process(exam(8, false), new ExamPipeline.RunContext());
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(9, false), new ExamPipeline.RunContext());
 
         assertTrue(fake.verifyCalls.contains("p2:r1"));
         assertTrue("strong consensus with no candidate should verify edge ROI", fake.verifyCalls.contains("p3:edge"));
@@ -73,10 +74,20 @@ public class ExamPipelineTest {
         assertEquals("manual_review", outcome.page("p6").getStatus());
         assertEquals("manual_review", outcome.page("p7").getStatus());
         assertEquals("manual_review", outcome.page("p8").getStatus());
+        assertEquals("manual_review", outcome.page("p9").getStatus());
+        assertEquals("validation_rejected", outcome.page("p9").getReason());
         assertEquals("safe_to_erase", outcome.page("p1").getStatus());
         assertFalse("verify-denied and erase-failed pages are not audited", fake.auditPageIds.contains("p4"));
         assertFalse(fake.auditPageIds.contains("p5"));
         assertTrue(fake.auditPageIds.contains("p6"));
+        assertFalse("deterministic validation rejection must not spend verify calls", fake.verifyCalls.contains("p9:r1"));
+        assertFalse("deterministic validation rejection must not erase or audit", fake.auditPageIds.contains("p9"));
+        for (ExamOutcome.PageOutcome page : outcome.getPages()) {
+            assertTrue("final status leaked internal state: " + page.getStatus(),
+                    "safe_to_erase".equals(page.getStatus())
+                            || "no_pagenum".equals(page.getStatus())
+                            || "manual_review".equals(page.getStatus()));
+        }
     }
 
     @Test
@@ -147,6 +158,7 @@ public class ExamPipelineTest {
         final List<String> lowDirectionConfidencePages = new ArrayList<String>();
         final List<String> locateThrowsPages = new ArrayList<String>();
         final List<String> onLinePages = new ArrayList<String>();
+        final List<String> validationRejectedPages = new ArrayList<String>();
         boolean patternProtocolFailure;
 
         static FakeVlm stable() {
@@ -201,9 +213,9 @@ public class ExamPipelineTest {
             EraseRegion region = new EraseRegion();
             region.region_id = "r1";
             region.x1 = eraseFailurePages.contains(page.getPageId()) ? 0.10 : 0.45;
-            region.y1 = 0.94;
+            region.y1 = validationRejectedPages.contains(page.getPageId()) ? 0.40 : 0.94;
             region.x2 = eraseFailurePages.contains(page.getPageId()) ? 0.20 : 0.55;
-            region.y2 = 0.98;
+            region.y2 = validationRejectedPages.contains(page.getPageId()) ? 0.44 : 0.98;
             region.page_number_text = "1";
             region.same_line_metadata = "page only";
             region.on_line = onLinePages.contains(page.getPageId());

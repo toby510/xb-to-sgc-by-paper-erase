@@ -56,13 +56,22 @@ public final class ExamPipeline {
         for (PageInput page : exam.getPages()) {
             BufferedImage original = originals.get(page.getPageId());
             try {
-                outcomes.add(processPage(exam, page, original, bundle));
+                outcomes.add(published(page, original, bundle, processPage(exam, page, original, bundle)));
             } catch (RuntimeException e) {
                 outcomes.add(manual(page, original, original, transform(original, original, 0),
                         "page_processing_error", bundle.groupByPage.get(page.getPageId()), null));
             }
         }
         return new ExamOutcome(exam.getExamId(), "processed", "ok", outcomes, bundle.groups);
+    }
+
+    private PageOutcome published(PageInput page, BufferedImage original, PatternBundle bundle, PageOutcome outcome) {
+        if ("safe_to_erase".equals(outcome.getStatus()) || "no_pagenum".equals(outcome.getStatus())
+                || "manual_review".equals(outcome.getStatus())) {
+            return outcome;
+        }
+        return manual(page, original, outcome.getNormalized(), outcome.getTransforms(),
+                "internal_state_" + outcome.getStatus(), bundle.groupByPage.get(page.getPageId()), outcome.getLocate());
     }
 
     private PatternBundle buildPattern(ExamInput exam, Map<String, BufferedImage> originals) {
@@ -141,7 +150,7 @@ public final class ExamPipeline {
                 new RegionValidator.PageLocateResult(locate.page_id, locate.status, locate.regions, locate.nearest_body_boundary),
                 normalizedImage);
         if (!validation.isAccepted()) {
-            return verifyThenMaybeManual(page, original, normalizedImage, transforms, group, locate, pageImage, "validation_rejected");
+            return manual(page, original, normalizedImage, transforms, "validation_rejected", group, locate);
         }
         RiskGate.PageContext riskContext = RiskGate.PageContext.stable(page.getPageId())
                 .withPatternGroupId(group == null ? null : group.group_id)
