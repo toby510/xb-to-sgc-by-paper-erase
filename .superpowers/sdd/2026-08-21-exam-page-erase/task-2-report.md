@@ -239,6 +239,35 @@ Output:
 Tests run: 5, Failures: 0, Errors: 0, Skipped: 0
 ```
 
+### ROI margin overflow P3 follow-up
+
+RED:
+
+```bash
+JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_291.jdk/Contents/Home mvn -q -Dtest=RoiTransformTest test
+```
+
+Output:
+
+```text
+Tests run: 8, Failures: 2, Errors: 0, Skipped: 0
+Failed tests:
+fromEdgeRejectsBoundaryPlusMarginOverflowBeforeClamping
+fromCandidateRejectsMarginThatWouldOverflowBeforeClamping
+```
+
+GREEN:
+
+```bash
+JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_291.jdk/Contents/Home mvn -q -Dtest=RoiTransformTest test
+```
+
+Output:
+
+```text
+Tests run: 8, Failures: 0, Errors: 0, Skipped: 0
+```
+
 ## Final Verification
 
 Task 2 target tests:
@@ -250,7 +279,7 @@ JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_291.jdk/Contents/Home mvn -
 Output:
 
 ```text
-Tests run: 14, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 17, Failures: 0, Errors: 0, Skipped: 0
 ```
 
 Full Maven test suite:
@@ -262,7 +291,7 @@ JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_291.jdk/Contents/Home mvn -
 Output:
 
 ```text
-Tests run: 21, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 24, Failures: 0, Errors: 0, Skipped: 0
 ```
 
 ## Changed Files
@@ -284,7 +313,7 @@ Tests run: 21, Failures: 0, Errors: 0, Skipped: 0
 - `RegionValidator` rejects non-`safe_to_erase` status, missing page ID, null/empty regions, duplicate canonical region IDs, non-finite coordinates/confidence, confidence outside `0..1`, out-of-range coordinates, non-positive area, non-edge regions, invalid required-axis body boundary, insufficient body gap, out-of-bounds mappings, and ink touching the candidate border.
 - `ValidationResult` and validated `PixelRegion` lists are immutable; Task 3 can consume the returned pixel bounds without recomputing or expanding.
 - `RiskGate` requires local verification unless every skip condition passes, including nonblank context page ID, nonblank pattern group ID, exact `stable` consensus, matching validation page IDs, confidence threshold, stable pattern, matching edge, Java blank gap, non-rotated/non-double-page/non-heterogeneous page, no body conflict, and no missing-page risk.
-- `RoiTransform` uses floor for left/top and ceil for right/bottom for valid local rectangles; public entrypoints now reject invalid dimensions, invalid local/full normalized coordinates, invalid body boundaries, negative margins, zero/out-of-bounds ROI, and ROI int-overflow edge cases instead of clamping them into apparently valid values.
+- `RoiTransform` uses floor for left/top and ceil for right/bottom for valid local rectangles; public entrypoints now reject invalid dimensions, invalid local/full normalized coordinates, invalid body boundaries, negative margins, zero/out-of-bounds ROI, ROI int-overflow edge cases, and margin-derived intermediate overflow before any narrowing cast. Legal large margins that extend past page edges still clamp to the page without degenerating to zero size.
 
 ## Concerns
 

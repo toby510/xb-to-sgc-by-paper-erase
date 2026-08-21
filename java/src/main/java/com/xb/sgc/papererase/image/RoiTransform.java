@@ -39,13 +39,14 @@ public final class RoiTransform {
             throw new IllegalArgumentException("marginPixels must be non-negative");
         }
         validateOptionalBodyBoundary(bodyBoundary);
-        int left = candidate.getX() - marginPixels;
-        int top = candidate.getY() - marginPixels;
-        int right = candidate.getX() + candidate.getWidth() + marginPixels;
-        int bottom = candidate.getY() + candidate.getHeight() + marginPixels;
+        long left = (long) candidate.getX() - marginPixels;
+        long top = (long) candidate.getY() - marginPixels;
+        long right = (long) candidate.getX() + candidate.getWidth() + marginPixels;
+        long bottom = (long) candidate.getY() + candidate.getHeight() + marginPixels;
+        rejectIntOverflow(left, top, right, bottom);
 
         if (bodyBoundary != null && bodyBoundary.y != null && finite(bodyBoundary.y)) {
-            int bodyY = (int) Math.ceil(bodyBoundary.y * fullHeight);
+            long bodyY = (long) Math.ceil(bodyBoundary.y * fullHeight);
             if (bodyY >= candidate.getY() + candidate.getHeight()) {
                 bottom = Math.max(bottom, bodyY);
             } else {
@@ -53,19 +54,21 @@ public final class RoiTransform {
             }
         }
         if (bodyBoundary != null && bodyBoundary.x != null && finite(bodyBoundary.x)) {
-            int bodyX = (int) Math.ceil(bodyBoundary.x * fullWidth);
+            long bodyX = (long) Math.ceil(bodyBoundary.x * fullWidth);
             if (bodyX >= candidate.getX() + candidate.getWidth()) {
                 right = Math.max(right, bodyX);
             } else {
                 left = Math.min(left, bodyX);
             }
         }
+        rejectIntOverflow(left, top, right, bottom);
 
-        left = clamp(left, 0, fullWidth);
-        top = clamp(top, 0, fullHeight);
-        right = clamp(right, left, fullWidth);
-        bottom = clamp(bottom, top, fullHeight);
-        return new RoiTransform(left, top, right - left, bottom - top, fullWidth, fullHeight);
+        int clampedLeft = clampToInt(left, 0, fullWidth);
+        int clampedTop = clampToInt(top, 0, fullHeight);
+        int clampedRight = clampToInt(right, clampedLeft, fullWidth);
+        int clampedBottom = clampToInt(bottom, clampedTop, fullHeight);
+        return new RoiTransform(clampedLeft, clampedTop, clampedRight - clampedLeft,
+                clampedBottom - clampedTop, fullWidth, fullHeight);
     }
 
     public static RoiTransform fromEdge(int fullWidth, int fullHeight, PageEdge edge, BodyBoundary bodyBoundary,
@@ -78,24 +81,30 @@ public final class RoiTransform {
         }
         validateOptionalBodyBoundary(bodyBoundary);
         if (edge == PageEdge.TOP) {
-            int bottom = bodyBoundary != null && bodyBoundary.y != null && finite(bodyBoundary.y)
-                    ? (int) Math.ceil(bodyBoundary.y * fullHeight) + marginPixels : fullHeight / 5;
-            return new RoiTransform(0, 0, fullWidth, bottom, fullWidth, fullHeight);
+            long bottom = bodyBoundary != null && bodyBoundary.y != null && finite(bodyBoundary.y)
+                    ? (long) Math.ceil(bodyBoundary.y * fullHeight) + marginPixels : fullHeight / 5L;
+            rejectIntOverflow(bottom);
+            return new RoiTransform(0, 0, fullWidth, clampToInt(bottom, 1, fullHeight), fullWidth, fullHeight);
         }
         if (edge == PageEdge.BOTTOM) {
-            int top = bodyBoundary != null && bodyBoundary.y != null && finite(bodyBoundary.y)
-                    ? (int) Math.floor(bodyBoundary.y * fullHeight) - marginPixels : fullHeight * 4 / 5;
-            return new RoiTransform(0, top, fullWidth, fullHeight - top, fullWidth, fullHeight);
+            long top = bodyBoundary != null && bodyBoundary.y != null && finite(bodyBoundary.y)
+                    ? (long) Math.floor(bodyBoundary.y * fullHeight) - marginPixels : fullHeight * 4L / 5L;
+            rejectIntOverflow(top);
+            int clampedTop = clampToInt(top, 0, fullHeight - 1);
+            return new RoiTransform(0, clampedTop, fullWidth, fullHeight - clampedTop, fullWidth, fullHeight);
         }
         if (edge == PageEdge.LEFT) {
-            int right = bodyBoundary != null && bodyBoundary.x != null && finite(bodyBoundary.x)
-                    ? (int) Math.ceil(bodyBoundary.x * fullWidth) + marginPixels : fullWidth / 5;
-            return new RoiTransform(0, 0, right, fullHeight, fullWidth, fullHeight);
+            long right = bodyBoundary != null && bodyBoundary.x != null && finite(bodyBoundary.x)
+                    ? (long) Math.ceil(bodyBoundary.x * fullWidth) + marginPixels : fullWidth / 5L;
+            rejectIntOverflow(right);
+            return new RoiTransform(0, 0, clampToInt(right, 1, fullWidth), fullHeight, fullWidth, fullHeight);
         }
         if (edge == PageEdge.RIGHT) {
-            int left = bodyBoundary != null && bodyBoundary.x != null && finite(bodyBoundary.x)
-                    ? (int) Math.floor(bodyBoundary.x * fullWidth) - marginPixels : fullWidth * 4 / 5;
-            return new RoiTransform(left, 0, fullWidth - left, fullHeight, fullWidth, fullHeight);
+            long left = bodyBoundary != null && bodyBoundary.x != null && finite(bodyBoundary.x)
+                    ? (long) Math.floor(bodyBoundary.x * fullWidth) - marginPixels : fullWidth * 4L / 5L;
+            rejectIntOverflow(left);
+            int clampedLeft = clampToInt(left, 0, fullWidth - 1);
+            return new RoiTransform(clampedLeft, 0, fullWidth - clampedLeft, fullHeight, fullWidth, fullHeight);
         }
         throw new IllegalArgumentException("edge is required");
     }
@@ -135,6 +144,18 @@ public final class RoiTransform {
 
     private static int clamp(int value, int min, int max) {
         return Math.max(min, Math.min(max, value));
+    }
+
+    private static int clampToInt(long value, int min, int max) {
+        return (int) Math.max(min, Math.min(max, value));
+    }
+
+    private static void rejectIntOverflow(long... values) {
+        for (long value : values) {
+            if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("marginPixels is too large");
+            }
+        }
     }
 
     private static void validateLocalRect(double x1, double y1, double x2, double y2) {

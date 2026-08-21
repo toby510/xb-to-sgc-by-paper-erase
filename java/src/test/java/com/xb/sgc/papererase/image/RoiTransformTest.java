@@ -35,6 +35,43 @@ public class RoiTransformTest {
     }
 
     @Test
+    public void fromCandidateRejectsMarginThatWouldOverflowBeforeClamping() {
+        final BufferedImage image = blankPage(1000, 2000);
+        final BodyBoundary boundary = boundary(null, 0.20);
+        final RegionValidator.PixelRegion candidate = validatedCandidate(image, boundary);
+
+        assertIllegalArgument("marginPixels is too large", new ThrowingRunnable() {
+            public void run() {
+                RoiTransform.fromCandidate(image.getWidth(), image.getHeight(), candidate, boundary, Integer.MAX_VALUE);
+            }
+        });
+    }
+
+    @Test
+    public void fromEdgeRejectsBoundaryPlusMarginOverflowBeforeClamping() {
+        assertIllegalArgument("marginPixels is too large", new ThrowingRunnable() {
+            public void run() {
+                RoiTransform.fromEdge(1000, Integer.MAX_VALUE, RoiTransform.PageEdge.TOP,
+                        boundary(null, 1.0), Integer.MAX_VALUE);
+            }
+        });
+    }
+
+    @Test
+    public void fromCandidateClampsLegalLargeMarginAtPageEdge() {
+        BufferedImage image = blankPage(1000, 2000);
+        BodyBoundary boundary = boundary(null, 0.20);
+        RegionValidator.PixelRegion candidate = validatedCandidate(image, boundary);
+
+        RoiTransform roi = RoiTransform.fromCandidate(image.getWidth(), image.getHeight(), candidate, boundary, 200);
+
+        assertEquals(0, roi.getX());
+        assertEquals(0, roi.getY());
+        assertEquals(400, roi.getWidth());
+        assertEquals(400, roi.getHeight());
+    }
+
+    @Test
     public void localRectToFullPixelsUsesFloorCeilForValidLocalCoordinates() {
         RoiTransform roi = new RoiTransform(80, 60, 140, 340, 1000, 2000);
 
