@@ -104,6 +104,24 @@ public class RegionValidatorTest {
     }
 
     @Test
+    public void validateAbsorbsOnlyPageNumberInkConnectedToAConservativeRightEdgeBox() {
+        BufferedImage image = blankPage();
+        // 模型框从 x=90 开始，但页码左侧抗锯齿/蓝色笔画实际延伸到 x=87。
+        // 这些像素与框内页码连通，且距正文边界 x=70 仍有足够的真实空白带。
+        drawText(image, 87, 86, 94, 108);
+
+        RegionValidator.ValidationResult result = RegionValidator.validate(
+                locate("page-1", region("r1", 0.90, 0.40, 0.96, 0.60), boundary(0.70, null)),
+                image);
+
+        assertTrue(result.getReasons().toString(), result.isAccepted());
+        RegionValidator.PixelRegion expanded = result.getRegions().get(0);
+        // 扩框额外留一像素白边，后续擦除器仍可验证笔画没有触及候选框边界。
+        assertEquals(86, expanded.getX());
+        assertEquals(10, expanded.getWidth());
+    }
+
+    @Test
     public void validateRejectsUnsafeStatusMissingPageIdAndEmptyOrNullRegions() {
         BufferedImage image = blankPage();
 

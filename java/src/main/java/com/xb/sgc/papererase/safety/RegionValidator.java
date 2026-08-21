@@ -104,6 +104,17 @@ public final class RegionValidator {
             }
             // 用真实像素空白带而非仅模型给出的归一化距离，抵抗边界坐标幻觉。
             String gapReason = invalidPixelGapReason(edge, pixelRegion, locateResult.getNearestBodyBoundary(), image);
+            if ("body blank gap contains ink".equals(gapReason)) {
+                /*
+                 * VLM 坐标是语义定位，常把页码最外侧一两列抗锯齿笔画排除在框外。不能把
+                 * 这类“与框内页码连通”的残笔直接当正文，也不能无条件放宽安全带：只把
+                 * 连通分量向正文方向扩一像素白边，再重新验证 8px 的真实无墨安全带。
+                 */
+                pixelRegion = expandConnectedTargetInk(edge, pixelRegion,
+                        locateResult.getNearestBodyBoundary(), image);
+                gapReason = invalidPixelGapReason(edge, pixelRegion,
+                        locateResult.getNearestBodyBoundary(), image);
+            }
             if (gapReason != null) {
                 reasons.add(gapReason);
                 continue;
@@ -222,6 +233,132 @@ public final class RegionValidator {
         return "body blank gap is insufficient";
     }
 
+    /**
+     * 仅在候选框相邻安全带有墨时，吸收从原候选框连通出来的页码残笔。搜索区域被限制在
+     * 正文边界之外，并且扩框后必须还留出一个完整的 {@link #MIN_BODY_GAP_PIXELS} 空白带，
+     * 因此孤立正文墨迹、表格线或越过安全带的长笔画均不能被带入擦除区。
+     */
+    private static PixelRegion expandConnectedTargetInk(Edge edge, PixelRegion region,
+                                                          BodyBoundary boundary, BufferedImage image) {
+        int bodyLimit = bodyLimit(edge, boundary, image);
+        if (bodyLimit < 0) {
+            return region;
+        }
+        Bounds bounds = expansionBounds(edge, region, bodyLimit, image);
+        if (bounds == null) {
+            return region;
+        }
+
+        boolean[][] connected = new boolean[bounds.height()][bounds.width()];
+        ArrayList<int[]> queue = new ArrayList<int[]>();
+        for (int y = Math.max(region.getY(), bounds.top); y < Math.min(region.getY() + region.getHeight(), bounds.bottom); y++) {
+            for (int x = Math.max(region.getX(), bounds.left); x < Math.min(region.getX() + region.getWidth(), bounds.right); x++) {
+                if (isConservativeInk(image.getRGB(x, y))) {
+                    connected[y - bounds.top][x - bounds.left] = true;
+                    queue.add(new int[]{x, y});
+                }
+            }
+        }
+        if (queue.isEmpty()) {
+            return region;
+        }
+
+        int minX = region.getX();
+        int maxX = region.getX() + region.getWidth() - 1;
+        int minY = region.getY();
+        int maxY = region.getY() + region.getHeight() - 1;
+        for (int index = 0; index < queue.size(); index++) {
+            int[] point = queue.get(index);
+            int x = point[0];
+            int y = point[1];
+            minX = Math.min(minX, x);
+            maxX = Math.max(maxX, x);
+            minY = Math.min(minY, y);
+            maxY = Math.max(maxY, y);
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    if (dx == 0 && dy == 0) {
+                        continue;
+                    }
+                    int nextX = x + dx;
+                    int nextY = y + dy;
+                    if (nextX < bounds.left || nextX >= bounds.right || nextY < bounds.top || nextY >= bounds.bottom
+                            || connected[nextY - bounds.top][nextX - bounds.left]
+                            || !isConservativeInk(image.getRGB(nextX, nextY))) {
+                        continue;
+                    }
+                    connected[nextY - bounds.top][nextX - bounds.left] = true;
+                    queue.add(new int[]{nextX, nextY});
+                }
+            }
+        }
+
+        // 与候选框不连通的安全带墨迹不是页码残笔，保持拒绝，不允许猜测其语义。
+        if (hasUnconnectedInk(bounds, connected, image)) {
+            return region;
+        }
+        return paddedExpandedRegion(edge, region, minX, minY, maxX, maxY, bodyLimit, image);
+    }
+
+    private static int bodyLimit(Edge edge, BodyBoundary boundary, BufferedImage image) {
+        if (edge == Edge.TOP) return (int) Math.floor(boundary.y * image.getHeight());
+        if (edge == Edge.BOTTOM) return (int) Math.ceil(boundary.y * image.getHeight());
+        if (edge == Edge.LEFT) return (int) Math.floor(boundary.x * image.getWidth());
+        if (edge == Edge.RIGHT) return (int) Math.ceil(boundary.x * image.getWidth());
+        return -1;
+    }
+
+    private static Bounds expansionBounds(Edge edge, PixelRegion region, int bodyLimit, BufferedImage image) {
+        if (edge == Edge.TOP) {
+            return new Bounds(region.getX(), 0, region.getX() + region.getWidth(), bodyLimit - MIN_BODY_GAP_PIXELS);
+        }
+        if (edge == Edge.BOTTOM) {
+            return new Bounds(region.getX(), bodyLimit + MIN_BODY_GAP_PIXELS,
+                    region.getX() + region.getWidth(), image.getHeight());
+        }
+        if (edge == Edge.LEFT) {
+            return new Bounds(0, region.getY(), bodyLimit - MIN_BODY_GAP_PIXELS, region.getY() + region.getHeight());
+        }
+        if (edge == Edge.RIGHT) {
+            return new Bounds(bodyLimit + MIN_BODY_GAP_PIXELS, region.getY(), image.getWidth(), region.getY() + region.getHeight());
+        }
+        return null;
+    }
+
+    private static boolean hasUnconnectedInk(Bounds bounds, boolean[][] connected, BufferedImage image) {
+        if (!bounds.isInside(image)) {
+            return true;
+        }
+        for (int y = bounds.top; y < bounds.bottom; y++) {
+            for (int x = bounds.left; x < bounds.right; x++) {
+                if (isConservativeInk(image.getRGB(x, y)) && !connected[y - bounds.top][x - bounds.left]) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static PixelRegion paddedExpandedRegion(Edge edge, PixelRegion region, int minX, int minY, int maxX,
+                                                      int maxY, int bodyLimit, BufferedImage image) {
+        int left = region.getX();
+        int top = region.getY();
+        int right = region.getX() + region.getWidth();
+        int bottom = region.getY() + region.getHeight();
+        if (edge == Edge.TOP) bottom = Math.max(bottom, maxY + 2);
+        if (edge == Edge.BOTTOM) top = Math.min(top, minY - 1);
+        if (edge == Edge.LEFT) right = Math.max(right, maxX + 2);
+        if (edge == Edge.RIGHT) left = Math.min(left, minX - 1);
+        if ((edge == Edge.TOP && bodyLimit - bottom < MIN_BODY_GAP_PIXELS)
+                || (edge == Edge.BOTTOM && top - bodyLimit < MIN_BODY_GAP_PIXELS)
+                || (edge == Edge.LEFT && bodyLimit - right < MIN_BODY_GAP_PIXELS)
+                || (edge == Edge.RIGHT && left - bodyLimit < MIN_BODY_GAP_PIXELS)) {
+            return region;
+        }
+        return new PixelRegion(region.getPageId(), region.getRegionId(), left, top, right - left, bottom - top,
+                region.getX1(), region.getY1(), region.getX2(), region.getY2(), region.getConfidence());
+    }
+
     private static boolean bandHasInk(BufferedImage image, int left, int top, int rightExclusive, int bottomExclusive) {
         if (left < 0 || top < 0 || rightExclusive > image.getWidth() || bottomExclusive > image.getHeight()
                 || left >= rightExclusive || top >= bottomExclusive) {
@@ -270,6 +407,27 @@ public final class RegionValidator {
 
     private enum Edge {
         TOP, BOTTOM, LEFT, RIGHT, NONE
+    }
+
+    private static final class Bounds {
+        private final int left;
+        private final int top;
+        private final int right;
+        private final int bottom;
+
+        private Bounds(int left, int top, int right, int bottom) {
+            this.left = left;
+            this.top = top;
+            this.right = right;
+            this.bottom = bottom;
+        }
+
+        private int width() { return right - left; }
+        private int height() { return bottom - top; }
+        private boolean isInside(BufferedImage image) {
+            return left >= 0 && top >= 0 && right <= image.getWidth() && bottom <= image.getHeight()
+                    && left < right && top < bottom;
+        }
     }
 
     public static final class PageLocateResult {
