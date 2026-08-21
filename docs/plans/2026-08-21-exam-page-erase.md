@@ -29,10 +29,10 @@
 - Create: `SKILL.md`
 - Create: `config/vlm-providers.json`
 - Create: `config/word-template.json`
-- Create: `references/pattern-prompt-v1.md`
-- Create: `references/locate-prompt-v1.md`
-- Create: `references/verify-prompt-v1.md`
-- Create: `references/audit-prompt-v1.md`
+- Create: `references/01-整卷共性识别/pattern-prompt-v1.md`
+- Create: `references/02-单页页码定位/locate-prompt-v1.md`
+- Create: `references/03-局部安全复核/verify-prompt-v1.md`
+- Create: `references/04-擦除结果审计/audit-prompt-v1.md`
 - Create: `java/pom.xml`
 - Create: `java/src/main/java/com/xb/sgc/papererase/model/ExamModels.java`
 - Create: `java/src/main/java/com/xb/sgc/papererase/input/ExamScanner.java`

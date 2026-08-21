@@ -47,7 +47,7 @@ description: 当用户要按“整份试卷”而不是单张图片去除页码�
 
 - 所有图片通过 OpenAI 兼容的 `messages[].content[]` 发送，图片项必须是 `{"type":"image_url","image_url":{"url":"data:image/..."}}`；不得把 data URL 当普通文本。
 - 每张整页图前附加 `PAGE_ID`；审计的两张图额外附加 `IMAGE_ROLE: ORIGINAL|ERASED`；局部图附加 `ROI_PAGE_ID` 和 `ROI_REGION_ID`。
-- `pattern` 是多图调用，`locate`、`verify`、`audit` 使用相应角色提示词。角色、模型、端点、超时与重试从 `config/vlm-providers.json` 读取。
+- `pattern` 是多图调用，`locate`、`verify`、`audit` 使用相应角色提示词。`references/` 已按“整卷共性识别、单页页码定位、局部安全复核、擦除结果审计”分目录；当前生效版本和每个角色的中文说明均在 `config/vlm-providers.json` 的 `roles` 中。
 - 任何网络失败、响应 JSON 无法解析、页面 ID 错配或协议字段缺失，都按失败关闭：不擦除，转人工审核。
 
 ## 安全门禁与降级原则
