@@ -28,6 +28,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * 视觉模型的四角色协议。此接口故意只返回结构化业务结果，响应 JSON 校验集中在
+ * {@link ResponseParser}，避免调用方在“坐标不可信”时仍继续擦除。
+ */
 public interface VlmClient {
     PatternResponse pattern(List<PageImage> pages);
 
@@ -83,6 +87,7 @@ public interface VlmClient {
         private String call(String role, String instruction, List<PageImage> pages, List<RoiImage> rois) {
             VlmConfig.RoleConfig roleConfig = config.role(role);
             RuntimeException last = null;
+            // 重试仅处理瞬时网络/服务异常；最终失败由上层按失败关闭转人工审核。
             for (int attempt = 0; attempt <= roleConfig.getRetries(); attempt++) {
                 try {
                     return http(roleConfig, requestBody(roleConfig, instruction, pages, rois));
@@ -105,11 +110,13 @@ public interface VlmClient {
                 List<Object> content = new ArrayList<Object>();
                 content.add(textPart(prompt + "\n" + instruction));
                 for (PageImage page : pages) {
+                    // PAGE_ID 与图片紧邻，防止多图响应中出现“按图片顺序猜测”的错页坐标。
                     String label = "PAGE_ID: " + page.getPageId();
                     if (page.getImageRole() != null) {
                         label += "\nIMAGE_ROLE: " + page.getImageRole();
                     }
                     content.add(textPart(label));
+                    // 必须是 image_url 多模态块；把 data URL 放进 text 会导致模型只看到字符串。
                     content.add(imagePart(page.previewDataUrl()));
                 }
                 for (RoiImage roi : rois) {
@@ -165,6 +172,7 @@ public interface VlmClient {
                 if (code < 200 || code >= 300) {
                     throw new RuntimeException("VLM HTTP " + code);
                 }
+                // 兼容文本与内容数组两种 OpenAI 兼容响应，其他形态一律视为协议失败。
                 JsonNode content = root.path("choices").path(0).path("message").path("content");
                 if (content.isTextual()) {
                     return content.asText();
@@ -277,6 +285,7 @@ public interface VlmClient {
         double scale = maxLongEdge / (double) longEdge;
         int width = Math.max(1, (int) Math.round(source.getWidth() * scale));
         int height = Math.max(1, (int) Math.round(source.getHeight() * scale));
+        // 仅用于整页“共性分析”预览；ROI 复核始终保留原始分辨率，避免小页码被缩没。
         BufferedImage resized = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
         Graphics2D g = resized.createGraphics();
         g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);

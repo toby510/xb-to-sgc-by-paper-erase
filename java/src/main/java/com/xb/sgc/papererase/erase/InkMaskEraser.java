@@ -12,6 +12,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Queue;
 
+/**
+ * 掩码级擦除器。它不会用矩形平涂候选区域，而是只改写被判定为目标墨迹的像素；随后由
+ * PixelDiffGate 证明批准掩码外没有任何改动。这是正文零误伤的最后一层本地保障。
+ */
 public final class InkMaskEraser {
     private InkMaskEraser() {
     }
@@ -28,6 +32,7 @@ public final class InkMaskEraser {
         if (nonTargetReason != null) {
             return EraseOutcome.manual(copy(source), new ApprovedMask(source.getWidth(), source.getHeight()), nonTargetReason);
         }
+        // 抗锯齿灰色也应进入目标掩码，否则会留下页码边缘；但掩码绝不能越过批准区域。
         boolean[][] mask = extractMask(source, region);
         if (!hasApprovedPixel(mask, region)) {
             return EraseOutcome.manual(copy(source), new ApprovedMask(mask), "no target ink found");
@@ -40,6 +45,7 @@ public final class InkMaskEraser {
             return EraseOutcome.manual(copy(source), new ApprovedMask(mask), geometryReason);
         }
 
+        // 背景拟合是观感优化而非正文安全条件，失败时只在掩码内降级纯白。
         BackgroundEstimator.Estimate estimate = BackgroundEstimator.estimate(source, region, mask);
         boolean whiteFallback = !estimate.isAccepted();
 
@@ -52,10 +58,12 @@ public final class InkMaskEraser {
             }
         }
         ApprovedMask approvedMask = ApprovedMask.from(region, source.getWidth(), source.getHeight(), mask);
+        // 写回后逐像素复核，防止算法、颜色模型或未来改动造成掩码外的意外变化。
         PixelDiffGate.GateResult diff = PixelDiffGate.check(source, candidate, approvedMask);
         if (!diff.isPassed()) {
             return EraseOutcome.manual(copy(source), approvedMask, diff.getReason());
         }
+        // 色差仅告警不阻断；用户优先级是“正文绝不伤害”，不是背景绝对无色差。
         ColorSeamGate.GateResult seam = ColorSeamGate.check(source, candidate, approvedMask);
         if (!seam.isPassed()) {
             return new EraseOutcome(Status.SAFE_TO_ERASE, colorReason(whiteFallback, seam.getReason()), candidate, approvedMask);

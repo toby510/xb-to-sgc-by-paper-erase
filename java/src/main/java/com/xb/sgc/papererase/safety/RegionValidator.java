@@ -10,6 +10,10 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+/**
+ * 擦除前的确定性防火墙。模型可以误判，但这里的规则要求候选页码位于独立边缘带，且与
+ * 正文之间存在真实、无墨的像素安全带；任意一项无法证明即拒绝自动擦除。
+ */
 public final class RegionValidator {
     private static final double EDGE_BAND = 0.20;
     private static final int MIN_BODY_GAP_PIXELS = 8;
@@ -79,6 +83,7 @@ public final class RegionValidator {
                 continue;
             }
 
+            // 非边缘候选不具备“页码与正文分离”的可证明条件，不能靠置信度放行。
             Edge edge = edge(region);
             if (edge == Edge.NONE) {
                 reasons.add("region must be inside an edge band");
@@ -97,11 +102,13 @@ public final class RegionValidator {
                 reasons.add("coordinates map outside image bounds");
                 continue;
             }
+            // 用真实像素空白带而非仅模型给出的归一化距离，抵抗边界坐标幻觉。
             String gapReason = invalidPixelGapReason(edge, pixelRegion, locateResult.getNearestBodyBoundary(), image);
             if (gapReason != null) {
                 reasons.add(gapReason);
                 continue;
             }
+            // 候选框边缘有墨说明框可能截到正文/表格，擦除后无法保证零误伤。
             if (maskTouchesCandidateBox(image, pixelRegion)) {
                 reasons.add("ink mask touches candidate box");
                 continue;
@@ -184,6 +191,7 @@ public final class RegionValidator {
             if (bodyY - bottom < MIN_BODY_GAP_PIXELS) {
                 return "body blank gap is insufficient";
             }
+            // 相邻安全带出现任何保守墨迹都拒绝；宁可漏擦，也不穿透到正文首行。
             return bandHasInk(image, region.getX(), bottom, right, bottom + MIN_BODY_GAP_PIXELS)
                     ? "body blank gap contains ink" : null;
         }

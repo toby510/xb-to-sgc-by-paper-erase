@@ -4,6 +4,10 @@ import com.xb.sgc.papererase.erase.InkMaskEraser;
 
 import java.awt.image.BufferedImage;
 
+/**
+ * 最终像素完整性门禁：候选图只允许在已批准掩码、且仍位于模型批准矩形内发生变化。
+ * 该检查不依赖模型判断，因此可兜住模型幻觉和本地擦除实现的越界缺陷。
+ */
 public final class PixelDiffGate {
     private PixelDiffGate() {
     }
@@ -32,6 +36,7 @@ public final class PixelDiffGate {
                     }
                     anyApprovedChange = anyApprovedChange || changed;
                 } else if (changed) {
+                    // 任何掩码外改动均视为正文风险，不接受“看起来影响不大”的例外。
                     return GateResult.failed("mask outside pixel changed at " + x + "," + y);
                 }
             }

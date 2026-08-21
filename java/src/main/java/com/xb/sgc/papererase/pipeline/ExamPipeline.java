@@ -30,6 +30,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * 试卷级编排器：视觉模型只能提出候选，Java 负责把每一步都收紧为“可证明安全”。
+ *
+ * <p>任何一页出现协议、网络、坐标或像素门禁异常，均只降级该页为人工审核；只有
+ * pattern 阶段无法建立可信的整卷页面对应关系时才整卷降级。这样既不把异常页混入自动
+ * 结果，也不会因为单页偶发失败影响整份试卷的可用页面。</p>
+ */
 public final class ExamPipeline {
     private static final double MIN_DIRECTION_CONFIDENCE = 0.90;
     private final VlmClient vlm;
@@ -56,6 +63,7 @@ public final class ExamPipeline {
         for (PageInput page : exam.getPages()) {
             BufferedImage original = originals.get(page.getPageId());
             try {
+                // 页面异常必须隔离：不能因为一张异常图让后续页绕过审计或丢失产物。
                 outcomes.add(published(page, original, bundle, processPage(exam, page, original, bundle)));
             } catch (RuntimeException e) {
                 outcomes.add(manual(page, original, original, transform(original, original, 0),
@@ -84,6 +92,7 @@ public final class ExamPipeline {
                 expected.add(page.getPageId());
             }
             PatternResponse response = vlm.pattern(images);
+            // 绝不用响应数组位置对齐；错页坐标是“擦到正文”的高风险来源。
             if (!pageIds(response).equals(new java.util.HashSet<String>(expected))) {
                 throw new ResponseParser.ParseException("batch page ids mismatch", "");
             }
@@ -127,6 +136,7 @@ public final class ExamPipeline {
                     "low_direction_confidence", bundle.groupByPage.get(page.getPageId()), null);
         }
 
+        // 坐标、边缘带和正文间隔均在统一阅读方向中判定，避免横竖页混用坐标系。
         OrientationNormalizer.NormalizedImage normalized = OrientationNormalizer.normalize(original, direction.reading_rotation);
         BufferedImage normalizedImage = normalized.getImage();
         PageTransforms transforms = new PageTransforms(normalized.getOriginalWidth(), normalized.getOriginalHeight(),
@@ -146,6 +156,7 @@ public final class ExamPipeline {
             return handleNoCandidate(exam, page, original, normalizedImage, transforms, bundle, group, locate, pageImage);
         }
 
+        // VLM 的坐标只是候选；通过 Java 的确定性硬门禁前绝不触发像素写入。
         RegionValidator.ValidationResult validation = RegionValidator.validate(
                 new RegionValidator.PageLocateResult(locate.page_id, locate.status, locate.regions, locate.nearest_body_boundary),
                 normalizedImage);
@@ -157,6 +168,7 @@ public final class ExamPipeline {
                 .withConsensusState(bundle.consensusState)
                 .withReadingRotation(direction.reading_rotation)
                 .withPageSequenceIncomplete(exam.isPageSequenceIncomplete());
+        // 只对风险页局部二检，以控制成本；同线候选仍强制二检，防止把正文行尾当页码。
         boolean requiresVerify = RiskGate.requiresLocalVerify(riskContext, validation) || hasOnLineRegion(locate.regions);
         if (requiresVerify) {
             PageOutcome denied = verifyThenMaybeManual(page, original, normalizedImage, transforms, group, locate, pageImage, "verify_denied");
@@ -215,6 +227,7 @@ public final class ExamPipeline {
                                       List<RegionValidator.PixelRegion> pixelRegions) {
         BufferedImage candidate = normalized;
         for (RegionValidator.PixelRegion pixelRegion : pixelRegions) {
+            // 擦除器执行掩码级修改，并由像素差分门禁保证候选框外零改动。
             InkMaskEraser.EraseOutcome erase = InkMaskEraser.erase(candidate, pixelRegion);
             if (erase.getStatus() != InkMaskEraser.Status.SAFE_TO_ERASE) {
                 return manual(page, original, normalized, transforms, "erase_failed: " + erase.getReason(), group, locate);
@@ -223,6 +236,7 @@ public final class ExamPipeline {
         }
         AuditResponse audit = vlm.audit(pageImage, new VlmClient.PageImage(page.getPageId(), candidate),
                 locate.regions, rois(page.getPageId(), locate.regions, locate.nearest_body_boundary, normalized));
+        // 正文不变、目标确实消失是交付的双硬条件；背景色仅是质量告警，不扩大擦除范围。
         if (!audit.body_unchanged || !audit.target_removed) {
             return new PageOutcome(page.getPageId(), "manual_review", "audit_failed", original, normalized,
                     normalized, transforms, group, locate.regions, locate, audit);

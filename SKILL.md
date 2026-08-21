@@ -1,88 +1,93 @@
 ---
 name: xb-to-sgc-by-paper-erase
-description: Use when processing 校本融合试卷图片 by full exam, removing only page numbers and same-line non-body metadata while preserving all body content.
+description: 当用户要按“整份试卷”而不是单张图片去除页码，或提到试卷维度页码共性、页码擦除、正文零误伤、批量页码坐标、人工审核水印、页码擦除测试时，必须使用此 skill。它只擦除页码及其同一独立页眉/页脚带内、可明确判定为非正文的元数据；正文保护优先于擦除率。
 ---
 
 # 试卷维度页码安全擦除
 
-## Scope
+## 目标与边界
 
-This skill processes a dataset shaped as:
+本 skill 以“同一份试卷的多张页图”为最小分析单元：先让视觉模型识别跨页的页码共性，再逐页定位、擦除和审计。首要目标是**正文像素零误伤**；无法证明安全时，保留原图并进入 `manual_review`，不得为了提高擦除率强行擦除。
 
-```text
-<测试根>/<学科>/<试卷ID>/<学校ID>_<试卷ID>_<图片顺序>.<png|jpg|jpeg|webp>
-```
+仅允许处理以下目标：
 
-It only targets page numbers and same-line, clearly non-body metadata in an independent header/footer band. Body ink protection has priority over removal. If safety and removal conflict, keep the original page and mark `manual_review`.
+- 页码；
+- 与页码处在同一、独立于正文的页眉或页脚带内，且可明确判定为非正文的元数据。
 
-Do not modify or runtime-reference `xb-to-sgc-by-erase`; copied code or config must be independently maintained here.
+禁止擦除题干、选项、图表、公式、答题区、正文标题、装订线附近内容，以及任何“看起来像页码但不能证明不是正文”的文字。
 
-## Preflight
+本 skill 独立维护，不得修改或运行时引用 `xb-to-sgc-by-erase`。如需复用旧实现，复制所需代码和资源到本目录后再维护。
 
-1. Confirm the working directory is this skill.
-2. Run Java with a JDK, not the browser JRE. On this machine use:
+## 输入约定
 
-```bash
-JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_291.jdk/Contents/Home mvn -q test
-```
-
-3. Load `config/vlm-providers.json` and the four role prompts from `references/`.
-4. Scan inputs with `ExamScanner.scanWithRejections(Path root)`.
-5. Stop the formal pipeline if `rejectedExams` is not empty; write each rejection's `subject`、`examId`、`reason` to the run report before continuing any erasable-page work.
-
-Input rules:
-
-- Directory name is authoritative `exam_id`.
-- Filename middle exam ID mismatch is an anomaly; continue with directory ID.
-- Unparseable or duplicate page order rejects the whole exam.
-- Missing page order continues with `page_sequence_incomplete=true`.
-- Use stable `page_id`; do not align model responses only by array index.
-
-## TEST Flow
-
-1. Build the gate set from bad-image exam IDs, then find complete exams globally in the full dataset by exam ID.
-2. Aggregate each exam with `ExamScanner.scanWithRejections(Path root)` and fail the gate if any rejected exam is present.
-3. Split pages for pattern analysis with `PageBatcher.overlapping(pages, 8, 1)`.
-4. Pattern role analyzes reading direction and page-number layout only.
-5. Java will rotate pixels in later tasks; VLM never rotates output coordinates for Java.
-6. Locate role returns per-page candidate regions in the normalized working image.
-7. Risky or conflicting pages must go to verify role before erase.
-8. Every modified page must go to audit role after erase.
-9. Stop after the first-stage gate output; do not run the full 100-exam production gate in this phase.
-
-## Failure Fallback
-
-- Model/network failure: do not erase; mark `manual_review`.
-- Pattern JSON parse failure or page mapping disorder: whole exam falls back.
-- Single-page verify/audit failure: only that page falls back.
-- Pixel gate failure: discard erased output, copy original as formal erased PNG, and create a separate manual-review preview.
-
-Formal `_原图.png` and `_擦除后.png` must not contain watermarks. Only `_人工审核预览.png` may contain the red manual-review mark.
-
-## Output
+目录结构：
 
 ```text
-<测试根>/xb-to-sgc-by-paper-erase-output/
-└── exam-page-only/
-    └── runs/<模型>@<时间戳>/
-        ├── erased/<学科>/<试卷ID>/
-        ├── consensus/<学科>/<试卷ID>/exam_consensus.json
-        ├── word_output/<学科>/<试卷ID>/
-        ├── _audit.ndjson
-        ├── 测试报告/测试报告.md
-        └── run.json
+<测试根目录>/<学科>/<试卷ID>/<学校ID>_<试卷ID>_<图片顺序>.<png|jpg|jpeg|webp>
 ```
 
-## Gate Commands
+- 目录名是试卷 ID 的唯一权威来源；文件名中的试卷 ID 不一致只记录异常，仍按目录名聚合。
+- 图片顺序来自文件名最后一段序号；不能解析或重复序号时，整份试卷拒绝自动处理。
+- 缺页允许继续，但必须写入 `page_sequence_incomplete=true`，并提升为局部二检风险。
+- 视觉模型返回值必须用稳定 `page_id` 对齐，禁止按数组下标猜测页面对应关系。
 
-Task-level gate:
+## 执行流程
+
+1. 用 `ExamScanner.scanWithRejections(Path)` 扫描并按试卷聚合；有结构性拒绝时，先写入报告，不进入自动擦除。
+2. 对同一试卷按 8 张、相邻 1 张重叠的方式分批，调用 `pattern` 角色分析阅读方向、页码是否存在、所在边和跨页共性。
+3. Java 校验每批返回的页面 ID：必须与请求页面集合完全一致且无重复；不满足则整卷 `manual_review`。
+4. 对每页按识别出的阅读方向标准化图像，再调用 `locate` 返回候选区域、置信度和最近正文边界。
+5. `RegionValidator` 先做硬校验：边缘带、坐标、正文间隔、空白安全带、候选框边界墨迹。任一失败不得擦除。
+6. 高风险页面（低置信度、旋转、首尾页差异、同线候选、共性不稳定、缺页等）只对局部 ROI 调用 `verify`；二检非 `safe_to_erase` 时不擦除。
+7. `InkMaskEraser` 仅修改候选框内识别出的目标墨迹；背景估计失败时可仅在已批准掩码内降级为白色。
+8. `PixelDiffGate` 必须证明候选掩码以外的所有像素未变；该门禁失败立即丢弃候选图。
+9. 每张修改过的图都调用 `audit` 对原图、擦除图和局部 ROI 进行视觉复核。`body_unchanged=false` 或 `target_removed=false` 一律人工审核；仅背景色问题可作为色差警告交付。
+
+## VLM 请求与协议
+
+- 所有图片通过 OpenAI 兼容的 `messages[].content[]` 发送，图片项必须是 `{"type":"image_url","image_url":{"url":"data:image/..."}}`；不得把 data URL 当普通文本。
+- 每张整页图前附加 `PAGE_ID`；审计的两张图额外附加 `IMAGE_ROLE: ORIGINAL|ERASED`；局部图附加 `ROI_PAGE_ID` 和 `ROI_REGION_ID`。
+- `pattern` 是多图调用，`locate`、`verify`、`audit` 使用相应角色提示词。角色、模型、端点、超时与重试从 `config/vlm-providers.json` 读取。
+- 任何网络失败、响应 JSON 无法解析、页面 ID 错配或协议字段缺失，都按失败关闭：不擦除，转人工审核。
+
+## 安全门禁与降级原则
+
+正文安全门禁不可降级：
+
+- 区域必须位于页面 20% 边缘带内；
+- 候选区域与最近正文边界之间必须有至少 8 像素的无墨安全带；
+- 候选框边缘出现墨迹、掩码触碰候选框边界、疑似表格/长线/多行文字、框内有彩色非目标内容，均转人工审核；
+- `PixelDiffGate` 发现掩码外变化，必须拒绝候选图；
+- 审计确认正文变化，必须拒绝候选图。
+
+色差不是正文安全门禁：背景估计或色差检测不理想时，可保留擦除结果并标记 `color_warning`；背景估计不可用时可在批准掩码内填纯白。此降级绝不扩大掩码或候选区域。
+
+## 输出约定
+
+```text
+<测试根目录>/xb-to-sgc-by-paper-erase-output/
+└── exam-page-only/runs/<模型>@<时间戳>/
+    ├── erased/<学科>/<试卷ID>/              # 原图、擦除后图、人工审核预览
+    ├── consensus/<学科>/<试卷ID>/exam_consensus.json
+    ├── word_output/<学科>/<试卷ID>/          # 原图 Word 与擦除后 Word
+    ├── _audit.ndjson
+    ├── 测试报告/测试报告.md
+    └── run.json
+```
+
+- `_原图.png`、`_擦除后.png` 绝不加水印。
+- 仅 `_人工审核预览.png` 加红色人工审核水印；正式擦除图在人工审核页使用原图副本。
+- 报告必须记录每页状态、失败原因、模型响应证据、审核结果和色差警告。
+
+## 测试与交付
+
+当前阶段只运行用户指定的 bad 图所对应的完整试卷门禁；得到用户确认前，不自动扩展到 100 份/400 份全量集。
+
+核心轻量测试命令：
 
 ```bash
-JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_291.jdk/Contents/Home mvn -q -Dtest=ExamScannerTest,PageBatcherTest test
+JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_291.jdk/Contents/Home \
+mvn -q -f java/pom.xml -Dtest=RegionValidatorTest,InkMaskEraserTest,ExamPipelineTest test
 ```
 
-Full Java gate:
-
-```bash
-JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_291.jdk/Contents/Home mvn -q test
-```
+测试中应至少人工抽查：一张页码紧贴正文的图、一张旋转图、一张无页码图、一张背景非纯白图。任何正文误伤都视为门禁失败；色差仅登记为待优化项。
