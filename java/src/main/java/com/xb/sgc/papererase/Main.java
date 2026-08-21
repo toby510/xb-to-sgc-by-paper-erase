@@ -60,6 +60,8 @@ public final class Main {
         }
         Path runDir = RunWriter.createRunDir(outputRoot, config.role("locate").getModel(),
                 new SimpleDateFormat("yyyyMMdd'T'HHmmss").format(new Date()));
+        System.err.println("run_dir=" + runDir.toAbsolutePath());
+        System.err.println("progress_file=" + runDir.resolve("_progress.ndjson").toAbsolutePath());
         List<ExamOutcome> outcomes = new ArrayList<ExamOutcome>();
         ExamPipeline pipeline = new ExamPipeline(vlm);
         RunWriter runWriter = new RunWriter();
