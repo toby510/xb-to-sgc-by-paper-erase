@@ -260,7 +260,7 @@ public final class RegionValidator {
             }
         }
         if (queue.isEmpty()) {
-            return region;
+            return rescueEmptyModelBox(edge, region, bodyLimit, image);
         }
 
         int minX = region.getX();
@@ -298,6 +298,54 @@ public final class RegionValidator {
             return region;
         }
         return paddedExpandedRegion(edge, region, minX, minY, maxX, maxY, bodyLimit, image);
+    }
+
+    /**
+     * 处理“模型语义判断正确、但框整体偏到页外”的情形。仅从模型框与正文边界之间的
+     * 走廊寻找墨迹；该走廊外的正文永远不可进入。返回的区域还会在后续流程强制局部二检。
+     */
+    private static PixelRegion rescueEmptyModelBox(Edge edge, PixelRegion region, int bodyLimit, BufferedImage image) {
+        Bounds corridor = inwardCorridor(edge, region, bodyLimit);
+        if (corridor == null || !corridor.isInside(image)) {
+            return region;
+        }
+        int minX = Integer.MAX_VALUE;
+        int minY = Integer.MAX_VALUE;
+        int maxX = Integer.MIN_VALUE;
+        int maxY = Integer.MIN_VALUE;
+        for (int y = corridor.top; y < corridor.bottom; y++) {
+            for (int x = corridor.left; x < corridor.right; x++) {
+                if (!isConservativeInk(image.getRGB(x, y))) {
+                    continue;
+                }
+                minX = Math.min(minX, x);
+                minY = Math.min(minY, y);
+                maxX = Math.max(maxX, x);
+                maxY = Math.max(maxY, y);
+            }
+        }
+        if (minX == Integer.MAX_VALUE) {
+            return region;
+        }
+        return paddedExpandedRegion(edge, region, minX, minY, maxX, maxY, bodyLimit, image);
+    }
+
+    private static Bounds inwardCorridor(Edge edge, PixelRegion region, int bodyLimit) {
+        int right = region.getX() + region.getWidth();
+        int bottom = region.getY() + region.getHeight();
+        if (edge == Edge.TOP) {
+            return new Bounds(region.getX(), bottom, right, bodyLimit - MIN_BODY_GAP_PIXELS);
+        }
+        if (edge == Edge.BOTTOM) {
+            return new Bounds(region.getX(), bodyLimit + MIN_BODY_GAP_PIXELS, right, region.getY());
+        }
+        if (edge == Edge.LEFT) {
+            return new Bounds(right, region.getY(), bodyLimit - MIN_BODY_GAP_PIXELS, bottom);
+        }
+        if (edge == Edge.RIGHT) {
+            return new Bounds(bodyLimit + MIN_BODY_GAP_PIXELS, region.getY(), region.getX(), bottom);
+        }
+        return null;
     }
 
     private static int bodyLimit(Edge edge, BodyBoundary boundary, BufferedImage image) {
@@ -355,8 +403,17 @@ public final class RegionValidator {
                 || (edge == Edge.RIGHT && left - bodyLimit < MIN_BODY_GAP_PIXELS)) {
             return region;
         }
-        return new PixelRegion(region.getPageId(), region.getRegionId(), left, top, right - left, bottom - top,
+        PixelRegion expanded = new PixelRegion(region.getPageId(), region.getRegionId(), left, top, right - left, bottom - top,
                 region.getX1(), region.getY1(), region.getX2(), region.getY2(), region.getConfidence());
+        return remainsInEdgeBand(edge, expanded, image) ? expanded : region;
+    }
+
+    private static boolean remainsInEdgeBand(Edge edge, PixelRegion region, BufferedImage image) {
+        if (edge == Edge.TOP) return region.getY() + region.getHeight() <= Math.ceil(EDGE_BAND * image.getHeight());
+        if (edge == Edge.BOTTOM) return region.getY() >= Math.floor((1 - EDGE_BAND) * image.getHeight());
+        if (edge == Edge.LEFT) return region.getX() + region.getWidth() <= Math.ceil(EDGE_BAND * image.getWidth());
+        if (edge == Edge.RIGHT) return region.getX() >= Math.floor((1 - EDGE_BAND) * image.getWidth());
+        return false;
     }
 
     private static boolean bandHasInk(BufferedImage image, int left, int top, int rightExclusive, int bottomExclusive) {

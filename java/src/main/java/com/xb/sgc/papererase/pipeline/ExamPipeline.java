@@ -211,8 +211,9 @@ public final class ExamPipeline {
                 .withPageSequenceIncomplete(exam.isPageSequenceIncomplete());
         // 只对风险页局部二检，以控制成本；同线候选仍强制二检，防止把正文行尾当页码。
         boolean hasColoredCandidate = InkMaskEraser.hasColoredPixels(normalizedImage, validation.getRegions());
+        boolean hasCoordinateRescue = hasCoordinateRescue(validation.getRegions(), normalizedImage);
         boolean requiresVerify = RiskGate.requiresLocalVerify(riskContext, validation) || hasOnLineRegion(locate.regions)
-                || hasColoredCandidate;
+                || hasColoredCandidate || hasCoordinateRescue;
         if (requiresVerify) {
             PageOutcome denied = verifyThenMaybeManual(exam, page, original, normalizedImage, transforms, group, locate, pageImage,
                     "verify_denied", context);
@@ -227,6 +228,25 @@ public final class ExamPipeline {
     private boolean hasOnLineRegion(List<EraseRegion> regions) {
         for (EraseRegion region : regions) {
             if (region.on_line) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Java 曾为补齐模型过紧/偏移坐标而扩展候选框时，必须增加一次局部视觉复核。坐标救援
+     * 只解决“页码笔画没有完全落入模型框”的几何问题，不能替代对该墨迹语义的独立确认。
+     */
+    private boolean hasCoordinateRescue(List<RegionValidator.PixelRegion> regions, BufferedImage image) {
+        for (RegionValidator.PixelRegion region : regions) {
+            int modelLeft = (int) Math.floor(region.getX1() * image.getWidth());
+            int modelTop = (int) Math.floor(region.getY1() * image.getHeight());
+            int modelRight = (int) Math.ceil(region.getX2() * image.getWidth());
+            int modelBottom = (int) Math.ceil(region.getY2() * image.getHeight());
+            if (region.getX() != modelLeft || region.getY() != modelTop
+                    || region.getX() + region.getWidth() != modelRight
+                    || region.getY() + region.getHeight() != modelBottom) {
                 return true;
             }
         }
