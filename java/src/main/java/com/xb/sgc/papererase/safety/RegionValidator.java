@@ -120,6 +120,17 @@ public final class RegionValidator {
                 reasons.add(gapReason);
                 continue;
             }
+            // 模型可能把整个框偏到页码相邻空白处。框内完全无墨时，只能在已证明远离正文的
+            // 同侧走廊中找回目标；该分支会标记 coordinateRescued 并强制局部二检。
+            if (!hasConservativeInk(image, pixelRegion)) {
+                pixelRegion = rescueEmptyModelBox(edge, pixelRegion,
+                        bodyLimit(edge, locateResult.getNearestBodyBoundary(), image), image);
+                gapReason = invalidPixelGapReason(edge, pixelRegion, locateResult.getNearestBodyBoundary(), image);
+                if (gapReason != null) {
+                    reasons.add(gapReason);
+                    continue;
+                }
+            }
             // 只有原始模型框确实贴到墨迹时，才补一像素抗锯齿保护边并重新证明安全。
             // 正常模型框不改变，避免扩大擦除区域或给所有页面增加二检成本。
             if (maskTouchesCandidateBox(image, pixelRegion)) {
@@ -445,6 +456,17 @@ public final class RegionValidator {
         }
         for (int y = top; y < bottomExclusive; y++) {
             for (int x = left; x < rightExclusive; x++) {
+                if (isConservativeInk(image.getRGB(x, y))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasConservativeInk(BufferedImage image, PixelRegion region) {
+        for (int y = region.getY(); y < region.getY() + region.getHeight(); y++) {
+            for (int x = region.getX(); x < region.getX() + region.getWidth(); x++) {
                 if (isConservativeInk(image.getRGB(x, y))) {
                     return true;
                 }

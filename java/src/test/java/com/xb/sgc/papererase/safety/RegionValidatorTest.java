@@ -139,6 +139,20 @@ public class RegionValidatorTest {
     }
 
     @Test
+    public void validateRescuesAnEmptyBottomModelBoxWhenItsGapIsBlank() {
+        BufferedImage image = blankPage();
+        // 模型框完全落在页码下方空白；真实页码仍位于正文边界 y=100 之外的安全走廊。
+        drawText(image, 45, 170, 54, 175);
+
+        RegionValidator.ValidationResult result = RegionValidator.validate(
+                locate("page-1", region("r1", 0.40, 0.90, 0.60, 0.95), boundary(null, 0.50)), image);
+
+        assertTrue(result.getReasons().toString(), result.isAccepted());
+        assertTrue(result.getRegions().get(0).isCoordinateRescued());
+        assertEquals(169, result.getRegions().get(0).getY());
+    }
+
+    @Test
     public void validateRejectsUnsafeStatusMissingPageIdAndEmptyOrNullRegions() {
         BufferedImage image = blankPage();
 
