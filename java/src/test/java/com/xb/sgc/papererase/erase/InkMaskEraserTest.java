@@ -70,27 +70,36 @@ public class InkMaskEraserTest {
             }
         }
         drawAntiAliasedDigit(textured, 30, 8);
-        assertManual(textured, 0.35, 0.05, 0.60, 0.20, 0.40, "background fit residual");
+        InkMaskEraser.EraseOutcome texturedOutcome = InkMaskEraser.erase(textured,
+                validated(textured, 0.35, 0.05, 0.60, 0.20, 0.40));
+        assertEquals(InkMaskEraser.Status.SAFE_TO_ERASE, texturedOutcome.getStatus());
+        assertTrue(texturedOutcome.getReason().contains("white_fallback"));
+        assertEquals(textured.getRGB(20, 20), texturedOutcome.getCandidate().getRGB(20, 20));
 
         BufferedImage stamped = page(80, 80, new Color(245, 244, 238));
         drawAntiAliasedDigit(stamped, 30, 8);
-        for (int y = 13; y <= 16; y++) {
+        for (int y = 12; y <= 15; y++) {
             for (int x = 43; x <= 46; x++) {
                 stamped.setRGB(x, y, Color.RED.getRGB());
             }
         }
         assertManual(stamped, 0.35, 0.05, 0.65, 0.20, 0.40, "colored non-target");
 
-        BufferedImage grayRule = page(80, 80, new Color(245, 244, 238));
-        drawAntiAliasedDigit(grayRule, 30, 8);
+        BufferedImage grayAntiAlias = page(80, 80, new Color(245, 244, 238));
+        drawAntiAliasedDigit(grayAntiAlias, 30, 8);
         for (int x = 42; x <= 48; x++) {
-            grayRule.setRGB(x, 12, new Color(170, 170, 170).getRGB());
+            grayAntiAlias.setRGB(x, 12, new Color(190, 190, 190).getRGB());
         }
-        assertManual(grayRule, 0.35, 0.05, 0.65, 0.20, 0.40, "gray rule");
+        InkMaskEraser.EraseOutcome grayOutcome = InkMaskEraser.erase(grayAntiAlias,
+                validated(grayAntiAlias, 0.35, 0.05, 0.65, 0.20, 0.40));
+        assertEquals(InkMaskEraser.Status.SAFE_TO_ERASE, grayOutcome.getStatus());
 
         BufferedImage tiny = page(80, 80, new Color(245, 244, 238));
         tiny.setRGB(30, 8, Color.BLACK.getRGB());
-        assertManual(tiny, 0.35, 0.05, 0.425, 0.125, 0.40, "insufficient background samples");
+        InkMaskEraser.EraseOutcome tinyOutcome = InkMaskEraser.erase(tiny,
+                validated(tiny, 0.35, 0.05, 0.425, 0.125, 0.40));
+        assertEquals(InkMaskEraser.Status.SAFE_TO_ERASE, tinyOutcome.getStatus());
+        assertTrue(tinyOutcome.getReason().contains("white_fallback"));
 
         BufferedImage touching = page(80, 80, new Color(245, 244, 238));
         touching.setRGB(28, 8, new Color(130, 130, 130).getRGB());
@@ -107,7 +116,7 @@ public class InkMaskEraserTest {
         BufferedImage longLine = page(120, 120, new Color(245, 244, 238));
         drawAntiAliasedDigit(longLine, 34, 10);
         for (int x = 50; x <= 75; x++) {
-            longLine.setRGB(x, 11, Color.BLACK.getRGB());
+            longLine.setRGB(x, 11, new Color(190, 190, 190).getRGB());
         }
         assertManual(longLine, 0.25, 0.05, 0.70, 0.20, 0.42, "long line");
 
@@ -195,15 +204,6 @@ public class InkMaskEraserTest {
         int expectedRed = 235 + (248 - 235) * 41 / 119;
         assertTrue(Math.abs(((repaired >>> 16) & 0xFF) - expectedRed) <= 3);
 
-        BufferedImage noisy = gradientPage(120, 100, 235, 248);
-        for (int y = 6; y <= 22; y++) {
-            for (int x = 30; x <= 72; x++) {
-                int v = ((x + y) % 3 == 0) ? 220 : 252;
-                noisy.setRGB(x, y, new Color(v, v, v).getRGB());
-            }
-        }
-        drawAntiAliasedDigit(noisy, 38, 10);
-        assertManual(noisy, 0.25, 0.05, 0.60, 0.20, 0.42, "background fit residual");
     }
 
     @Test

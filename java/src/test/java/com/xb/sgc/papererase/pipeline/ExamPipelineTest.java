@@ -60,11 +60,12 @@ public class ExamPipelineTest {
         fake.verifyManualRegionIds.add("p4:r1");
         fake.eraseFailurePages.add("p5");
         fake.auditFailPages.add("p6");
+        fake.auditColorWarningPages.add("p10");
         fake.locateManualPages.add("p7");
         fake.lowDirectionConfidencePages.add("p8");
         fake.validationRejectedPages.add("p9");
 
-        ExamOutcome outcome = new ExamPipeline(fake).process(exam(9, false), new ExamPipeline.RunContext());
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(10, false), new ExamPipeline.RunContext());
 
         assertTrue(fake.verifyCalls.contains("p2:r1"));
         assertTrue("strong consensus with no candidate should verify edge ROI", fake.verifyCalls.contains("p3:edge"));
@@ -76,6 +77,8 @@ public class ExamPipelineTest {
         assertEquals("manual_review", outcome.page("p8").getStatus());
         assertEquals("manual_review", outcome.page("p9").getStatus());
         assertEquals("validation_rejected", outcome.page("p9").getReason());
+        assertEquals("safe_to_erase", outcome.page("p10").getStatus());
+        assertEquals("audit_pass_with_color_warning", outcome.page("p10").getReason());
         assertEquals("safe_to_erase", outcome.page("p1").getStatus());
         assertFalse("verify-denied and erase-failed pages are not audited", fake.auditPageIds.contains("p4"));
         assertFalse(fake.auditPageIds.contains("p5"));
@@ -154,6 +157,7 @@ public class ExamPipelineTest {
         final List<String> verifyManualRegionIds = new ArrayList<String>();
         final List<String> eraseFailurePages = new ArrayList<String>();
         final List<String> auditFailPages = new ArrayList<String>();
+        final List<String> auditColorWarningPages = new ArrayList<String>();
         final List<String> locateManualPages = new ArrayList<String>();
         final List<String> lowDirectionConfidencePages = new ArrayList<String>();
         final List<String> locateThrowsPages = new ArrayList<String>();
@@ -249,10 +253,12 @@ public class ExamPipelineTest {
             auditPageIds.add(original.getPageId());
             AuditResponse response = new AuditResponse();
             response.page_id = original.getPageId();
-            response.decision = auditFailPages.contains(original.getPageId()) ? "manual_review" : "pass";
+            response.decision = auditFailPages.contains(original.getPageId()) || auditColorWarningPages.contains(original.getPageId())
+                    ? "manual_review" : "pass";
             response.body_unchanged = !auditFailPages.contains(original.getPageId());
             response.target_removed = !auditFailPages.contains(original.getPageId());
-            response.background_acceptable = !auditFailPages.contains(original.getPageId());
+            response.background_acceptable = !auditFailPages.contains(original.getPageId())
+                    && !auditColorWarningPages.contains(original.getPageId());
             response.evidence = "fake";
             return response;
         }

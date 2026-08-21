@@ -25,8 +25,8 @@ public final class BackgroundEstimator {
                 if (mask[y][x]) {
                     continue;
                 }
-                if (isColoredNonTarget(c) || isGrayRule(c)) {
-                    return Estimate.rejected("colored non-target or gray rule inside region");
+                if (isColoredNonTarget(c)) {
+                    return Estimate.rejected("colored non-target inside region");
                 }
                 if (c.luminance < 205) {
                     continue;
@@ -55,7 +55,7 @@ public final class BackgroundEstimator {
     }
 
     static boolean isInk(ColorParts c, int backgroundLum) {
-        return c.luminance <= backgroundLum - 25 && c.red <= 180 && c.green <= 180 && c.blue <= 180;
+        return c.luminance <= backgroundLum - 25 && c.red <= 230 && c.green <= 230 && c.blue <= 230;
     }
 
     static boolean isColoredNonTarget(ColorParts c) {

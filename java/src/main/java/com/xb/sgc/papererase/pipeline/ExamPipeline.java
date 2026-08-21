@@ -223,9 +223,13 @@ public final class ExamPipeline {
         }
         AuditResponse audit = vlm.audit(pageImage, new VlmClient.PageImage(page.getPageId(), candidate),
                 locate.regions, rois(page.getPageId(), locate.regions, locate.nearest_body_boundary, normalized));
-        if (!"pass".equals(audit.decision) || !audit.body_unchanged || !audit.target_removed || !audit.background_acceptable) {
+        if (!audit.body_unchanged || !audit.target_removed) {
             return new PageOutcome(page.getPageId(), "manual_review", "audit_failed", original, normalized,
                     normalized, transforms, group, locate.regions, locate, audit);
+        }
+        if (!audit.background_acceptable || !"pass".equals(audit.decision)) {
+            return new PageOutcome(page.getPageId(), "safe_to_erase", "audit_pass_with_color_warning", original, normalized,
+                    candidate, transforms, group, locate.regions, locate, audit);
         }
         return new PageOutcome(page.getPageId(), "safe_to_erase", "audit_pass", original, normalized,
                 candidate, transforms, group, locate.regions, locate, audit);

@@ -19,7 +19,7 @@ public class RegionValidatorTest {
         drawText(image, 11, 9, 18, 14);
 
         RegionValidator.ValidationResult result = RegionValidator.validate(
-                locate("page-1", region("r1", 0.10, 0.04, 0.20, 0.08), boundary(null, 0.16)),
+                locate("page-1", region("r1", 0.10, 0.04, 0.20, 0.08), boundary(null, 0.205)),
                 image);
 
         assertTrue(result.isAccepted());
@@ -83,6 +83,15 @@ public class RegionValidatorTest {
         assertRejected(region("r1", 0.10, 0.04, 0.20, 0.08), boundary(null, 0.10), "body blank gap");
         assertRejected(region("r1", 0.10, 0.04, 0.20, 0.08), boundary(null, 1.20), "body boundary y must be between 0 and 1");
         assertRejected(region("r1", 0.04, 0.30, 0.08, 0.40), boundary(Double.NaN, null), "body boundary x must be finite");
+
+        BufferedImage bandInk = blankPage();
+        drawText(bandInk, 11, 9, 18, 14);
+        bandInk.setRGB(12, 18, new Color(190, 190, 190).getRGB());
+        RegionValidator.ValidationResult bandResult = RegionValidator.validate(
+                locate("page-1", region("r1", 0.10, 0.04, 0.20, 0.08), boundary(null, 0.205)),
+                bandInk);
+        assertFalse(bandResult.isAccepted());
+        assertTrue(bandResult.getReasons().get(0).contains("body blank gap contains ink"));
 
         BufferedImage image = blankPage();
         drawText(image, 10, 8, 20, 15);

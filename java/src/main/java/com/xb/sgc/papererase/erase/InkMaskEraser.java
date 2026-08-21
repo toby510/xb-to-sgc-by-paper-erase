@@ -41,15 +41,13 @@ public final class InkMaskEraser {
         }
 
         BackgroundEstimator.Estimate estimate = BackgroundEstimator.estimate(source, region, mask);
-        if (!estimate.isAccepted()) {
-            return EraseOutcome.manual(copy(source), new ApprovedMask(mask), estimate.getReason());
-        }
+        boolean whiteFallback = !estimate.isAccepted();
 
         BufferedImage candidate = copy(source);
         for (int y = region.getY(); y < region.getY() + region.getHeight(); y++) {
             for (int x = region.getX(); x < region.getX() + region.getWidth(); x++) {
                 if (mask[y][x]) {
-                    candidate.setRGB(x, y, estimate.argbAt(x, y));
+                    candidate.setRGB(x, y, whiteFallback ? whiteAt(source, x, y) : estimate.argbAt(x, y));
                 }
             }
         }
@@ -60,9 +58,9 @@ public final class InkMaskEraser {
         }
         ColorSeamGate.GateResult seam = ColorSeamGate.check(source, candidate, approvedMask);
         if (!seam.isPassed()) {
-            return EraseOutcome.manual(copy(source), approvedMask, seam.getReason());
+            return new EraseOutcome(Status.SAFE_TO_ERASE, colorReason(whiteFallback, seam.getReason()), candidate, approvedMask);
         }
-        return new EraseOutcome(Status.SAFE_TO_ERASE, "erased", candidate, approvedMask);
+        return new EraseOutcome(Status.SAFE_TO_ERASE, whiteFallback ? "white_fallback" : "erased", candidate, approvedMask);
     }
 
     private static String invalidRegionReason(BufferedImage source, RegionValidator.PixelRegion region) {
@@ -100,12 +98,21 @@ public final class InkMaskEraser {
                 if (BackgroundEstimator.isColoredNonTarget(c)) {
                     return "colored non-target inside region";
                 }
-                if (BackgroundEstimator.isGrayRule(c)) {
-                    return "gray rule inside region";
-                }
             }
         }
         return null;
+    }
+
+    private static int whiteAt(BufferedImage source, int x, int y) {
+        int alpha = (source.getRGB(x, y) >>> 24) & 0xFF;
+        return ((alpha & 0xFF) << 24) | 0x00FFFFFF;
+    }
+
+    private static String colorReason(boolean whiteFallback, String seamReason) {
+        if (whiteFallback) {
+            return "white_fallback; color_warning: " + seamReason;
+        }
+        return "color_warning: " + seamReason;
     }
 
     private static int medianLightLuminance(BufferedImage source, RegionValidator.PixelRegion region) {

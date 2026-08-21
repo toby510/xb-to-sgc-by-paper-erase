@@ -12,7 +12,7 @@ import java.util.Set;
 
 public final class RegionValidator {
     private static final double EDGE_BAND = 0.20;
-    private static final double MIN_BODY_GAP = 0.03;
+    private static final int MIN_BODY_GAP_PIXELS = 8;
 
     private RegionValidator() {
     }
@@ -89,17 +89,17 @@ public final class RegionValidator {
                 reasons.add(boundaryReason);
                 continue;
             }
-            if (!hasBodyGap(edge, region, locateResult.getNearestBodyBoundary())) {
-                reasons.add("body blank gap is insufficient");
-                continue;
-            }
-
             PixelRegion pixelRegion = toPixelRegion(locateResult.getPageId(), canonicalRegionId, region, image);
             if (pixelRegion.getWidth() <= 0 || pixelRegion.getHeight() <= 0
                     || pixelRegion.getX() < 0 || pixelRegion.getY() < 0
                     || pixelRegion.getX() + pixelRegion.getWidth() > image.getWidth()
                     || pixelRegion.getY() + pixelRegion.getHeight() > image.getHeight()) {
                 reasons.add("coordinates map outside image bounds");
+                continue;
+            }
+            String gapReason = invalidPixelGapReason(edge, pixelRegion, locateResult.getNearestBodyBoundary(), image);
+            if (gapReason != null) {
+                reasons.add(gapReason);
                 continue;
             }
             if (maskTouchesCandidateBox(image, pixelRegion)) {
@@ -148,22 +148,6 @@ public final class RegionValidator {
         return Edge.NONE;
     }
 
-    private static boolean hasBodyGap(Edge edge, EraseRegion region, BodyBoundary boundary) {
-        if (edge == Edge.TOP) {
-            return boundary.y - region.y2 >= MIN_BODY_GAP;
-        }
-        if (edge == Edge.BOTTOM) {
-            return region.y1 - boundary.y >= MIN_BODY_GAP;
-        }
-        if (edge == Edge.LEFT) {
-            return boundary.x - region.x2 >= MIN_BODY_GAP;
-        }
-        if (edge == Edge.RIGHT) {
-            return region.x1 - boundary.x >= MIN_BODY_GAP;
-        }
-        return false;
-    }
-
     private static String invalidBodyBoundaryReason(Edge edge, BodyBoundary boundary) {
         if (boundary == null) {
             return "body blank gap is insufficient";
@@ -192,6 +176,59 @@ public final class RegionValidator {
         return null;
     }
 
+    private static String invalidPixelGapReason(Edge edge, PixelRegion region, BodyBoundary boundary, BufferedImage image) {
+        int right = region.getX() + region.getWidth();
+        int bottom = region.getY() + region.getHeight();
+        if (edge == Edge.TOP) {
+            int bodyY = (int) Math.floor(boundary.y * image.getHeight());
+            if (bodyY - bottom < MIN_BODY_GAP_PIXELS) {
+                return "body blank gap is insufficient";
+            }
+            return bandHasInk(image, region.getX(), bottom, right, bottom + MIN_BODY_GAP_PIXELS)
+                    ? "body blank gap contains ink" : null;
+        }
+        if (edge == Edge.BOTTOM) {
+            int bodyY = (int) Math.ceil(boundary.y * image.getHeight());
+            if (region.getY() - bodyY < MIN_BODY_GAP_PIXELS) {
+                return "body blank gap is insufficient";
+            }
+            return bandHasInk(image, region.getX(), region.getY() - MIN_BODY_GAP_PIXELS, right, region.getY())
+                    ? "body blank gap contains ink" : null;
+        }
+        if (edge == Edge.LEFT) {
+            int bodyX = (int) Math.floor(boundary.x * image.getWidth());
+            if (bodyX - right < MIN_BODY_GAP_PIXELS) {
+                return "body blank gap is insufficient";
+            }
+            return bandHasInk(image, right, region.getY(), right + MIN_BODY_GAP_PIXELS, bottom)
+                    ? "body blank gap contains ink" : null;
+        }
+        if (edge == Edge.RIGHT) {
+            int bodyX = (int) Math.ceil(boundary.x * image.getWidth());
+            if (region.getX() - bodyX < MIN_BODY_GAP_PIXELS) {
+                return "body blank gap is insufficient";
+            }
+            return bandHasInk(image, region.getX() - MIN_BODY_GAP_PIXELS, region.getY(), region.getX(), bottom)
+                    ? "body blank gap contains ink" : null;
+        }
+        return "body blank gap is insufficient";
+    }
+
+    private static boolean bandHasInk(BufferedImage image, int left, int top, int rightExclusive, int bottomExclusive) {
+        if (left < 0 || top < 0 || rightExclusive > image.getWidth() || bottomExclusive > image.getHeight()
+                || left >= rightExclusive || top >= bottomExclusive) {
+            return true;
+        }
+        for (int y = top; y < bottomExclusive; y++) {
+            for (int x = left; x < rightExclusive; x++) {
+                if (isConservativeInk(image.getRGB(x, y))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     private static boolean maskTouchesCandidateBox(BufferedImage image, PixelRegion region) {
         int right = region.getX() + region.getWidth() - 1;
         int bottom = region.getY() + region.getHeight() - 1;
@@ -213,6 +250,14 @@ public final class RegionValidator {
         int green = (rgb >> 8) & 0xFF;
         int blue = rgb & 0xFF;
         return red < 100 && green < 100 && blue < 100;
+    }
+
+    private static boolean isConservativeInk(int rgb) {
+        int red = (rgb >> 16) & 0xFF;
+        int green = (rgb >> 8) & 0xFF;
+        int blue = rgb & 0xFF;
+        int luminance = (red * 299 + green * 587 + blue * 114) / 1000;
+        return luminance < 210;
     }
 
     private enum Edge {
