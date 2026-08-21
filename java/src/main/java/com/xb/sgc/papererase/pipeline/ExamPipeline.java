@@ -227,9 +227,13 @@ public final class ExamPipeline {
             return new PageOutcome(page.getPageId(), "manual_review", "audit_failed", original, normalized,
                     normalized, transforms, group, locate.regions, locate, audit);
         }
-        if (!audit.background_acceptable || !"pass".equals(audit.decision)) {
+        if (!audit.background_acceptable) {
             return new PageOutcome(page.getPageId(), "safe_to_erase", "audit_pass_with_color_warning", original, normalized,
                     candidate, transforms, group, locate.regions, locate, audit);
+        }
+        if (!"pass".equals(audit.decision)) {
+            return new PageOutcome(page.getPageId(), "manual_review", "audit_failed", original, normalized,
+                    normalized, transforms, group, locate.regions, locate, audit);
         }
         return new PageOutcome(page.getPageId(), "safe_to_erase", "audit_pass", original, normalized,
                 candidate, transforms, group, locate.regions, locate, audit);

@@ -60,7 +60,8 @@ public final class InkMaskEraser {
         if (!seam.isPassed()) {
             return new EraseOutcome(Status.SAFE_TO_ERASE, colorReason(whiteFallback, seam.getReason()), candidate, approvedMask);
         }
-        return new EraseOutcome(Status.SAFE_TO_ERASE, whiteFallback ? "white_fallback" : "erased", candidate, approvedMask);
+        return new EraseOutcome(Status.SAFE_TO_ERASE,
+                whiteFallback ? "white_fallback; color_warning" : "erased", candidate, approvedMask);
     }
 
     private static String invalidRegionReason(BufferedImage source, RegionValidator.PixelRegion region) {
