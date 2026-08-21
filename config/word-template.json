@@ -1,0 +1,24 @@
+{
+  "source": "/Users/longxuebin/Desktop/校本融合/合成服务word合成模板.docx",
+  "twips": {
+    "page_width": 11906,
+    "page_height": 16838,
+    "margin_top": 1247,
+    "margin_bottom": 1134,
+    "margin_left": 1134,
+    "margin_right": 1134,
+    "header_distance": 500,
+    "footer_distance": 499,
+    "container_width": 9638,
+    "container_height": 14457
+  },
+  "cm": {
+    "container_width": 17.0,
+    "container_height": 25.5
+  },
+  "emu": {
+    "container_width": 6120130,
+    "container_height": 9180195
+  },
+  "aspect_ratio": 0.6667
+}

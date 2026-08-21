@@ -1,0 +1,69 @@
+{
+  "active": "dashscope",
+  "defaults": {
+    "max_preview_long_edge": 1536,
+    "network_retries": 2,
+    "fail_closed": true
+  },
+  "roles": {
+    "pattern": {
+      "provider": "dashscope",
+      "prompt": "references/pattern-prompt-v1.md"
+    },
+    "locate": {
+      "provider": "dashscope",
+      "prompt": "references/locate-prompt-v1.md"
+    },
+    "verify": {
+      "provider": "dashscope",
+      "prompt": "references/verify-prompt-v1.md"
+    },
+    "audit": {
+      "provider": "dashscope",
+      "prompt": "references/audit-prompt-v1.md"
+    }
+  },
+  "providers": {
+    "dashscope": {
+      "kind": "openai-compatible",
+      "base_url": {
+        "env": "XB_PAPER_ERASE_DASHSCOPE_BASE_URL",
+        "default": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+      },
+      "api_key": ["XB_PAPER_ERASE_QWEN_API_KEY", "MST_QWEN_API_KEY"],
+      "model": {
+        "env": "XB_PAPER_ERASE_QWEN_MODEL",
+        "default": "qwen3.8-max"
+      },
+      "role_overrides": {
+        "pattern": {
+          "model_env": "XB_PAPER_ERASE_PATTERN_MODEL"
+        },
+        "locate": {
+          "model_env": "XB_PAPER_ERASE_LOCATE_MODEL"
+        },
+        "verify": {
+          "model_env": "XB_PAPER_ERASE_VERIFY_MODEL"
+        },
+        "audit": {
+          "model_env": "XB_PAPER_ERASE_AUDIT_MODEL"
+        }
+      }
+    },
+    "ark": {
+      "kind": "ark-responses",
+      "base_url": {
+        "env": "XB_PAPER_ERASE_ARK_BASE_URL",
+        "default": "https://ark.cn-beijing.volces.com/api/v3/responses"
+      },
+      "api_key": ["XB_PAPER_ERASE_ARK_API_KEY", "MST_XB_AI_ARK_API_KEY"],
+      "endpoint_env": "XB_PAPER_ERASE_ARK_MODEL_ENDPOINT",
+      "role_endpoint_env": {
+        "pattern": "XB_PAPER_ERASE_PATTERN_ENDPOINT",
+        "locate": "XB_PAPER_ERASE_LOCATE_ENDPOINT",
+        "verify": "XB_PAPER_ERASE_VERIFY_ENDPOINT",
+        "audit": "XB_PAPER_ERASE_AUDIT_ENDPOINT"
+      }
+    }
+  }
+}
