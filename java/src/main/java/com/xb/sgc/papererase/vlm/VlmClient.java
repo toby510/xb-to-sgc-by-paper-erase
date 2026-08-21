@@ -274,10 +274,17 @@ public interface VlmClient {
             VlmConfig.RoleConfig roleConfig = config.role(role);
             RuntimeException last = null;
             for (int attempt = 0; attempt <= roleConfig.getRetries(); attempt++) {
+                long startedAt = System.currentTimeMillis();
+                log(role, attempt, "started", pages.size(), rois.size(), 0, null);
                 try {
-                    return http(roleConfig, buildRequestBody(roleConfig.getModel(), readPrompt(roleConfig), instruction, pages, rois));
+                    String response = http(roleConfig, buildRequestBody(roleConfig.getModel(), readPrompt(roleConfig), instruction,
+                            pages, rois, roleConfig.getMaxOutputTokens(), roleConfig.getImageDetail()));
+                    log(role, attempt, "completed", pages.size(), rois.size(), System.currentTimeMillis() - startedAt, null);
+                    return response;
                 } catch (RuntimeException e) {
                     last = e;
+                    log(role, attempt, "failed", pages.size(), rois.size(), System.currentTimeMillis() - startedAt,
+                            e.getClass().getSimpleName());
                 }
             }
             throw last == null ? new RuntimeException(role + " Ark call failed") : last;
@@ -286,6 +293,12 @@ public interface VlmClient {
         /** 对应 Ark Responses：input 是消息数组，图片 URL 是字符串而非 image_url.url 对象。 */
         public static String buildRequestBody(String model, String prompt, String instruction,
                                               List<PageImage> pages, List<RoiImage> rois) {
+            return buildRequestBody(model, prompt, instruction, pages, rois, 32768, "high");
+        }
+
+        public static String buildRequestBody(String model, String prompt, String instruction,
+                                              List<PageImage> pages, List<RoiImage> rois,
+                                              int maxOutputTokens, String imageDetail) {
             try {
                 ObjectMapper mapper = new ObjectMapper();
                 List<Object> content = new ArrayList<Object>();
@@ -296,18 +309,19 @@ public interface VlmClient {
                         label += "\nIMAGE_ROLE: " + page.getImageRole();
                     }
                     content.add(arkTextPart(label));
-                    content.add(arkImagePart(page.previewDataUrl()));
+                    content.add(arkImagePart(page.previewDataUrl(), imageDetail));
                 }
                 for (RoiImage roi : rois) {
                     String label = roi.getPageId() == null ? "" : "ROI_PAGE_ID: " + roi.getPageId() + "\n";
                     content.add(arkTextPart(label + "ROI_REGION_ID: " + roi.getRegionId()));
-                    content.add(arkImagePart(roi.dataUrl()));
+                    content.add(arkImagePart(roi.dataUrl(), imageDetail));
                 }
                 Map<String, Object> inputMessage = new LinkedHashMap<String, Object>();
                 inputMessage.put("role", "user");
                 inputMessage.put("content", content);
                 Map<String, Object> body = new LinkedHashMap<String, Object>();
                 body.put("model", model);
+                body.put("max_output_tokens", maxOutputTokens);
                 body.put("input", java.util.Collections.singletonList(inputMessage));
                 return mapper.writeValueAsString(body);
             } catch (IOException e) {
@@ -322,11 +336,11 @@ public interface VlmClient {
             return part;
         }
 
-        private static Map<String, Object> arkImagePart(String dataUrl) {
+        private static Map<String, Object> arkImagePart(String dataUrl, String imageDetail) {
             Map<String, Object> part = new LinkedHashMap<String, Object>();
             part.put("type", "input_image");
             part.put("image_url", dataUrl);
-            part.put("detail", "high");
+            part.put("detail", imageDetail);
             return part;
         }
 
@@ -385,6 +399,15 @@ public interface VlmClient {
             List<PageImage> pages = new ArrayList<PageImage>();
             pages.add(page);
             return pages;
+        }
+
+        /** 仅记录角色、数量、耗时和异常类型；不记录提示词、图片 data URL 或任何凭据。 */
+        private static void log(String role, int attempt, String event, int pageCount, int roiCount,
+                                long elapsedMillis, String errorType) {
+            String suffix = errorType == null ? "" : " error_type=" + errorType;
+            System.err.println("vlm_event=" + event + " provider=ark-responses role=" + role
+                    + " attempt=" + (attempt + 1) + " page_count=" + pageCount + " roi_count=" + roiCount
+                    + " elapsed_ms=" + elapsedMillis + suffix);
         }
     }
 

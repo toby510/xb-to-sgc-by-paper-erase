@@ -116,6 +116,24 @@
       "api_key": ["XB_PAPER_ERASE_ARK_API_KEY", "MST_XB_AI_ARK_API_KEY"],
       "model": {
         "env": "MST_XB_AI_ARK_MODEL_ENDPOINT"
+      },
+      "roles": {
+        "pattern": {
+          "max_output_tokens": 1200,
+          "image_detail": "auto"
+        },
+        "locate": {
+          "max_output_tokens": 800,
+          "image_detail": "high"
+        },
+        "verify": {
+          "max_output_tokens": 400,
+          "image_detail": "high"
+        },
+        "audit": {
+          "max_output_tokens": 800,
+          "image_detail": "high"
+        }
       }
     }
   }

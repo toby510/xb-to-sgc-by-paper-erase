@@ -8,6 +8,7 @@ import java.nio.file.Paths;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
+import java.lang.reflect.Method;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -80,6 +81,12 @@ public class VlmConfigTest {
             assertTrue(VlmClient.create(config, Paths.get("..")).getClass().getName().endsWith("VlmClient$ArkResponses"));
             JsonNode roles = new ObjectMapper().readTree(source).path("roles");
             assertTrue(roles.path("pattern").path("provider").isMissingNode());
+            Method maxOutput = VlmConfig.RoleConfig.class.getMethod("getMaxOutputTokens");
+            Method detail = VlmConfig.RoleConfig.class.getMethod("getImageDetail");
+            assertEquals(1200, ((Integer) maxOutput.invoke(config.role("pattern"))).intValue());
+            assertEquals("auto", detail.invoke(config.role("pattern")));
+            assertEquals(800, ((Integer) maxOutput.invoke(config.role("audit"))).intValue());
+            assertEquals("high", detail.invoke(config.role("audit")));
         } finally {
             Files.deleteIfExists(arkConfig);
         }

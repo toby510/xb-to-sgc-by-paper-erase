@@ -50,6 +50,8 @@ public final class VlmConfig {
             String model = resolveText(roleOverride.path("model"), provider.path("model"), env, null);
             String apiKey = resolveApiKey(roleOverride.path("api_key"), provider.path("api_key"), env);
             int retries = roleOverride.path("network_retries").asInt(defaultRetries);
+            int maxOutputTokens = roleOverride.path("max_output_tokens").asInt(0);
+            String imageDetail = text(roleOverride.path("image_detail"));
             if (blank(prompt)) {
                 throw new IllegalStateException(role + " prompt is required");
             }
@@ -62,7 +64,11 @@ public final class VlmConfig {
             if (blank(apiKey)) {
                 throw new IllegalStateException(role + " api key is required");
             }
-            roles.put(role, new RoleConfig(role, prompt, model, endpoint, apiKey, retries));
+            if ("ark-responses".equals(providerKind)
+                    && (maxOutputTokens <= 0 || !("auto".equals(imageDetail) || "high".equals(imageDetail) || "low".equals(imageDetail)))) {
+                throw new IllegalStateException(role + " Ark output budget and image detail are required");
+            }
+            roles.put(role, new RoleConfig(role, prompt, model, endpoint, apiKey, retries, maxOutputTokens, imageDetail));
         }
         return new VlmConfig(roles, previewLongEdge, providerKind);
     }
@@ -161,14 +167,19 @@ public final class VlmConfig {
         private final String endpoint;
         private final String apiKey;
         private final int retries;
+        private final int maxOutputTokens;
+        private final String imageDetail;
 
-        private RoleConfig(String role, String promptPath, String model, String endpoint, String apiKey, int retries) {
+        private RoleConfig(String role, String promptPath, String model, String endpoint, String apiKey, int retries,
+                           int maxOutputTokens, String imageDetail) {
             this.role = role;
             this.promptPath = promptPath;
             this.model = model;
             this.endpoint = endpoint;
             this.apiKey = apiKey;
             this.retries = retries;
+            this.maxOutputTokens = maxOutputTokens;
+            this.imageDetail = imageDetail;
         }
 
         public String getRole() {
@@ -193,6 +204,16 @@ public final class VlmConfig {
 
         public int getRetries() {
             return retries;
+        }
+
+        /** Ark Responses 的总输出预算（包含模型推理输出），0 代表当前协议不使用该字段。 */
+        public int getMaxOutputTokens() {
+            return maxOutputTokens;
+        }
+
+        /** Ark 图片细节级别；pattern 可用 auto，其余安全判断保持 high。 */
+        public String getImageDetail() {
+            return imageDetail;
         }
 
         public String safeSummary() {

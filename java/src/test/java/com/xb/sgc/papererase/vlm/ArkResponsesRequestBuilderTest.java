@@ -39,6 +39,20 @@ public class ArkResponsesRequestBuilderTest {
         assertEquals("{\"ok\":true}", VlmClient.ArkResponses.responseText(response));
     }
 
+    @Test
+    public void arkResponsesAddsConfiguredOutputBudgetAndImageDetail() throws Exception {
+        Class<?> arkClient = Class.forName("com.xb.sgc.papererase.vlm.VlmClient$ArkResponses");
+        Method builder = arkClient.getMethod("buildRequestBody", String.class, String.class, String.class,
+                java.util.List.class, java.util.List.class, int.class, String.class);
+        String body = (String) builder.invoke(null, "ep-ark-vision", "prompt", "instruction",
+                Collections.singletonList(new VlmClient.PageImage("p1", image())),
+                Collections.<VlmClient.RoiImage>emptyList(), 1200, "auto");
+
+        JsonNode root = new ObjectMapper().readTree(body);
+        assertEquals(1200, root.path("max_output_tokens").asInt());
+        assertEquals("auto", root.path("input").path(0).path("content").path(2).path("detail").asText());
+    }
+
     private BufferedImage image() {
         BufferedImage image = new BufferedImage(4, 4, BufferedImage.TYPE_INT_RGB);
         for (int y = 0; y < image.getHeight(); y++) {
