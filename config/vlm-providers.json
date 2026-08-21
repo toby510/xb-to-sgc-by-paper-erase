@@ -35,18 +35,66 @@
         "env": "XB_PAPER_ERASE_QWEN_MODEL",
         "default": "qwen3.8-max"
       },
-      "role_overrides": {
+      "roles": {
         "pattern": {
-          "model_env": "XB_PAPER_ERASE_PATTERN_MODEL"
+          "model": {
+            "env": "XB_PAPER_ERASE_PATTERN_MODEL",
+            "default": "qwen3.8-max"
+          },
+          "base_url": {
+            "env": "XB_PAPER_ERASE_PATTERN_BASE_URL",
+            "default": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+          },
+          "endpoint": {
+            "env": "XB_PAPER_ERASE_PATTERN_ENDPOINT",
+            "default": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+          },
+          "api_key": ["XB_PAPER_ERASE_PATTERN_API_KEY", "XB_PAPER_ERASE_QWEN_API_KEY", "MST_QWEN_API_KEY"]
         },
         "locate": {
-          "model_env": "XB_PAPER_ERASE_LOCATE_MODEL"
+          "model": {
+            "env": "XB_PAPER_ERASE_LOCATE_MODEL",
+            "default": "qwen3.8-max"
+          },
+          "base_url": {
+            "env": "XB_PAPER_ERASE_LOCATE_BASE_URL",
+            "default": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+          },
+          "endpoint": {
+            "env": "XB_PAPER_ERASE_LOCATE_ENDPOINT",
+            "default": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+          },
+          "api_key": ["XB_PAPER_ERASE_LOCATE_API_KEY", "XB_PAPER_ERASE_QWEN_API_KEY", "MST_QWEN_API_KEY"]
         },
         "verify": {
-          "model_env": "XB_PAPER_ERASE_VERIFY_MODEL"
+          "model": {
+            "env": "XB_PAPER_ERASE_VERIFY_MODEL",
+            "default": "qwen3.8-max"
+          },
+          "base_url": {
+            "env": "XB_PAPER_ERASE_VERIFY_BASE_URL",
+            "default": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+          },
+          "endpoint": {
+            "env": "XB_PAPER_ERASE_VERIFY_ENDPOINT",
+            "default": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+          },
+          "api_key": ["XB_PAPER_ERASE_VERIFY_API_KEY", "XB_PAPER_ERASE_QWEN_API_KEY", "MST_QWEN_API_KEY"]
         },
         "audit": {
-          "model_env": "XB_PAPER_ERASE_AUDIT_MODEL"
+          "model": {
+            "env": "XB_PAPER_ERASE_AUDIT_MODEL",
+            "default": "qwen3.8-max"
+          },
+          "base_url": {
+            "env": "XB_PAPER_ERASE_AUDIT_BASE_URL",
+            "default": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+          },
+          "endpoint": {
+            "env": "XB_PAPER_ERASE_AUDIT_ENDPOINT",
+            "default": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+          },
+          "api_key": ["XB_PAPER_ERASE_AUDIT_API_KEY", "XB_PAPER_ERASE_QWEN_API_KEY", "MST_QWEN_API_KEY"]
         }
       }
     },

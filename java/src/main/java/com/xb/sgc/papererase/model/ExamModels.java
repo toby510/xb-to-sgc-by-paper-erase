@@ -55,6 +55,48 @@ public final class ExamModels {
         }
     }
 
+    public static final class ScanResult {
+        private final List<ExamInput> exams;
+        private final List<RejectedExam> rejectedExams;
+
+        public ScanResult(List<ExamInput> exams, List<RejectedExam> rejectedExams) {
+            this.exams = Collections.unmodifiableList(new ArrayList<ExamInput>(exams));
+            this.rejectedExams = Collections.unmodifiableList(new ArrayList<RejectedExam>(rejectedExams));
+        }
+
+        public List<ExamInput> getExams() {
+            return exams;
+        }
+
+        public List<RejectedExam> getRejectedExams() {
+            return rejectedExams;
+        }
+    }
+
+    public static final class RejectedExam {
+        private final String subject;
+        private final String examId;
+        private final String reason;
+
+        public RejectedExam(String subject, String examId, String reason) {
+            this.subject = subject;
+            this.examId = examId;
+            this.reason = reason;
+        }
+
+        public String getSubject() {
+            return subject;
+        }
+
+        public String getExamId() {
+            return examId;
+        }
+
+        public String getReason() {
+            return reason;
+        }
+    }
+
     public static final class PageInput {
         private final String pageId;
         private final String examId;

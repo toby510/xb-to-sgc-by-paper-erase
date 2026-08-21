@@ -2,6 +2,8 @@ package com.xb.sgc.papererase.input;
 
 import com.xb.sgc.papererase.model.ExamModels.ExamInput;
 import com.xb.sgc.papererase.model.ExamModels.PageInput;
+import com.xb.sgc.papererase.model.ExamModels.RejectedExam;
+import com.xb.sgc.papererase.model.ExamModels.ScanResult;
 
 import java.io.IOException;
 import java.nio.file.DirectoryStream;
@@ -19,16 +21,27 @@ import java.util.Set;
 
 public class ExamScanner {
     public List<ExamInput> scan(Path root) throws IOException {
+        return scanWithRejections(root).getExams();
+    }
+
+    public ScanResult scanWithRejections(Path root) throws IOException {
         List<ExamInput> exams = new ArrayList<ExamInput>();
+        List<RejectedExam> rejectedExams = new ArrayList<RejectedExam>();
         try (DirectoryStream<Path> subjects = Files.newDirectoryStream(root)) {
             for (Path subjectDir : subjects) {
                 if (!Files.isDirectory(subjectDir)) {
                     continue;
                 }
+                String subject = subjectDir.getFileName().toString();
                 try (DirectoryStream<Path> examDirs = Files.newDirectoryStream(subjectDir)) {
                     for (Path examDir : examDirs) {
                         if (Files.isDirectory(examDir)) {
-                            exams.add(scanExam(subjectDir.getFileName().toString(), examDir));
+                            String examId = examDir.getFileName().toString();
+                            try {
+                                exams.add(scanExam(subject, examDir));
+                            } catch (IllegalArgumentException ex) {
+                                rejectedExams.add(new RejectedExam(subject, examId, ex.getMessage()));
+                            }
                         }
                     }
                 }
@@ -44,7 +57,17 @@ public class ExamScanner {
                 return left.getSubject().compareTo(right.getSubject());
             }
         });
-        return exams;
+        Collections.sort(rejectedExams, new Comparator<RejectedExam>() {
+            @Override
+            public int compare(RejectedExam left, RejectedExam right) {
+                int byExam = left.getExamId().compareTo(right.getExamId());
+                if (byExam != 0) {
+                    return byExam;
+                }
+                return left.getSubject().compareTo(right.getSubject());
+            }
+        });
+        return new ScanResult(exams, rejectedExams);
     }
 
     private ExamInput scanExam(String subject, Path examDir) throws IOException {

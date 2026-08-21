@@ -2,6 +2,8 @@ package com.xb.sgc.papererase.input;
 
 import com.xb.sgc.papererase.model.ExamModels.ExamInput;
 import com.xb.sgc.papererase.model.ExamModels.PageInput;
+import com.xb.sgc.papererase.model.ExamModels.RejectedExam;
+import com.xb.sgc.papererase.model.ExamModels.ScanResult;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -53,34 +55,53 @@ public class ExamScannerTest {
     }
 
     @Test
-    public void scanRejectsDuplicatePageOrderForWholeExam() throws Exception {
+    public void scanWithRejectionsRejectsDuplicatePageOrderForWholeExam() throws Exception {
         File root = temporaryFolder.newFolder("dataset");
         touch(root, "英语", "2305721916932448794", "15065_2305721916932448794_1.png");
         touch(root, "英语", "2305721916932448794", "15065_2305721916932448794_001.jpg");
 
-        try {
-            new ExamScanner().scan(root.toPath());
-        } catch (IllegalArgumentException expected) {
-            assertTrue(expected.getMessage().contains("duplicate page_order"));
-            assertTrue(expected.getMessage().contains("2305721916932448794"));
-            return;
-        }
-        throw new AssertionError("Expected duplicate page_order to reject the exam");
+        ScanResult result = new ExamScanner().scanWithRejections(root.toPath());
+
+        assertEquals(0, result.getExams().size());
+        assertEquals(1, result.getRejectedExams().size());
+        RejectedExam rejected = result.getRejectedExams().get(0);
+        assertEquals("英语", rejected.getSubject());
+        assertEquals("2305721916932448794", rejected.getExamId());
+        assertTrue(rejected.getReason().contains("duplicate page_order"));
     }
 
     @Test
-    public void scanRejectsUnparseablePageOrderForWholeExam() throws Exception {
+    public void scanWithRejectionsRejectsUnparseablePageOrderForWholeExam() throws Exception {
         File root = temporaryFolder.newFolder("dataset");
         touch(root, "英语", "2305721916932448794", "15065_2305721916932448794_last.png");
 
-        try {
-            new ExamScanner().scan(root.toPath());
-        } catch (IllegalArgumentException expected) {
-            assertTrue(expected.getMessage().contains("unparseable page_order"));
-            assertTrue(expected.getMessage().contains("15065_2305721916932448794_last.png"));
-            return;
-        }
-        throw new AssertionError("Expected unparseable page_order to reject the exam");
+        ScanResult result = new ExamScanner().scanWithRejections(root.toPath());
+
+        assertEquals(0, result.getExams().size());
+        assertEquals(1, result.getRejectedExams().size());
+        RejectedExam rejected = result.getRejectedExams().get(0);
+        assertEquals("英语", rejected.getSubject());
+        assertEquals("2305721916932448794", rejected.getExamId());
+        assertTrue(rejected.getReason().contains("unparseable page_order"));
+        assertTrue(rejected.getReason().contains("15065_2305721916932448794_last.png"));
+    }
+
+    @Test
+    public void scanWithRejectionsKeepsGoodExamWhenAnotherExamIsRejected() throws Exception {
+        File root = temporaryFolder.newFolder("dataset");
+        touch(root, "英语", "bad-exam", "15065_bad-exam_1.png");
+        touch(root, "英语", "bad-exam", "15065_bad-exam_001.jpg");
+        touch(root, "数学", "good-exam", "15066_good-exam_1.png");
+
+        ScanResult result = new ExamScanner().scanWithRejections(root.toPath());
+
+        assertEquals(1, result.getExams().size());
+        assertEquals("数学", result.getExams().get(0).getSubject());
+        assertEquals("good-exam", result.getExams().get(0).getExamId());
+        assertEquals(1, result.getRejectedExams().size());
+        assertEquals("英语", result.getRejectedExams().get(0).getSubject());
+        assertEquals("bad-exam", result.getRejectedExams().get(0).getExamId());
+        assertTrue(result.getRejectedExams().get(0).getReason().contains("duplicate page_order"));
     }
 
     private void touch(File root, String subject, String examId, String filename) throws Exception {
