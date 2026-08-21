@@ -21,6 +21,13 @@ public final class InkMaskEraser {
     }
 
     public static EraseOutcome erase(BufferedImage source, RegionValidator.PixelRegion region) {
+        return erase(source, region, false);
+    }
+
+    /**
+     * 彩色像素默认视为非目标。只有局部视觉复核已确认候选框仅含页码时，调用方才可传 true。
+     */
+    public static EraseOutcome erase(BufferedImage source, RegionValidator.PixelRegion region, boolean coloredTargetVerified) {
         if (source == null || region == null) {
             return EraseOutcome.manual(null, new ApprovedMask(0, 0), "source and region are required");
         }
@@ -28,12 +35,12 @@ public final class InkMaskEraser {
         if (regionReason != null) {
             return EraseOutcome.manual(copy(source), new ApprovedMask(source.getWidth(), source.getHeight()), regionReason);
         }
-        String nonTargetReason = nonTargetReason(source, region);
+        String nonTargetReason = coloredTargetVerified ? null : nonTargetReason(source, region);
         if (nonTargetReason != null) {
             return EraseOutcome.manual(copy(source), new ApprovedMask(source.getWidth(), source.getHeight()), nonTargetReason);
         }
         // 抗锯齿灰色也应进入目标掩码，否则会留下页码边缘；但掩码绝不能越过批准区域。
-        boolean[][] mask = extractMask(source, region);
+        boolean[][] mask = extractMask(source, region, coloredTargetVerified);
         if (!hasApprovedPixel(mask, region)) {
             return EraseOutcome.manual(copy(source), new ApprovedMask(mask), "no target ink found");
         }
@@ -86,13 +93,32 @@ public final class InkMaskEraser {
         return null;
     }
 
-    private static boolean[][] extractMask(BufferedImage source, RegionValidator.PixelRegion region) {
+    public static boolean hasColoredPixels(BufferedImage source, List<RegionValidator.PixelRegion> regions) {
+        if (source == null || regions == null) {
+            return false;
+        }
+        for (RegionValidator.PixelRegion region : regions) {
+            for (int y = region.getY(); y < region.getY() + region.getHeight(); y++) {
+                for (int x = region.getX(); x < region.getX() + region.getWidth(); x++) {
+                    if (BackgroundEstimator.isColoredNonTarget(BackgroundEstimator.parts(source.getRGB(x, y)))) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean[][] extractMask(BufferedImage source, RegionValidator.PixelRegion region,
+                                           boolean coloredTargetVerified) {
         int backgroundLum = medianLightLuminance(source, region);
         boolean[][] mask = new boolean[source.getHeight()][source.getWidth()];
         for (int y = region.getY(); y < region.getY() + region.getHeight(); y++) {
             for (int x = region.getX(); x < region.getX() + region.getWidth(); x++) {
                 BackgroundEstimator.ColorParts c = BackgroundEstimator.parts(source.getRGB(x, y));
-                if (BackgroundEstimator.isInk(c, backgroundLum)) {
+                if (BackgroundEstimator.isInk(c, backgroundLum)
+                        || (coloredTargetVerified && BackgroundEstimator.isColoredNonTarget(c)
+                        && c.luminance <= backgroundLum - 25)) {
                     mask[y][x] = true;
                 }
             }

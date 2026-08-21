@@ -210,7 +210,9 @@ public final class ExamPipeline {
                 .withReadingRotation(direction.reading_rotation)
                 .withPageSequenceIncomplete(exam.isPageSequenceIncomplete());
         // 只对风险页局部二检，以控制成本；同线候选仍强制二检，防止把正文行尾当页码。
-        boolean requiresVerify = RiskGate.requiresLocalVerify(riskContext, validation) || hasOnLineRegion(locate.regions);
+        boolean hasColoredCandidate = InkMaskEraser.hasColoredPixels(normalizedImage, validation.getRegions());
+        boolean requiresVerify = RiskGate.requiresLocalVerify(riskContext, validation) || hasOnLineRegion(locate.regions)
+                || hasColoredCandidate;
         if (requiresVerify) {
             PageOutcome denied = verifyThenMaybeManual(exam, page, original, normalizedImage, transforms, group, locate, pageImage,
                     "verify_denied", context);
@@ -218,7 +220,8 @@ public final class ExamPipeline {
                 return denied;
             }
         }
-        return eraseAndAudit(exam, page, original, normalizedImage, transforms, group, locate, pageImage, validation.getRegions(), context);
+        return eraseAndAudit(exam, page, original, normalizedImage, transforms, group, locate, pageImage,
+                validation.getRegions(), requiresVerify, context);
     }
 
     private boolean hasOnLineRegion(List<EraseRegion> regions) {
@@ -274,11 +277,12 @@ public final class ExamPipeline {
 
     private PageOutcome eraseAndAudit(ExamInput exam, PageInput page, BufferedImage original, BufferedImage normalized, PageTransforms transforms,
                                       PatternGroup group, LocateResponse locate, VlmClient.PageImage pageImage,
-                                      List<RegionValidator.PixelRegion> pixelRegions, RunContext context) {
+                                      List<RegionValidator.PixelRegion> pixelRegions, boolean coloredTargetVerified,
+                                      RunContext context) {
         BufferedImage candidate = normalized;
         for (RegionValidator.PixelRegion pixelRegion : pixelRegions) {
             // 擦除器执行掩码级修改，并由像素差分门禁保证候选框外零改动。
-            InkMaskEraser.EraseOutcome erase = InkMaskEraser.erase(candidate, pixelRegion);
+            InkMaskEraser.EraseOutcome erase = InkMaskEraser.erase(candidate, pixelRegion, coloredTargetVerified);
             if (erase.getStatus() != InkMaskEraser.Status.SAFE_TO_ERASE) {
                 context.event("erase", exam.getExamId(), page.getPageId(), "rejected", erase.getReason(), 0);
                 return manual(page, original, normalized, transforms, "erase_failed: " + erase.getReason(), group, locate);

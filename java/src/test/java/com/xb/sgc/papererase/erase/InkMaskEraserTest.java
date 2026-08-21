@@ -107,6 +107,24 @@ public class InkMaskEraserTest {
     }
 
     @Test
+    public void allowsColoredPageNumberOnlyAfterLocalVerifyApproval() throws Exception {
+        BufferedImage source = page(80, 80, new Color(245, 244, 238));
+        for (int y = 10; y < 15; y++) {
+            for (int x = 68; x < 71; x++) {
+                source.setRGB(x, y, new Color(15, 75, 180).getRGB());
+            }
+        }
+        RegionValidator.PixelRegion region = pixelRegion("page-1", "r1", 64, 4, 12, 14);
+
+        assertEquals(InkMaskEraser.Status.MANUAL_REVIEW, InkMaskEraser.erase(source, region).getStatus());
+        InkMaskEraser.EraseOutcome approved = InkMaskEraser.erase(source, region, true);
+
+        assertEquals(InkMaskEraser.Status.SAFE_TO_ERASE, approved.getStatus());
+        assertTrue(approved.getApprovedMask().isApproved(69, 12));
+        assertEquals(source.getRGB(5, 40), approved.getCandidate().getRGB(5, 40));
+    }
+
+    @Test
     public void rejectsUnsafeInkGeometryInsideValidatedRegion() {
         BufferedImage secondLine = page(120, 120, new Color(245, 244, 238));
         drawAntiAliasedDigit(secondLine, 34, 10);
