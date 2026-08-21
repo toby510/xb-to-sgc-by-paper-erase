@@ -17,6 +17,7 @@ import java.util.Set;
 public final class RegionValidator {
     private static final double EDGE_BAND = 0.20;
     private static final int MIN_BODY_GAP_PIXELS = 8;
+    private static final int MODEL_BOX_GUARD_PIXELS = 1;
 
     private RegionValidator() {
     }
@@ -119,10 +120,18 @@ public final class RegionValidator {
                 reasons.add(gapReason);
                 continue;
             }
-            // 候选框边缘有墨说明框可能截到正文/表格，擦除后无法保证零误伤。
+            // 只有原始模型框确实贴到墨迹时，才补一像素抗锯齿保护边并重新证明安全。
+            // 正常模型框不改变，避免扩大擦除区域或给所有页面增加二检成本。
             if (maskTouchesCandidateBox(image, pixelRegion)) {
-                reasons.add("ink mask touches candidate box");
-                continue;
+                PixelRegion guarded = withModelBoxGuard(pixelRegion, image);
+                String guardedGapReason = invalidPixelGapReason(edge, guarded,
+                        locateResult.getNearestBodyBoundary(), image);
+                if (guardedGapReason == null && !maskTouchesCandidateBox(image, guarded)) {
+                    pixelRegion = guarded;
+                } else {
+                    reasons.add(guardedGapReason == null ? "ink mask touches candidate box" : guardedGapReason);
+                    continue;
+                }
             }
             pixelRegions.add(pixelRegion);
         }
@@ -144,6 +153,19 @@ public final class RegionValidator {
         int bottomExclusive = clamp((int) Math.ceil(region.y2 * image.getHeight()), 0, image.getHeight());
         return new PixelRegion(pageId, regionId, left, top, rightExclusive - left, bottomExclusive - top,
                 region.x1, region.y1, region.x2, region.y2, region.confidence);
+    }
+
+    /**
+     * 归一化坐标转换为整数像素时，页码的抗锯齿边缘可能恰好落在框边上一像素。先统一补
+     * 一圈极小保护带，再重新执行正文空白带、边缘带和局部 VLM 二检；它不是按样本调参。
+     */
+    private static PixelRegion withModelBoxGuard(PixelRegion region, BufferedImage image) {
+        int left = Math.max(0, region.getX() - MODEL_BOX_GUARD_PIXELS);
+        int top = Math.max(0, region.getY() - MODEL_BOX_GUARD_PIXELS);
+        int right = Math.min(image.getWidth(), region.getX() + region.getWidth() + MODEL_BOX_GUARD_PIXELS);
+        int bottom = Math.min(image.getHeight(), region.getY() + region.getHeight() + MODEL_BOX_GUARD_PIXELS);
+        return new PixelRegion(region.getPageId(), region.getRegionId(), left, top, right - left, bottom - top,
+                region.getX1(), region.getY1(), region.getX2(), region.getY2(), region.getConfidence());
     }
 
     private static int clamp(int value, int min, int max) {
@@ -404,7 +426,7 @@ public final class RegionValidator {
             return region;
         }
         PixelRegion expanded = new PixelRegion(region.getPageId(), region.getRegionId(), left, top, right - left, bottom - top,
-                region.getX1(), region.getY1(), region.getX2(), region.getY2(), region.getConfidence());
+                region.getX1(), region.getY1(), region.getX2(), region.getY2(), region.getConfidence(), true);
         return remainsInEdgeBand(edge, expanded, image) ? expanded : region;
     }
 
@@ -561,9 +583,15 @@ public final class RegionValidator {
         private final double x2;
         private final double y2;
         private final double confidence;
+        private final boolean coordinateRescued;
 
         private PixelRegion(String pageId, String regionId, int x, int y, int width, int height,
                             double x1, double y1, double x2, double y2, double confidence) {
+            this(pageId, regionId, x, y, width, height, x1, y1, x2, y2, confidence, false);
+        }
+
+        private PixelRegion(String pageId, String regionId, int x, int y, int width, int height,
+                            double x1, double y1, double x2, double y2, double confidence, boolean coordinateRescued) {
             this.pageId = pageId;
             this.regionId = regionId;
             this.x = x;
@@ -575,6 +603,7 @@ public final class RegionValidator {
             this.x2 = x2;
             this.y2 = y2;
             this.confidence = confidence;
+            this.coordinateRescued = coordinateRescued;
         }
 
         public String getPageId() {
@@ -619,6 +648,10 @@ public final class RegionValidator {
 
         public double getConfidence() {
             return confidence;
+        }
+
+        public boolean isCoordinateRescued() {
+            return coordinateRescued;
         }
     }
 }

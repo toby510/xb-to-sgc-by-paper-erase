@@ -240,13 +240,7 @@ public final class ExamPipeline {
      */
     private boolean hasCoordinateRescue(List<RegionValidator.PixelRegion> regions, BufferedImage image) {
         for (RegionValidator.PixelRegion region : regions) {
-            int modelLeft = (int) Math.floor(region.getX1() * image.getWidth());
-            int modelTop = (int) Math.floor(region.getY1() * image.getHeight());
-            int modelRight = (int) Math.ceil(region.getX2() * image.getWidth());
-            int modelBottom = (int) Math.ceil(region.getY2() * image.getHeight());
-            if (region.getX() != modelLeft || region.getY() != modelTop
-                    || region.getX() + region.getWidth() != modelRight
-                    || region.getY() + region.getHeight() != modelBottom) {
+            if (region.isCoordinateRescued()) {
                 return true;
             }
         }
