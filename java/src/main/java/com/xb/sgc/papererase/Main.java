@@ -65,8 +65,11 @@ public final class Main {
         RunWriter runWriter = new RunWriter();
         int pages = 0;
         for (ExamInput exam : exams) {
-            ExamOutcome outcome = pipeline.process(exam, new ExamPipeline.RunContext());
+            ExamPipeline.RunContext context = new ExamPipeline.RunContext(runDir);
+            context.event("output", exam.getExamId(), null, "started", null, 0);
+            ExamOutcome outcome = pipeline.process(exam, context);
             runWriter.writeExam(exam, outcome, runDir);
+            context.event("output", exam.getExamId(), null, "completed", null, 0);
             outcomes.add(outcome);
             pages += exam.getPages().size();
         }

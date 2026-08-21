@@ -23,7 +23,11 @@ import com.xb.sgc.papererase.vlm.VlmClient;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
+import java.io.BufferedWriter;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -49,28 +53,44 @@ public final class ExamPipeline {
     }
 
     public ExamOutcome process(ExamInput exam, RunContext context) {
+        context = context == null ? new RunContext() : context;
+        long examStartedAt = System.currentTimeMillis();
+        context.event("exam", exam.getExamId(), null, "started", "page_count=" + exam.getPages().size(), 0);
         Map<String, BufferedImage> originals = readOriginals(exam);
+        context.event("image_load", exam.getExamId(), null, "completed", "page_count=" + originals.size(), 0);
         PatternBundle bundle;
         try {
-            bundle = buildPattern(exam, originals);
+            bundle = buildPattern(exam, originals, context);
         } catch (ResponseParser.ParseException e) {
-            return wholeExamFallback(exam, originals, "pattern_protocol_error", e.getMessage());
+            ExamOutcome outcome = wholeExamFallback(exam, originals, "pattern_protocol_error", e.getMessage());
+            context.event("exam", exam.getExamId(), null, outcome.getStatus(), outcome.getReason(), System.currentTimeMillis() - examStartedAt);
+            return outcome;
         } catch (RuntimeException e) {
-            return wholeExamFallback(exam, originals, "pattern_protocol_error", e.getMessage());
+            ExamOutcome outcome = wholeExamFallback(exam, originals, "pattern_protocol_error", e.getMessage());
+            context.event("exam", exam.getExamId(), null, outcome.getStatus(), outcome.getReason(), System.currentTimeMillis() - examStartedAt);
+            return outcome;
         }
 
         List<PageOutcome> outcomes = new ArrayList<PageOutcome>();
         for (PageInput page : exam.getPages()) {
             BufferedImage original = originals.get(page.getPageId());
+            long pageStartedAt = System.currentTimeMillis();
+            context.event("page", exam.getExamId(), page.getPageId(), "started", null, 0);
+            PageOutcome pageOutcome;
             try {
                 // 页面异常必须隔离：不能因为一张异常图让后续页绕过审计或丢失产物。
-                outcomes.add(published(page, original, bundle, processPage(exam, page, original, bundle)));
+                pageOutcome = published(page, original, bundle, processPage(exam, page, original, bundle, context));
             } catch (RuntimeException e) {
-                outcomes.add(manual(page, original, original, transform(original, original, 0),
-                        "page_processing_error", bundle.groupByPage.get(page.getPageId()), null));
+                pageOutcome = manual(page, original, original, transform(original, original, 0),
+                        "page_processing_error", bundle.groupByPage.get(page.getPageId()), null);
             }
+            outcomes.add(pageOutcome);
+            context.event("page", exam.getExamId(), page.getPageId(), pageOutcome.getStatus(), pageOutcome.getReason(),
+                    System.currentTimeMillis() - pageStartedAt);
         }
-        return new ExamOutcome(exam.getExamId(), "processed", "ok", outcomes, bundle.groups);
+        ExamOutcome outcome = new ExamOutcome(exam.getExamId(), "processed", "ok", outcomes, bundle.groups);
+        context.event("exam", exam.getExamId(), null, outcome.getStatus(), outcome.getReason(), System.currentTimeMillis() - examStartedAt);
+        return outcome;
     }
 
     private PageOutcome published(PageInput page, BufferedImage original, PatternBundle bundle, PageOutcome outcome) {
@@ -82,16 +102,29 @@ public final class ExamPipeline {
                 "internal_state_" + outcome.getStatus(), bundle.groupByPage.get(page.getPageId()), outcome.getLocate());
     }
 
-    private PatternBundle buildPattern(ExamInput exam, Map<String, BufferedImage> originals) {
+    private PatternBundle buildPattern(ExamInput exam, Map<String, BufferedImage> originals, RunContext context) {
         PatternBundle bundle = new PatternBundle();
+        int batchIndex = 0;
         for (List<PageInput> batch : PageBatcher.overlapping(exam.getPages(), 8, 1)) {
+            long startedAt = System.currentTimeMillis();
+            batchIndex++;
             List<VlmClient.PageImage> images = new ArrayList<VlmClient.PageImage>();
             List<String> expected = new ArrayList<String>();
             for (PageInput page : batch) {
                 images.add(new VlmClient.PageImage(page.getPageId(), originals.get(page.getPageId())));
                 expected.add(page.getPageId());
             }
-            PatternResponse response = vlm.pattern(images);
+            context.event("pattern", exam.getExamId(), null, "started", "batch=" + batchIndex + " page_count=" + images.size(), 0);
+            PatternResponse response;
+            try {
+                response = vlm.pattern(images);
+                context.event("pattern", exam.getExamId(), null, "completed", "batch=" + batchIndex + " page_count=" + images.size(),
+                        System.currentTimeMillis() - startedAt);
+            } catch (RuntimeException e) {
+                context.event("pattern", exam.getExamId(), null, "failed", e.getClass().getSimpleName(),
+                        System.currentTimeMillis() - startedAt);
+                throw e;
+            }
             // 绝不用响应数组位置对齐；错页坐标是“擦到正文”的高风险来源。
             if (!pageIds(response).equals(new java.util.HashSet<String>(expected))) {
                 throw new ResponseParser.ParseException("batch page ids mismatch", "");
@@ -129,7 +162,7 @@ public final class ExamPipeline {
         return ids;
     }
 
-    private PageOutcome processPage(ExamInput exam, PageInput page, BufferedImage original, PatternBundle bundle) {
+    private PageOutcome processPage(ExamInput exam, PageInput page, BufferedImage original, PatternBundle bundle, RunContext context) {
         PageDirection direction = bundle.directions.get(page.getPageId());
         if (direction == null || direction.confidence < MIN_DIRECTION_CONFIDENCE) {
             return manual(page, original, original, transform(original, original, direction == null ? 0 : direction.reading_rotation),
@@ -139,21 +172,27 @@ public final class ExamPipeline {
         // 坐标、边缘带和正文间隔均在统一阅读方向中判定，避免横竖页混用坐标系。
         OrientationNormalizer.NormalizedImage normalized = OrientationNormalizer.normalize(original, direction.reading_rotation);
         BufferedImage normalizedImage = normalized.getImage();
+        context.event("normalize", exam.getExamId(), page.getPageId(), "completed", "rotation=" + direction.reading_rotation, 0);
         PageTransforms transforms = new PageTransforms(normalized.getOriginalWidth(), normalized.getOriginalHeight(),
                 normalized.getNormalizedWidth(), normalized.getNormalizedHeight(), normalized.getReadingRotation());
         PatternGroup group = bundle.groupByPage.get(page.getPageId());
         VlmClient.PageImage pageImage = new VlmClient.PageImage(page.getPageId(), normalizedImage);
         LocateResponse locate;
         try {
+            long startedAt = System.currentTimeMillis();
+            context.event("locate", exam.getExamId(), page.getPageId(), "started", null, 0);
             locate = vlm.locate(pageImage, group);
+            context.event("locate", exam.getExamId(), page.getPageId(), "completed", locate.status,
+                    System.currentTimeMillis() - startedAt);
         } catch (RuntimeException e) {
+            context.event("locate", exam.getExamId(), page.getPageId(), "failed", e.getClass().getSimpleName(), 0);
             return manual(page, original, normalizedImage, transforms, "locate_error", group, null);
         }
         if ("manual_review".equals(locate.status)) {
             return manual(page, original, normalizedImage, transforms, "locate_manual_review", group, locate);
         }
         if ("no_pagenum".equals(locate.status) || locate.regions.isEmpty()) {
-            return handleNoCandidate(exam, page, original, normalizedImage, transforms, bundle, group, locate, pageImage);
+            return handleNoCandidate(exam, page, original, normalizedImage, transforms, bundle, group, locate, pageImage, context);
         }
 
         // VLM 的坐标只是候选；通过 Java 的确定性硬门禁前绝不触发像素写入。
@@ -161,8 +200,10 @@ public final class ExamPipeline {
                 new RegionValidator.PageLocateResult(locate.page_id, locate.status, locate.regions, locate.nearest_body_boundary),
                 normalizedImage);
         if (!validation.isAccepted()) {
+            context.event("validation", exam.getExamId(), page.getPageId(), "rejected", validation.getReasons().toString(), 0);
             return manual(page, original, normalizedImage, transforms, "validation_rejected", group, locate);
         }
+        context.event("validation", exam.getExamId(), page.getPageId(), "accepted", "region_count=" + validation.getRegions().size(), 0);
         RiskGate.PageContext riskContext = RiskGate.PageContext.stable(page.getPageId())
                 .withPatternGroupId(group == null ? null : group.group_id)
                 .withConsensusState(bundle.consensusState)
@@ -171,12 +212,13 @@ public final class ExamPipeline {
         // 只对风险页局部二检，以控制成本；同线候选仍强制二检，防止把正文行尾当页码。
         boolean requiresVerify = RiskGate.requiresLocalVerify(riskContext, validation) || hasOnLineRegion(locate.regions);
         if (requiresVerify) {
-            PageOutcome denied = verifyThenMaybeManual(page, original, normalizedImage, transforms, group, locate, pageImage, "verify_denied");
+            PageOutcome denied = verifyThenMaybeManual(exam, page, original, normalizedImage, transforms, group, locate, pageImage,
+                    "verify_denied", context);
             if (!"needs_recheck".equals(denied.getStatus())) {
                 return denied;
             }
         }
-        return eraseAndAudit(page, original, normalizedImage, transforms, group, locate, pageImage, validation.getRegions());
+        return eraseAndAudit(exam, page, original, normalizedImage, transforms, group, locate, pageImage, validation.getRegions(), context);
     }
 
     private boolean hasOnLineRegion(List<EraseRegion> regions) {
@@ -190,13 +232,17 @@ public final class ExamPipeline {
 
     private PageOutcome handleNoCandidate(ExamInput exam, PageInput page, BufferedImage original, BufferedImage normalized,
                                           PageTransforms transforms, PatternBundle bundle, PatternGroup group,
-                                          LocateResponse locate, VlmClient.PageImage pageImage) {
+                                          LocateResponse locate, VlmClient.PageImage pageImage, RunContext context) {
         if (group == null || "mixed".equals(bundle.consensusState)) {
             return new PageOutcome(page.getPageId(), "no_pagenum", "locate_no_pagenum", original, normalized,
                     normalized, transforms, group, Collections.<EraseRegion>emptyList(), locate, null);
         }
+        long startedAt = System.currentTimeMillis();
+        context.event("verify", exam.getExamId(), page.getPageId(), "started", "edge", 0);
         VerifyResponse verify = vlm.verify(pageImage, null,
                 edgeRoi(page.getPageId(), group, locate.nearest_body_boundary, normalized));
+        context.event("verify", exam.getExamId(), page.getPageId(), "completed", verify.decision,
+                System.currentTimeMillis() - startedAt);
         if ("no_pagenum".equals(verify.decision)) {
             return new PageOutcome(page.getPageId(), "no_pagenum", "edge_verify_no_pagenum", original, normalized,
                     normalized, transforms, group, Collections.<EraseRegion>emptyList(), locate, null);
@@ -204,12 +250,16 @@ public final class ExamPipeline {
         return manual(page, original, normalized, transforms, "edge_verify_" + verify.decision, group, locate);
     }
 
-    private PageOutcome verifyThenMaybeManual(PageInput page, BufferedImage original, BufferedImage normalized,
+    private PageOutcome verifyThenMaybeManual(ExamInput exam, PageInput page, BufferedImage original, BufferedImage normalized,
                                               PageTransforms transforms, PatternGroup group, LocateResponse locate,
-                                              VlmClient.PageImage pageImage, String deniedReason) {
+                                              VlmClient.PageImage pageImage, String deniedReason, RunContext context) {
         for (EraseRegion region : locate.regions) {
+            long startedAt = System.currentTimeMillis();
+            context.event("verify", exam.getExamId(), page.getPageId(), "started", region.region_id, 0);
             VerifyResponse verify = vlm.verify(pageImage, region,
                     roi(page.getPageId(), region, locate.nearest_body_boundary, normalized));
+            context.event("verify", exam.getExamId(), page.getPageId(), "completed", verify.decision,
+                    System.currentTimeMillis() - startedAt);
             if (!"safe_to_erase".equals(verify.decision)) {
                 if ("no_pagenum".equals(verify.decision)) {
                     return new PageOutcome(page.getPageId(), "no_pagenum", "verify_no_pagenum", original, normalized,
@@ -222,20 +272,26 @@ public final class ExamPipeline {
                 transforms, group, locate.regions, locate, null);
     }
 
-    private PageOutcome eraseAndAudit(PageInput page, BufferedImage original, BufferedImage normalized, PageTransforms transforms,
+    private PageOutcome eraseAndAudit(ExamInput exam, PageInput page, BufferedImage original, BufferedImage normalized, PageTransforms transforms,
                                       PatternGroup group, LocateResponse locate, VlmClient.PageImage pageImage,
-                                      List<RegionValidator.PixelRegion> pixelRegions) {
+                                      List<RegionValidator.PixelRegion> pixelRegions, RunContext context) {
         BufferedImage candidate = normalized;
         for (RegionValidator.PixelRegion pixelRegion : pixelRegions) {
             // 擦除器执行掩码级修改，并由像素差分门禁保证候选框外零改动。
             InkMaskEraser.EraseOutcome erase = InkMaskEraser.erase(candidate, pixelRegion);
             if (erase.getStatus() != InkMaskEraser.Status.SAFE_TO_ERASE) {
+                context.event("erase", exam.getExamId(), page.getPageId(), "rejected", erase.getReason(), 0);
                 return manual(page, original, normalized, transforms, "erase_failed: " + erase.getReason(), group, locate);
             }
             candidate = erase.getCandidate();
         }
+        context.event("erase", exam.getExamId(), page.getPageId(), "completed", "region_count=" + pixelRegions.size(), 0);
+        long auditStartedAt = System.currentTimeMillis();
+        context.event("audit", exam.getExamId(), page.getPageId(), "started", null, 0);
         AuditResponse audit = vlm.audit(pageImage, new VlmClient.PageImage(page.getPageId(), candidate),
                 locate.regions, rois(page.getPageId(), locate.regions, locate.nearest_body_boundary, normalized));
+        context.event("audit", exam.getExamId(), page.getPageId(), "completed", audit.decision,
+                System.currentTimeMillis() - auditStartedAt);
         // 正文不变、目标确实消失是交付的双硬条件；背景色仅是质量告警，不扩大擦除范围。
         if (!audit.body_unchanged || !audit.target_removed) {
             return new PageOutcome(page.getPageId(), "manual_review", "audit_failed", original, normalized,
@@ -328,5 +384,45 @@ public final class ExamPipeline {
     }
 
     public static final class RunContext {
+        private final Path progressPath;
+        private final com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+
+        /** 无正式产物目录时静默，避免单元测试输出大量阶段日志。 */
+        public RunContext() {
+            this.progressPath = null;
+        }
+
+        /** 将阶段事件持续写入 runDir/_progress.ndjson，运行中即可通过 tail 观察。 */
+        public RunContext(Path runDir) {
+            if (runDir == null) {
+                throw new IllegalArgumentException("runDir is required");
+            }
+            this.progressPath = runDir.resolve("_progress.ndjson");
+        }
+
+        public synchronized void event(String stage, String examId, String pageId, String status, String reason, long elapsedMillis) {
+            Map<String, Object> event = new java.util.LinkedHashMap<String, Object>();
+            event.put("timestamp_ms", System.currentTimeMillis());
+            event.put("stage", stage);
+            event.put("exam_id", examId);
+            event.put("page_id", pageId);
+            event.put("status", status);
+            event.put("reason", reason);
+            event.put("elapsed_ms", elapsedMillis);
+            try {
+                String line = mapper.writeValueAsString(event);
+                if (progressPath == null) {
+                    return;
+                }
+                Files.createDirectories(progressPath.getParent());
+                try (BufferedWriter writer = Files.newBufferedWriter(progressPath, StandardCharsets.UTF_8,
+                        Files.exists(progressPath) ? java.nio.file.StandardOpenOption.APPEND : java.nio.file.StandardOpenOption.CREATE)) {
+                    writer.write(line);
+                    writer.newLine();
+                }
+            } catch (IOException e) {
+                throw new RuntimeException("cannot write pipeline progress event", e);
+            }
+        }
     }
 }
