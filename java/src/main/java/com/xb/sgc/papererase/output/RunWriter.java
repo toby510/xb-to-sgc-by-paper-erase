@@ -50,6 +50,10 @@ public class RunWriter {
             ImageIO.write(pageOutcome.getOriginal(), "png", originalPath.toFile());
             ImageIO.write(pageOutcome.getCandidate(), "png", erasedPath.toFile());
             originalWordPages.add(originalPath);
+            if (!pageOutcome.getRegions().isEmpty()) {
+                Path coordinatePreview = erasedDir.resolve(stem + "_模型坐标擦除预览_不可交付.png");
+                ManualReviewWatermarker.writeCoordinateErasePreview(pageOutcome.getNormalized(), pageOutcome.getRegions(), coordinatePreview);
+            }
             if ("manual_review".equals(pageOutcome.getStatus()) || "error".equals(pageOutcome.getStatus())) {
                 Path preview = erasedDir.resolve(stem + "_人工审核预览.png");
                 ManualReviewWatermarker.writePreview(pageOutcome.getCandidate(), preview);
