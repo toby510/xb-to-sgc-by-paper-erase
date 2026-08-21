@@ -124,15 +124,18 @@
           "image_detail": "auto"
         },
         "locate": {
-          "thinking": { "type": "disabled" },
+          "thinking": { "type": "enabled" },
+          "reasoning": { "effort": "medium" },
           "image_detail": "high"
         },
         "verify": {
-          "thinking": { "type": "disabled" },
+          "thinking": { "type": "enabled" },
+          "reasoning": { "effort": "medium" },
           "image_detail": "high"
         },
         "audit": {
-          "thinking": { "type": "disabled" },
+          "thinking": { "type": "enabled" },
+          "reasoning": { "effort": "medium" },
           "image_detail": "high"
         }
       }

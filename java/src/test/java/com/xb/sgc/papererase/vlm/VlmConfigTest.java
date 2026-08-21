@@ -88,7 +88,8 @@ public class VlmConfigTest {
             assertEquals("low", config.role("pattern").getReasoningEffort());
             assertEquals("auto", detail.invoke(config.role("pattern")));
             assertEquals(0, ((Integer) maxOutput.invoke(config.role("audit"))).intValue());
-            assertEquals("disabled", config.role("audit").getThinkingType());
+            assertEquals("enabled", config.role("audit").getThinkingType());
+            assertEquals("medium", config.role("audit").getReasoningEffort());
             assertEquals("high", detail.invoke(config.role("audit")));
         } finally {
             Files.deleteIfExists(arkConfig);
