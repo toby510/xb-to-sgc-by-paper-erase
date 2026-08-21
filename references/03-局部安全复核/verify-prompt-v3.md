@@ -11,6 +11,8 @@
 - 页码压在线上时，只有能确认该线不是正文表格线或答题线，才允许；否则 `manual_review`。
 - 候选为空但同卷共性强烈提示应有页码时，检查边缘 ROI；确认无页码返回 `no_pagenum`，否则 `manual_review`。
 - 本角色只判断擦除范围是否安全，不评价擦后效果。
+- 当指令明确要求“坐标精定位”时：忽略首次候选框可能存在的偏移，以高清边缘 ROI 中**实际可见页码墨迹**为准，返回刚好包住全部页码笔画的 `refined_region`（ROI 相对坐标）。同时返回页码朝正文一侧最近正文边界的 `refined_nearest_body_boundary`。不得用空白页边、装饰线或页码本身冒充正文边界。
+- 坐标精定位只可确认独立页码；若 ROI 中还有正文、表格、答题线，或无法确认页码与正文之间存在空白带，返回 `manual_review` 且两个 refined 字段均为 null。
 
 ## JSON 协议
 
@@ -20,6 +22,10 @@
   "region_id": "r1",
   "decision": "safe_to_erase|no_pagenum|manual_review",
   "allowed_scope": "仅页码本体|页码及同一独立元数据带|不允许擦除",
-  "evidence": "页码锚点、正文安全边界及全页与 ROI 一致性"
+  "evidence": "页码锚点、正文安全边界及全页与 ROI 一致性",
+  "refined_region": {"x1": 0.45, "y1": 0.60, "x2": 0.55, "y2": 0.72} | null,
+  "refined_nearest_body_boundary": {"x": null, "y": 0.42, "basis": "ROI中最后一行正文的外缘"} | null
 }
 ```
+
+普通复核必须把 `refined_region` 和 `refined_nearest_body_boundary` 都填 `null`。仅坐标精定位且 `decision=safe_to_erase` 时可填写它们。

@@ -58,6 +58,15 @@ public interface VlmClient {
         throw new IllegalStateException("unsupported VLM provider kind: " + config.getProviderKind());
     }
 
+    /** 将精定位意图写进本次请求文本，避免模型把它误当普通的 yes/no 安全复核。 */
+    static String refinementInstruction(EraseRegion region) {
+        if (region != null && "coordinate_refinement_requested".equals(region.safety_margin)) {
+            return "\nCOORDINATE_REFINEMENT: This is a coordinate refinement request. Return non-null refined_region "
+                    + "and refined_nearest_body_boundary in ROI-relative 0..1 coordinates when and only when safe_to_erase.";
+        }
+        return "";
+    }
+
     final class OpenAiCompatible implements VlmClient {
         private final VlmConfig config;
         private final Path skillRoot;
@@ -90,7 +99,7 @@ public interface VlmClient {
         public VerifyResponse verify(PageImage page, EraseRegion region, RoiImage roi) {
             String regionId = region == null ? "edge" : region.region_id;
             return ResponseParser.parseVerify(call("verify", "Verify page_id=" + page.getPageId()
-                    + " region_id=" + regionId, one(page), java.util.Collections.singletonList(roi)),
+                    + " region_id=" + regionId + refinementInstruction(region), one(page), java.util.Collections.singletonList(roi)),
                     page.getPageId(), regionId);
         }
 
@@ -264,7 +273,7 @@ public interface VlmClient {
         public VerifyResponse verify(PageImage page, EraseRegion region, RoiImage roi) {
             String regionId = region == null ? "edge" : region.region_id;
             return ResponseParser.parseVerify(call("verify", "Verify page_id=" + page.getPageId()
-                    + " region_id=" + regionId, one(page), java.util.Collections.singletonList(roi)),
+                    + " region_id=" + regionId + refinementInstruction(region), one(page), java.util.Collections.singletonList(roi)),
                     page.getPageId(), regionId);
         }
 

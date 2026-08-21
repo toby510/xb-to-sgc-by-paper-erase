@@ -158,8 +158,8 @@ public final class ResponseParser {
 
     public static VerifyResponse parseVerify(String raw, String expectedPageId, String expectedRegionId) {
         JsonNode root = root(raw);
-        requireFields(root, "page_id", "region_id", "decision", "allowed_scope", "evidence");
-        rejectUnknown(root, "page_id", "region_id", "decision", "allowed_scope", "evidence");
+        requireFields(root, "page_id", "region_id", "decision", "allowed_scope", "evidence", "refined_region", "refined_nearest_body_boundary");
+        rejectUnknown(root, "page_id", "region_id", "decision", "allowed_scope", "evidence", "refined_region", "refined_nearest_body_boundary");
         VerifyResponse response = new VerifyResponse();
         response.page_id = requiredText(root, "page_id");
         response.region_id = requiredText(root, "region_id");
@@ -168,7 +168,27 @@ public final class ResponseParser {
         response.decision = enumText(root, "decision", "safe_to_erase", "no_pagenum", "manual_review");
         response.allowed_scope = requiredText(root, "allowed_scope");
         response.evidence = requiredText(root, "evidence");
+        if (!root.path("refined_region").isNull()) {
+            response.refined_region = parseLocalRegion(root.path("refined_region"), raw);
+            response.refined_nearest_body_boundary = parseBoundary(root.path("refined_nearest_body_boundary"), raw);
+        } else if (!root.path("refined_nearest_body_boundary").isNull()) {
+            throw bad("refined_nearest_body_boundary requires refined_region", raw);
+        }
         return response;
+    }
+
+    private static com.xb.sgc.papererase.model.ExamModels.LocalRegion parseLocalRegion(JsonNode node, String raw) {
+        requireFields(node, "x1", "y1", "x2", "y2");
+        rejectUnknown(node, "x1", "y1", "x2", "y2");
+        com.xb.sgc.papererase.model.ExamModels.LocalRegion region = new com.xb.sgc.papererase.model.ExamModels.LocalRegion();
+        region.x1 = requiredFiniteUnit(node, "x1", raw);
+        region.y1 = requiredFiniteUnit(node, "y1", raw);
+        region.x2 = requiredFiniteUnit(node, "x2", raw);
+        region.y2 = requiredFiniteUnit(node, "y2", raw);
+        if (region.x1 >= region.x2 || region.y1 >= region.y2) {
+            throw bad("refined_region must have positive area", raw);
+        }
+        return region;
     }
 
     public static AuditResponse parseAudit(String raw, String expectedPageId) {

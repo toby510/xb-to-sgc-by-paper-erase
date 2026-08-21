@@ -227,6 +227,25 @@ public final class ExamModels {
         public String allowed_scope;
         @JsonProperty(required = true)
         public String evidence;
+        /**
+         * 仅在首次定位框没有覆盖任何墨迹时由局部二检返回。坐标以本次 ROI 为 0..1
+         * 坐标系；普通安全复核可以为 null，避免把局部坐标误当成整页坐标使用。
+         */
+        public LocalRegion refined_region;
+        /** 局部二检确认的最近正文边界，坐标同样属于 ROI；无精定位时必须为 null。 */
+        public BodyBoundary refined_nearest_body_boundary;
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = false)
+    public static final class LocalRegion {
+        @JsonProperty(required = true)
+        public double x1;
+        @JsonProperty(required = true)
+        public double y1;
+        @JsonProperty(required = true)
+        public double x2;
+        @JsonProperty(required = true)
+        public double y2;
     }
 
     @JsonIgnoreProperties(ignoreUnknown = false)

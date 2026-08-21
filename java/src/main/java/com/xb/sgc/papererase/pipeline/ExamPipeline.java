@@ -204,6 +204,20 @@ public final class ExamPipeline {
             return manual(page, original, normalizedImage, transforms, "validation_rejected", group, locate);
         }
         context.event("validation", exam.getExamId(), page.getPageId(), "accepted", "region_count=" + validation.getRegions().size(), 0);
+        // 首次定位已经通过空间门禁、但候选框本身没有任何可擦墨迹时，不能让 Java 沿边缘猜
+        // 测页码。改由模型查看同一边缘带的高清图，重新给出局部坐标和正文边界；没有明确
+        // 坐标就关闭失败。这针对的是“语义识别对、归一化坐标偏移”的模型已知失效模式。
+        boolean refinedByVlm = false;
+        if (hasEmptyTargetBox(normalizedImage, validation.getRegions())) {
+            Refinement refinement = refineEmptyTargetBox(exam, page, normalizedImage, locate, pageImage, context);
+            if (refinement == null) {
+                return manual(page, original, normalizedImage, transforms, "coordinate_refine_denied", group, locate);
+            }
+            locate = refinement.locate;
+            validation = refinement.validation;
+            refinedByVlm = true;
+            context.event("validation", exam.getExamId(), page.getPageId(), "accepted", "coordinate_refined", 0);
+        }
         RiskGate.PageContext riskContext = RiskGate.PageContext.stable(page.getPageId())
                 .withPatternGroupId(group == null ? null : group.group_id)
                 .withConsensusState(bundle.consensusState)
@@ -212,8 +226,8 @@ public final class ExamPipeline {
         // 只对风险页局部二检，以控制成本；同线候选仍强制二检，防止把正文行尾当页码。
         boolean hasColoredCandidate = InkMaskEraser.hasColoredPixels(normalizedImage, validation.getRegions());
         boolean hasCoordinateRescue = hasCoordinateRescue(validation.getRegions(), normalizedImage);
-        boolean requiresVerify = RiskGate.requiresLocalVerify(riskContext, validation) || hasOnLineRegion(locate.regions)
-                || hasColoredCandidate || hasCoordinateRescue;
+        boolean requiresVerify = !refinedByVlm && (RiskGate.requiresLocalVerify(riskContext, validation) || hasOnLineRegion(locate.regions)
+                || hasColoredCandidate || hasCoordinateRescue);
         if (requiresVerify) {
             PageOutcome denied = verifyThenMaybeManual(exam, page, original, normalizedImage, transforms, group, locate, pageImage,
                     "verify_denied", context);
@@ -232,6 +246,103 @@ public final class ExamPipeline {
             }
         }
         return false;
+    }
+
+    private boolean hasEmptyTargetBox(BufferedImage image, List<RegionValidator.PixelRegion> regions) {
+        for (RegionValidator.PixelRegion region : regions) {
+            InkMaskEraser.EraseOutcome probe = InkMaskEraser.erase(image, region, false);
+            if ("no target ink found".equals(probe.getReason())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private Refinement refineEmptyTargetBox(ExamInput exam, PageInput page, BufferedImage image, LocateResponse locate,
+                                             VlmClient.PageImage pageImage, RunContext context) {
+        // 多框页面没有“唯一失焦目标”的证明，避免将局部复核结果绑定到错误的候选。
+        if (locate.regions.size() != 1) {
+            return null;
+        }
+        EraseRegion originalRegion = locate.regions.get(0);
+        EdgeRoi edgeRoi = fullEdgeRoi(page.getPageId(), originalRegion, image);
+        if (edgeRoi == null) {
+            return null;
+        }
+        long startedAt = System.currentTimeMillis();
+        context.event("coordinate_refine", exam.getExamId(), page.getPageId(), "started", originalRegion.region_id, 0);
+        // 不污染首次定位结果，只用请求副本把“必须返回 ROI 坐标”这个意图显式传给模型。
+        EraseRegion requestRegion = copyRegion(originalRegion);
+        requestRegion.safety_margin = "coordinate_refinement_requested";
+        VerifyResponse verify = vlm.verify(pageImage, requestRegion, edgeRoi.image);
+        context.event("coordinate_refine", exam.getExamId(), page.getPageId(), "completed", verify.decision,
+                System.currentTimeMillis() - startedAt);
+        if (!"safe_to_erase".equals(verify.decision) || verify.refined_region == null
+                || verify.refined_nearest_body_boundary == null) {
+            return null;
+        }
+        EraseRegion refined = copyRegion(originalRegion);
+        RoiTransform.NormalizedRect rect = edgeRoi.transform.localRectToFullNormalized(
+                verify.refined_region.x1, verify.refined_region.y1,
+                verify.refined_region.x2, verify.refined_region.y2);
+        refined.x1 = rect.getX1();
+        refined.y1 = rect.getY1();
+        refined.x2 = rect.getX2();
+        refined.y2 = rect.getY2();
+        refined.safety_margin = "local_vlm_coordinate_refined";
+        LocateResponse refinedLocate = new LocateResponse();
+        refinedLocate.page_id = locate.page_id;
+        refinedLocate.status = locate.status;
+        refinedLocate.regions.add(refined);
+        refinedLocate.nearest_body_boundary = mapBoundary(verify.refined_nearest_body_boundary, edgeRoi.transform,
+                image.getWidth(), image.getHeight());
+        refinedLocate.evidence = locate.evidence + "; coordinate_refined=" + verify.evidence;
+        RegionValidator.ValidationResult validation = RegionValidator.validate(
+                new RegionValidator.PageLocateResult(refinedLocate.page_id, refinedLocate.status, refinedLocate.regions,
+                        refinedLocate.nearest_body_boundary), image);
+        context.event("coordinate_refine", exam.getExamId(), page.getPageId(),
+                validation.isAccepted() ? "mapped" : "rejected",
+                "region=" + refined.x1 + "," + refined.y1 + "," + refined.x2 + "," + refined.y2
+                        + "; body=" + refinedLocate.nearest_body_boundary.x + ","
+                        + refinedLocate.nearest_body_boundary.y + "; reasons=" + validation.getReasons(), 0);
+        return validation.isAccepted() ? new Refinement(refinedLocate, validation) : null;
+    }
+
+    private EdgeRoi fullEdgeRoi(String pageId, EraseRegion region, BufferedImage image) {
+        RoiTransform.PageEdge edge;
+        if (region.y2 <= 0.20) {
+            edge = RoiTransform.PageEdge.TOP;
+        } else if (region.y1 >= 0.80) {
+            edge = RoiTransform.PageEdge.BOTTOM;
+        } else if (region.x2 <= 0.20) {
+            edge = RoiTransform.PageEdge.LEFT;
+        } else if (region.x1 >= 0.80) {
+            edge = RoiTransform.PageEdge.RIGHT;
+        } else {
+            return null;
+        }
+        RoiTransform transform = RoiTransform.fromEdge(image.getWidth(), image.getHeight(), edge, null, 0);
+        return new EdgeRoi(transform, new VlmClient.RoiImage(pageId, region.region_id, crop(image, transform)));
+    }
+
+    private BodyBoundary mapBoundary(BodyBoundary local, RoiTransform transform, int fullWidth, int fullHeight) {
+        BodyBoundary mapped = new BodyBoundary();
+        mapped.x = local.x == null ? null : (transform.getX() + local.x * transform.getWidth()) / fullWidth;
+        mapped.y = local.y == null ? null : (transform.getY() + local.y * transform.getHeight()) / fullHeight;
+        mapped.basis = local.basis;
+        return mapped;
+    }
+
+    private EraseRegion copyRegion(EraseRegion source) {
+        EraseRegion copy = new EraseRegion();
+        copy.region_id = source.region_id;
+        copy.x1 = source.x1; copy.y1 = source.y1; copy.x2 = source.x2; copy.y2 = source.y2;
+        copy.page_number_text = source.page_number_text;
+        copy.same_line_metadata = source.same_line_metadata;
+        copy.on_line = source.on_line;
+        copy.confidence = source.confidence;
+        copy.safety_margin = source.safety_margin;
+        return copy;
     }
 
     /**
@@ -399,6 +510,27 @@ public final class ExamPipeline {
         final Map<String, PatternGroup> groupByPage = new HashMap<String, PatternGroup>();
         final List<PatternGroup> groups = new ArrayList<PatternGroup>();
         String consensusState = "stable";
+    }
+
+    /** 绑定局部图与其到标准化整页坐标的变换，禁止把 ROI 坐标直接用于原图。 */
+    private static final class EdgeRoi {
+        final RoiTransform transform;
+        final VlmClient.RoiImage image;
+
+        EdgeRoi(RoiTransform transform, VlmClient.RoiImage image) {
+            this.transform = transform;
+            this.image = image;
+        }
+    }
+
+    private static final class Refinement {
+        final LocateResponse locate;
+        final RegionValidator.ValidationResult validation;
+
+        Refinement(LocateResponse locate, RegionValidator.ValidationResult validation) {
+            this.locate = locate;
+            this.validation = validation;
+        }
     }
 
     public static final class RunContext {
