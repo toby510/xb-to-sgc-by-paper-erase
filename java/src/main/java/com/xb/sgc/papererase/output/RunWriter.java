@@ -32,7 +32,7 @@ public class RunWriter {
         return runDir;
     }
 
-    public void writeExam(ExamInput input, ExamOutcome outcome, Path runDir) throws IOException {
+    public void writeExam(ExamInput input, ExamOutcome outcome, Path runDir) throws Exception {
         Path erasedDir = runDir.resolve("erased").resolve(input.getSubject()).resolve(input.getExamId());
         Path consensusDir = runDir.resolve("consensus").resolve(input.getSubject()).resolve(input.getExamId());
         Path wordDir = runDir.resolve("word_output").resolve(input.getSubject()).resolve(input.getExamId());
