@@ -16,6 +16,13 @@ public class RiskGateTest {
     public void requiresLocalVerifyWhenAnyRiskConditionFails() {
         RegionValidator.ValidationResult validation = validated(0.99);
 
+        assertTrue(RiskGate.requiresLocalVerify(RiskGate.PageContext.stable(null), validation));
+        assertTrue(RiskGate.requiresLocalVerify(RiskGate.PageContext.stable(" "), validation));
+        assertTrue(RiskGate.requiresLocalVerify(stablePage().withPatternGroupId(null), validation));
+        assertTrue(RiskGate.requiresLocalVerify(stablePage().withPatternGroupId(" "), validation));
+        assertTrue(RiskGate.requiresLocalVerify(stablePage().withConsensusState(null), validation));
+        assertTrue(RiskGate.requiresLocalVerify(stablePage().withConsensusState("Stable"), validation));
+        assertTrue(RiskGate.requiresLocalVerify(stablePage().withConsensusState("unknown"), validation));
         assertTrue(RiskGate.requiresLocalVerify(stablePage().withStablePattern(false), validation));
         assertTrue(RiskGate.requiresLocalVerify(stablePage().withEdgeMatchesPattern(false), validation));
         assertTrue(RiskGate.requiresLocalVerify(stablePage().withJavaBlankGap(false), validation));
@@ -31,6 +38,7 @@ public class RiskGateTest {
         assertTrue(RiskGate.requiresLocalVerify(stablePage(), validated(0.969)));
         assertTrue(RiskGate.requiresLocalVerify(stablePage(), validated(Double.NaN)));
         assertTrue(RiskGate.requiresLocalVerify(stablePage(), RegionValidator.ValidationResult.rejectedResult("bad region")));
+        assertTrue(RiskGate.requiresLocalVerify(stablePage(), validatedForPage("different-page", 0.99)));
     }
 
     @Test
@@ -47,6 +55,10 @@ public class RiskGateTest {
     }
 
     private RegionValidator.ValidationResult validated(double confidence) {
+        return validatedForPage("page-1", confidence);
+    }
+
+    private RegionValidator.ValidationResult validatedForPage(String pageId, double confidence) {
         BufferedImage image = blankPage();
         for (int y = 9; y <= 14; y++) {
             for (int x = 11; x <= 18; x++) {
@@ -66,7 +78,7 @@ public class RiskGateTest {
         boundary.basis = "java";
 
         return RegionValidator.validate(
-                new RegionValidator.PageLocateResult("page-1", "safe_to_erase", Arrays.asList(region), boundary),
+                new RegionValidator.PageLocateResult(pageId, "safe_to_erase", Arrays.asList(region), boundary),
                 image);
     }
 

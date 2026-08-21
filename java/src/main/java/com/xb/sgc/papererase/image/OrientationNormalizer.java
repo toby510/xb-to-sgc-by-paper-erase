@@ -42,7 +42,18 @@ public final class OrientationNormalizer {
             }
         }
 
-        return new NormalizedImage(normalized, width, height, readingRotation);
+        return new NormalizedImage(copyOf(normalized), width, height, readingRotation);
+    }
+
+    private static BufferedImage copyOf(BufferedImage source) {
+        BufferedImage copy = new BufferedImage(source.getWidth(), source.getHeight(),
+                source.getType() == BufferedImage.TYPE_CUSTOM ? BufferedImage.TYPE_INT_ARGB : source.getType());
+        for (int y = 0; y < source.getHeight(); y++) {
+            for (int x = 0; x < source.getWidth(); x++) {
+                copy.setRGB(x, y, source.getRGB(x, y));
+            }
+        }
+        return copy;
     }
 
     public static final class NormalizedImage {
@@ -52,14 +63,14 @@ public final class OrientationNormalizer {
         private final int readingRotation;
 
         private NormalizedImage(BufferedImage image, int originalWidth, int originalHeight, int readingRotation) {
-            this.image = image;
+            this.image = copyOf(image);
             this.originalWidth = originalWidth;
             this.originalHeight = originalHeight;
             this.readingRotation = readingRotation;
         }
 
         public BufferedImage getImage() {
-            return image;
+            return copyOf(image);
         }
 
         public int getOriginalWidth() {

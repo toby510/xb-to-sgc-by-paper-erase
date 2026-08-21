@@ -10,6 +10,12 @@ public final class RiskGate {
         if (context == null || validation == null || !validation.isAccepted() || validation.getRegions().isEmpty()) {
             return true;
         }
+        if (blank(context.getPageId()) || blank(context.getPatternGroupId())) {
+            return true;
+        }
+        if (!"stable".equals(context.getConsensusState())) {
+            return true;
+        }
         if (!context.isStablePattern() || !context.isEdgeMatchesPattern() || !context.isJavaBlankGap()) {
             return true;
         }
@@ -18,16 +24,20 @@ public final class RiskGate {
                 || context.isPageSequenceIncomplete() || context.isMissingPageRisk()) {
             return true;
         }
-        if ("mixed".equals(context.getConsensusState()) || "uncertain".equals(context.getConsensusState())) {
-            return true;
-        }
         for (RegionValidator.PixelRegion region : validation.getRegions()) {
+            if (!context.getPageId().equals(region.getPageId())) {
+                return true;
+            }
             if (Double.isNaN(region.getConfidence()) || Double.isInfinite(region.getConfidence())
                     || region.getConfidence() < MIN_CONFIDENCE) {
                 return true;
             }
         }
         return false;
+    }
+
+    private static boolean blank(String value) {
+        return value == null || value.trim().length() == 0;
     }
 
     public static final class PageContext {

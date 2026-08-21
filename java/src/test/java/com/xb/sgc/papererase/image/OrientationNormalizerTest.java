@@ -7,6 +7,7 @@ import java.util.Arrays;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
 
 public class OrientationNormalizerTest {
     @Test
@@ -32,6 +33,22 @@ public class OrientationNormalizerTest {
             return;
         }
         throw new AssertionError("Expected non-right-angle rotation to fail closed");
+    }
+
+    @Test
+    public void normalizedImageDoesNotExposeMutableInternalImage() {
+        BufferedImage source = makeImage();
+        OrientationNormalizer.NormalizedImage normalized = OrientationNormalizer.normalize(source, 0);
+
+        source.setRGB(0, 0, magenta());
+        assertEquals(red(), normalized.getImage().getRGB(0, 0));
+
+        BufferedImage firstRead = normalized.getImage();
+        firstRead.setRGB(0, 0, magenta());
+
+        BufferedImage secondRead = normalized.getImage();
+        assertEquals(red(), secondRead.getRGB(0, 0));
+        assertNotEquals(firstRead.getRGB(0, 0), secondRead.getRGB(0, 0));
     }
 
     private void assertNormalized(OrientationNormalizer.NormalizedImage normalized,

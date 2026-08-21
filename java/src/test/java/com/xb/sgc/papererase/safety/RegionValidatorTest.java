@@ -47,6 +47,12 @@ public class RegionValidatorTest {
         EraseRegion infiniteConfidence = region("r1", 0.10, 0.04, 0.20, 0.08);
         infiniteConfidence.confidence = Double.POSITIVE_INFINITY;
         assertRejected(infiniteConfidence, "confidence must be finite");
+        EraseRegion negativeConfidence = region("r1", 0.10, 0.04, 0.20, 0.08);
+        negativeConfidence.confidence = -0.01;
+        assertRejected(negativeConfidence, "confidence must be between 0 and 1");
+        EraseRegion highConfidence = region("r1", 0.10, 0.04, 0.20, 0.08);
+        highConfidence.confidence = 1.01;
+        assertRejected(highConfidence, "confidence must be between 0 and 1");
         assertRejected(region("r1", -0.01, 0.04, 0.20, 0.08), "0 <= x1 < x2 <= 1");
         assertRejected(region("r1", 0.10, 0.04, 0.10, 0.08), "strictly positive area");
 
@@ -60,12 +66,23 @@ public class RegionValidatorTest {
 
         assertFalse(result.isAccepted());
         assertTrue(result.getReasons().get(0).contains("duplicate region_id"));
+
+        result = RegionValidator.validate(
+                locate("page-1", Arrays.asList(
+                        region("r1", 0.10, 0.04, 0.20, 0.08),
+                        region(" r1 ", 0.30, 0.04, 0.40, 0.08)), boundary(null, 0.16)),
+                image);
+
+        assertFalse(result.isAccepted());
+        assertTrue(result.getReasons().get(0).contains("duplicate region_id"));
     }
 
     @Test
     public void validateRejectsNonEdgeRegionInsufficientBodyGapAndInkTouchingBox() {
         assertRejected(region("r1", 0.40, 0.40, 0.50, 0.45), "edge band");
         assertRejected(region("r1", 0.10, 0.04, 0.20, 0.08), boundary(null, 0.10), "body blank gap");
+        assertRejected(region("r1", 0.10, 0.04, 0.20, 0.08), boundary(null, 1.20), "body boundary y must be between 0 and 1");
+        assertRejected(region("r1", 0.04, 0.30, 0.08, 0.40), boundary(Double.NaN, null), "body boundary x must be finite");
 
         BufferedImage image = blankPage();
         drawText(image, 10, 8, 20, 15);
@@ -75,6 +92,26 @@ public class RegionValidatorTest {
 
         assertFalse(result.isAccepted());
         assertTrue(result.getReasons().get(0).contains("mask touches candidate box"));
+    }
+
+    @Test
+    public void validateRejectsUnsafeStatusMissingPageIdAndEmptyOrNullRegions() {
+        BufferedImage image = blankPage();
+
+        assertRejectedLocate(new RegionValidator.PageLocateResult("page-1", "manual_review",
+                Arrays.asList(region("r1", 0.10, 0.04, 0.20, 0.08)), boundary(null, 0.16)),
+                image, "status must be safe_to_erase");
+        assertRejectedLocate(new RegionValidator.PageLocateResult("page-1", "Safe_To_Erase",
+                Arrays.asList(region("r1", 0.10, 0.04, 0.20, 0.08)), boundary(null, 0.16)),
+                image, "status must be safe_to_erase");
+        assertRejectedLocate(new RegionValidator.PageLocateResult(" ", "safe_to_erase",
+                Arrays.asList(region("r1", 0.10, 0.04, 0.20, 0.08)), boundary(null, 0.16)),
+                image, "page_id is required");
+        assertRejectedLocate(new RegionValidator.PageLocateResult("page-1", "safe_to_erase",
+                java.util.Collections.<EraseRegion>emptyList(), boundary(null, 0.16)),
+                image, "regions must not be empty");
+        assertRejectedLocate(new RegionValidator.PageLocateResult("page-1", "safe_to_erase",
+                null, boundary(null, 0.16)), image, "regions are required");
     }
 
     private void assertRejected(EraseRegion region, String reason) {
@@ -95,6 +132,13 @@ public class RegionValidatorTest {
         }
 
         RegionValidator.ValidationResult result = RegionValidator.validate(locate("page-1", region, boundary), image);
+
+        assertFalse(result.isAccepted());
+        assertTrue(result.getReasons().get(0).contains(reason));
+    }
+
+    private void assertRejectedLocate(RegionValidator.PageLocateResult locateResult, BufferedImage image, String reason) {
+        RegionValidator.ValidationResult result = RegionValidator.validate(locateResult, image);
 
         assertFalse(result.isAccepted());
         assertTrue(result.getReasons().get(0).contains(reason));

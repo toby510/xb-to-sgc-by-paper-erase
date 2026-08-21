@@ -172,6 +172,73 @@ Output:
 Tests run: 5, Failures: 0, Errors: 0, Skipped: 0
 ```
 
+## Review Fix Pass
+
+### RED
+
+After adding tests for the requested review findings:
+
+```bash
+JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_291.jdk/Contents/Home mvn -q -Dtest=RiskGateTest,RegionValidatorTest,RoiTransformTest,OrientationNormalizerTest test
+```
+
+Output:
+
+```text
+Tests run: 14, Failures: 7, Errors: 0, Skipped: 0
+
+Failed tests:
+publicEntrypointsRejectInvalidDimensionsCoordinatesAndMargins
+fromEdgeAllowsNullBoundaryButRejectsNullEdgeAndNegativeMargin
+normalizedImageDoesNotExposeMutableInternalImage
+validateRejectsUnsafeStatusMissingPageIdAndEmptyOrNullRegions
+validateRejectsInvalidCoordinatesAndDuplicateRegionIds
+validateRejectsNonEdgeRegionInsufficientBodyGapAndInkTouchingBox
+requiresLocalVerifyWhenAnyRiskConditionFails
+```
+
+### GREEN
+
+After the minimal fixes:
+
+```bash
+JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_291.jdk/Contents/Home mvn -q -Dtest=RiskGateTest,RegionValidatorTest,RoiTransformTest,OrientationNormalizerTest test
+```
+
+Output:
+
+```text
+Tests run: 14, Failures: 0, Errors: 0, Skipped: 0
+```
+
+### ROI overflow follow-up
+
+RED:
+
+```bash
+JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_291.jdk/Contents/Home mvn -q -Dtest=RoiTransformTest test
+```
+
+Output:
+
+```text
+Tests run: 5, Failures: 1, Errors: 0, Skipped: 0
+Failed tests:
+publicEntrypointsRejectInvalidDimensionsCoordinatesAndMargins
+```
+
+GREEN:
+
+```bash
+JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_291.jdk/Contents/Home mvn -q -Dtest=RoiTransformTest test
+```
+
+Output:
+
+```text
+Tests run: 5, Failures: 0, Errors: 0, Skipped: 0
+```
+
 ## Final Verification
 
 Task 2 target tests:
@@ -183,7 +250,7 @@ JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_291.jdk/Contents/Home mvn -
 Output:
 
 ```text
-Tests run: 10, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 14, Failures: 0, Errors: 0, Skipped: 0
 ```
 
 Full Maven test suite:
@@ -195,7 +262,7 @@ JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_291.jdk/Contents/Home mvn -
 Output:
 
 ```text
-Tests run: 17, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 21, Failures: 0, Errors: 0, Skipped: 0
 ```
 
 ## Changed Files
@@ -213,11 +280,11 @@ Tests run: 17, Failures: 0, Errors: 0, Skipped: 0
 ## Self-review
 
 - Orientation accepts only `0/90/180/270`; 90/270 swap dimensions and preserve the exact input pixel set.
-- `NormalizedImage` records original dimensions, normalized dimensions, and applied rotation.
-- `RegionValidator` rejects missing IDs, duplicate region IDs, non-finite coordinates/confidence, out-of-range coordinates, non-positive area, non-edge regions, insufficient body gap, out-of-bounds mappings, and ink touching the candidate border.
+- `NormalizedImage` records original dimensions, normalized dimensions, and applied rotation; source images and getter-returned images cannot mutate internal state.
+- `RegionValidator` rejects non-`safe_to_erase` status, missing page ID, null/empty regions, duplicate canonical region IDs, non-finite coordinates/confidence, confidence outside `0..1`, out-of-range coordinates, non-positive area, non-edge regions, invalid required-axis body boundary, insufficient body gap, out-of-bounds mappings, and ink touching the candidate border.
 - `ValidationResult` and validated `PixelRegion` lists are immutable; Task 3 can consume the returned pixel bounds without recomputing or expanding.
-- `RiskGate` requires local verification unless every skip condition passes, including confidence threshold, stable consensus, matching edge, Java blank gap, non-rotated/non-double-page/non-heterogeneous page, no mixed/uncertain state, no body conflict, and no missing-page risk.
-- `RoiTransform` uses floor for left/top, ceil for right/bottom, clamps to ROI/full-image bounds, and supports no-candidate edge ROI creation.
+- `RiskGate` requires local verification unless every skip condition passes, including nonblank context page ID, nonblank pattern group ID, exact `stable` consensus, matching validation page IDs, confidence threshold, stable pattern, matching edge, Java blank gap, non-rotated/non-double-page/non-heterogeneous page, no body conflict, and no missing-page risk.
+- `RoiTransform` uses floor for left/top and ceil for right/bottom for valid local rectangles; public entrypoints now reject invalid dimensions, invalid local/full normalized coordinates, invalid body boundaries, negative margins, zero/out-of-bounds ROI, and ROI int-overflow edge cases instead of clamping them into apparently valid values.
 
 ## Concerns
 

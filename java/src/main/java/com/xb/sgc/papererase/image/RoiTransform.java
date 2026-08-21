@@ -15,12 +15,19 @@ public final class RoiTransform {
         if (fullWidth <= 0 || fullHeight <= 0) {
             throw new IllegalArgumentException("full image dimensions must be positive");
         }
+        if (width <= 0 || height <= 0) {
+            throw new IllegalArgumentException("roi width and height must be positive");
+        }
+        if (x < 0 || y < 0 || x > fullWidth || y > fullHeight
+                || (long) x + width > fullWidth || (long) y + height > fullHeight) {
+            throw new IllegalArgumentException("roi must be inside full image bounds");
+        }
         this.fullWidth = fullWidth;
         this.fullHeight = fullHeight;
-        this.x = clamp(x, 0, fullWidth);
-        this.y = clamp(y, 0, fullHeight);
-        this.width = clamp(width, 0, fullWidth - this.x);
-        this.height = clamp(height, 0, fullHeight - this.y);
+        this.x = x;
+        this.y = y;
+        this.width = width;
+        this.height = height;
     }
 
     public static RoiTransform fromCandidate(int fullWidth, int fullHeight, RegionValidator.PixelRegion candidate,
@@ -28,6 +35,10 @@ public final class RoiTransform {
         if (candidate == null) {
             throw new IllegalArgumentException("candidate is required");
         }
+        if (marginPixels < 0) {
+            throw new IllegalArgumentException("marginPixels must be non-negative");
+        }
+        validateOptionalBodyBoundary(bodyBoundary);
         int left = candidate.getX() - marginPixels;
         int top = candidate.getY() - marginPixels;
         int right = candidate.getX() + candidate.getWidth() + marginPixels;
@@ -59,6 +70,13 @@ public final class RoiTransform {
 
     public static RoiTransform fromEdge(int fullWidth, int fullHeight, PageEdge edge, BodyBoundary bodyBoundary,
                                         int marginPixels) {
+        if (edge == null) {
+            throw new IllegalArgumentException("edge is required");
+        }
+        if (marginPixels < 0) {
+            throw new IllegalArgumentException("marginPixels must be non-negative");
+        }
+        validateOptionalBodyBoundary(bodyBoundary);
         if (edge == PageEdge.TOP) {
             int bottom = bodyBoundary != null && bodyBoundary.y != null && finite(bodyBoundary.y)
                     ? (int) Math.ceil(bodyBoundary.y * fullHeight) + marginPixels : fullHeight / 5;
@@ -83,16 +101,11 @@ public final class RoiTransform {
     }
 
     public PixelRect localRectToFullPixels(double x1, double y1, double x2, double y2) {
-        double clampedX1 = clamp01(x1);
-        double clampedY1 = clamp01(y1);
-        double clampedX2 = clamp01(x2);
-        double clampedY2 = clamp01(y2);
-        int left = x + (int) Math.floor(clampedX1 * width);
-        int top = y + (int) Math.floor(clampedY1 * height);
-        int right = x + (int) Math.ceil(clampedX2 * width);
-        int bottom = y + (int) Math.ceil(clampedY2 * height);
-        right = clamp(right, left, x + width);
-        bottom = clamp(bottom, top, y + height);
+        validateLocalRect(x1, y1, x2, y2);
+        int left = x + (int) Math.floor(x1 * width);
+        int top = y + (int) Math.floor(y1 * height);
+        int right = x + (int) Math.ceil(x2 * width);
+        int bottom = y + (int) Math.ceil(y2 * height);
         return new PixelRect(left, top, right - left, bottom - top);
     }
 
@@ -105,9 +118,15 @@ public final class RoiTransform {
     }
 
     public LocalPoint fullNormalizedToLocalPoint(double fullX, double fullY) {
+        validateFullNormalizedPoint(fullX, fullY);
         double pixelX = fullX * fullWidth;
         double pixelY = fullY * fullHeight;
-        return new LocalPoint(clamp01((pixelX - x) / width), clamp01((pixelY - y) / height));
+        double localX = (pixelX - x) / width;
+        double localY = (pixelY - y) / height;
+        if (localX < 0 || localX > 1 || localY < 0 || localY > 1) {
+            throw new IllegalArgumentException("full normalized point must be inside roi");
+        }
+        return new LocalPoint(localX, localY);
     }
 
     private static boolean finite(double value) {
@@ -118,14 +137,47 @@ public final class RoiTransform {
         return Math.max(min, Math.min(max, value));
     }
 
-    private static double clamp01(double value) {
-        if (value < 0) {
-            return 0;
+    private static void validateLocalRect(double x1, double y1, double x2, double y2) {
+        if (!finite(x1) || !finite(y1) || !finite(x2) || !finite(y2)) {
+            throw new IllegalArgumentException("local coordinates must be finite");
         }
-        if (value > 1) {
-            return 1;
+        if (x1 < 0 || x1 > 1 || y1 < 0 || y1 > 1 || x2 < 0 || x2 > 1 || y2 < 0 || y2 > 1) {
+            throw new IllegalArgumentException("local coordinates must be between 0 and 1");
         }
-        return value;
+        if (x1 >= x2 || y1 >= y2) {
+            throw new IllegalArgumentException("local rect must have strictly positive area");
+        }
+    }
+
+    private static void validateFullNormalizedPoint(double fullX, double fullY) {
+        if (!finite(fullX) || !finite(fullY)) {
+            throw new IllegalArgumentException("full normalized point must be finite");
+        }
+        if (fullX < 0 || fullX > 1 || fullY < 0 || fullY > 1) {
+            throw new IllegalArgumentException("full normalized point must be between 0 and 1");
+        }
+    }
+
+    private static void validateOptionalBodyBoundary(BodyBoundary bodyBoundary) {
+        if (bodyBoundary == null) {
+            return;
+        }
+        if (bodyBoundary.x != null) {
+            if (!finite(bodyBoundary.x)) {
+                throw new IllegalArgumentException("body boundary x must be finite");
+            }
+            if (bodyBoundary.x < 0 || bodyBoundary.x > 1) {
+                throw new IllegalArgumentException("body boundary x must be between 0 and 1");
+            }
+        }
+        if (bodyBoundary.y != null) {
+            if (!finite(bodyBoundary.y)) {
+                throw new IllegalArgumentException("body boundary y must be finite");
+            }
+            if (bodyBoundary.y < 0 || bodyBoundary.y > 1) {
+                throw new IllegalArgumentException("body boundary y must be between 0 and 1");
+            }
+        }
     }
 
     public int getX() {

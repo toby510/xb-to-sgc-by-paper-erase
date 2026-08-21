@@ -10,6 +10,7 @@ import java.awt.image.BufferedImage;
 import java.util.Arrays;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 public class RoiTransformTest {
     @Test
@@ -34,15 +35,15 @@ public class RoiTransformTest {
     }
 
     @Test
-    public void localRectToFullPixelsUsesFloorCeilClampWithoutOverflow() {
+    public void localRectToFullPixelsUsesFloorCeilForValidLocalCoordinates() {
         RoiTransform roi = new RoiTransform(80, 60, 140, 340, 1000, 2000);
 
-        RoiTransform.PixelRect rect = roi.localRectToFullPixels(0.25, 0.50, 1.20, 1.20);
+        RoiTransform.PixelRect rect = roi.localRectToFullPixels(0.25, 0.50, 0.75, 0.75);
 
         assertEquals(115, rect.getX());
         assertEquals(230, rect.getY());
-        assertEquals(105, rect.getWidth());
-        assertEquals(170, rect.getHeight());
+        assertEquals(70, rect.getWidth());
+        assertEquals(85, rect.getHeight());
     }
 
     @Test
@@ -55,6 +56,97 @@ public class RoiTransformTest {
         assertEquals(0, roi.getY());
         assertEquals(1000, roi.getWidth());
         assertEquals(380, roi.getHeight());
+    }
+
+    @Test
+    public void publicEntrypointsRejectInvalidDimensionsCoordinatesAndMargins() {
+        assertIllegalArgument("roi width and height must be positive", new ThrowingRunnable() {
+            public void run() {
+                new RoiTransform(80, 60, 0, 340, 1000, 2000);
+            }
+        });
+        assertIllegalArgument("roi must be inside full image bounds", new ThrowingRunnable() {
+            public void run() {
+                new RoiTransform(980, 60, 40, 340, 1000, 2000);
+            }
+        });
+        assertIllegalArgument("roi must be inside full image bounds", new ThrowingRunnable() {
+            public void run() {
+                new RoiTransform(Integer.MAX_VALUE, 0, 2, 1, Integer.MAX_VALUE, 10);
+            }
+        });
+        assertIllegalArgument("local coordinates must be finite", new ThrowingRunnable() {
+            public void run() {
+                new RoiTransform(80, 60, 140, 340, 1000, 2000)
+                        .localRectToFullPixels(Double.NaN, 0.1, 0.2, 0.3);
+            }
+        });
+        assertIllegalArgument("local coordinates must be between 0 and 1", new ThrowingRunnable() {
+            public void run() {
+                new RoiTransform(80, 60, 140, 340, 1000, 2000)
+                        .localRectToFullPixels(0.1, 0.1, 1.2, 0.3);
+            }
+        });
+        assertIllegalArgument("local rect must have strictly positive area", new ThrowingRunnable() {
+            public void run() {
+                new RoiTransform(80, 60, 140, 340, 1000, 2000)
+                        .localRectToFullPixels(0.4, 0.1, 0.4, 0.3);
+            }
+        });
+        assertIllegalArgument("full normalized point must be finite", new ThrowingRunnable() {
+            public void run() {
+                new RoiTransform(80, 60, 140, 340, 1000, 2000)
+                        .fullNormalizedToLocalPoint(Double.POSITIVE_INFINITY, 0.2);
+            }
+        });
+        assertIllegalArgument("full normalized point must be between 0 and 1", new ThrowingRunnable() {
+            public void run() {
+                new RoiTransform(80, 60, 140, 340, 1000, 2000)
+                        .fullNormalizedToLocalPoint(-0.1, 0.2);
+            }
+        });
+        assertIllegalArgument("marginPixels must be non-negative", new ThrowingRunnable() {
+            public void run() {
+                RoiTransform.fromCandidate(1000, 2000, validatedCandidate(blankPage(1000, 2000), boundary(null, 0.20)),
+                        boundary(null, 0.20), -1);
+            }
+        });
+        assertIllegalArgument("body boundary y must be between 0 and 1", new ThrowingRunnable() {
+            public void run() {
+                RoiTransform.fromEdge(1000, 2000, RoiTransform.PageEdge.TOP, boundary(null, 1.2), 20);
+            }
+        });
+    }
+
+    @Test
+    public void fromEdgeAllowsNullBoundaryButRejectsNullEdgeAndNegativeMargin() {
+        RoiTransform roi = RoiTransform.fromEdge(1000, 2000, RoiTransform.PageEdge.LEFT, null, 20);
+
+        assertEquals(0, roi.getX());
+        assertEquals(0, roi.getY());
+        assertTrue(roi.getWidth() > 0);
+        assertEquals(2000, roi.getHeight());
+
+        assertIllegalArgument("edge is required", new ThrowingRunnable() {
+            public void run() {
+                RoiTransform.fromEdge(1000, 2000, null, null, 20);
+            }
+        });
+        assertIllegalArgument("marginPixels must be non-negative", new ThrowingRunnable() {
+            public void run() {
+                RoiTransform.fromEdge(1000, 2000, RoiTransform.PageEdge.TOP, null, -1);
+            }
+        });
+    }
+
+    private void assertIllegalArgument(String messagePart, ThrowingRunnable runnable) {
+        try {
+            runnable.run();
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains(messagePart));
+            return;
+        }
+        throw new AssertionError("Expected IllegalArgumentException containing: " + messagePart);
     }
 
     private RegionValidator.PixelRegion validatedCandidate(BufferedImage image, BodyBoundary boundary) {
@@ -94,5 +186,9 @@ public class RoiTransformTest {
                 image.setRGB(x, y, Color.BLACK.getRGB());
             }
         }
+    }
+
+    private interface ThrowingRunnable {
+        void run();
     }
 }

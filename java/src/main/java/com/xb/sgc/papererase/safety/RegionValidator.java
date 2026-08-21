@@ -29,21 +29,31 @@ public final class RegionValidator {
         List<PixelRegion> pixelRegions = new ArrayList<PixelRegion>();
         Set<String> regionIds = new HashSet<String>();
 
+        if (locateResult.getPageId() == null || locateResult.getPageId().trim().length() == 0) {
+            return ValidationResult.rejected("page_id is required");
+        }
+        if (!"safe_to_erase".equals(locateResult.getStatus())) {
+            return ValidationResult.rejected("status must be safe_to_erase");
+        }
+        if (locateResult.getRegions() == null) {
+            return ValidationResult.rejected("regions are required");
+        }
+        if (locateResult.getRegions().isEmpty()) {
+            return ValidationResult.rejected("regions must not be empty");
+        }
+
         for (EraseRegion region : locateResult.getRegions()) {
             if (region == null) {
                 reasons.add("region is required");
-                continue;
-            }
-            if (locateResult.getPageId() == null || locateResult.getPageId().trim().length() == 0) {
-                reasons.add("page_id is required");
                 continue;
             }
             if (region.region_id == null || region.region_id.trim().length() == 0) {
                 reasons.add("region_id is required");
                 continue;
             }
-            if (!regionIds.add(region.region_id)) {
-                reasons.add("duplicate region_id: " + region.region_id);
+            String canonicalRegionId = region.region_id.trim();
+            if (!regionIds.add(canonicalRegionId)) {
+                reasons.add("duplicate region_id: " + canonicalRegionId);
                 continue;
             }
             if (!finite(region.x1) || !finite(region.y1) || !finite(region.x2) || !finite(region.y2)) {
@@ -52,6 +62,10 @@ public final class RegionValidator {
             }
             if (!finite(region.confidence)) {
                 reasons.add("confidence must be finite");
+                continue;
+            }
+            if (region.confidence < 0 || region.confidence > 1) {
+                reasons.add("confidence must be between 0 and 1");
                 continue;
             }
             if (!(0 <= region.x1 && region.x1 <= 1 && 0 <= region.x2 && region.x2 <= 1
@@ -70,12 +84,17 @@ public final class RegionValidator {
                 reasons.add("region must be inside an edge band");
                 continue;
             }
+            String boundaryReason = invalidBodyBoundaryReason(edge, locateResult.getNearestBodyBoundary());
+            if (boundaryReason != null) {
+                reasons.add(boundaryReason);
+                continue;
+            }
             if (!hasBodyGap(edge, region, locateResult.getNearestBodyBoundary())) {
                 reasons.add("body blank gap is insufficient");
                 continue;
             }
 
-            PixelRegion pixelRegion = toPixelRegion(locateResult.getPageId(), region, image);
+            PixelRegion pixelRegion = toPixelRegion(locateResult.getPageId(), canonicalRegionId, region, image);
             if (pixelRegion.getWidth() <= 0 || pixelRegion.getHeight() <= 0
                     || pixelRegion.getX() < 0 || pixelRegion.getY() < 0
                     || pixelRegion.getX() + pixelRegion.getWidth() > image.getWidth()
@@ -100,12 +119,12 @@ public final class RegionValidator {
         return !Double.isNaN(value) && !Double.isInfinite(value);
     }
 
-    private static PixelRegion toPixelRegion(String pageId, EraseRegion region, BufferedImage image) {
+    private static PixelRegion toPixelRegion(String pageId, String regionId, EraseRegion region, BufferedImage image) {
         int left = clamp((int) Math.floor(region.x1 * image.getWidth()), 0, image.getWidth());
         int top = clamp((int) Math.floor(region.y1 * image.getHeight()), 0, image.getHeight());
         int rightExclusive = clamp((int) Math.ceil(region.x2 * image.getWidth()), 0, image.getWidth());
         int bottomExclusive = clamp((int) Math.ceil(region.y2 * image.getHeight()), 0, image.getHeight());
-        return new PixelRegion(pageId, region.region_id, left, top, rightExclusive - left, bottomExclusive - top,
+        return new PixelRegion(pageId, regionId, left, top, rightExclusive - left, bottomExclusive - top,
                 region.x1, region.y1, region.x2, region.y2, region.confidence);
     }
 
@@ -130,22 +149,47 @@ public final class RegionValidator {
     }
 
     private static boolean hasBodyGap(Edge edge, EraseRegion region, BodyBoundary boundary) {
-        if (boundary == null) {
-            return false;
-        }
         if (edge == Edge.TOP) {
-            return boundary.y != null && finite(boundary.y) && boundary.y - region.y2 >= MIN_BODY_GAP;
+            return boundary.y - region.y2 >= MIN_BODY_GAP;
         }
         if (edge == Edge.BOTTOM) {
-            return boundary.y != null && finite(boundary.y) && region.y1 - boundary.y >= MIN_BODY_GAP;
+            return region.y1 - boundary.y >= MIN_BODY_GAP;
         }
         if (edge == Edge.LEFT) {
-            return boundary.x != null && finite(boundary.x) && boundary.x - region.x2 >= MIN_BODY_GAP;
+            return boundary.x - region.x2 >= MIN_BODY_GAP;
         }
         if (edge == Edge.RIGHT) {
-            return boundary.x != null && finite(boundary.x) && region.x1 - boundary.x >= MIN_BODY_GAP;
+            return region.x1 - boundary.x >= MIN_BODY_GAP;
         }
         return false;
+    }
+
+    private static String invalidBodyBoundaryReason(Edge edge, BodyBoundary boundary) {
+        if (boundary == null) {
+            return "body blank gap is insufficient";
+        }
+        if (edge == Edge.TOP || edge == Edge.BOTTOM) {
+            if (boundary.y == null) {
+                return "body blank gap is insufficient";
+            }
+            if (!finite(boundary.y)) {
+                return "body boundary y must be finite";
+            }
+            if (boundary.y < 0 || boundary.y > 1) {
+                return "body boundary y must be between 0 and 1";
+            }
+        } else {
+            if (boundary.x == null) {
+                return "body blank gap is insufficient";
+            }
+            if (!finite(boundary.x)) {
+                return "body boundary x must be finite";
+            }
+            if (boundary.x < 0 || boundary.x > 1) {
+                return "body boundary x must be between 0 and 1";
+            }
+        }
+        return null;
     }
 
     private static boolean maskTouchesCandidateBox(BufferedImage image, PixelRegion region) {
@@ -184,7 +228,7 @@ public final class RegionValidator {
         public PageLocateResult(String pageId, String status, List<EraseRegion> regions, BodyBoundary nearestBodyBoundary) {
             this.pageId = pageId;
             this.status = status;
-            this.regions = Collections.unmodifiableList(new ArrayList<EraseRegion>(regions));
+            this.regions = regions == null ? null : Collections.unmodifiableList(new ArrayList<EraseRegion>(regions));
             this.nearestBodyBoundary = nearestBodyBoundary;
         }
 
