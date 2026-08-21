@@ -10,7 +10,8 @@
 ## Task status
 
 - Task 1: complete — commits `1fa221b`, `28daa2c`, `226b80a`; 7 tests passed; independent review APPROVED after two fix rounds.
-- Task 2: complete — commit pending; 17 tests passed with explicit JDK 8 `JAVA_HOME`.
+- Task 2: complete — commits `6a939cf`, `06cbfd4`, `0a8d965`; 24 tests passed with explicit JDK 8 `JAVA_HOME`; independent review APPROVED after two fix rounds.
+- Task 3: complete — commit created; 33 tests passed with explicit JDK 8 `JAVA_HOME`.
 
 ## Pre-flight interface scan
 
