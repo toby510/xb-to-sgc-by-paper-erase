@@ -278,7 +278,8 @@ public interface VlmClient {
                 log(role, attempt, "started", pages.size(), rois.size(), 0, null);
                 try {
                     String response = http(roleConfig, buildRequestBody(roleConfig.getModel(), readPrompt(roleConfig), instruction,
-                            pages, rois, roleConfig.getMaxOutputTokens(), roleConfig.getImageDetail()));
+                            pages, rois, roleConfig.getMaxOutputTokens(), roleConfig.getImageDetail(),
+                            roleConfig.getThinkingType(), roleConfig.getReasoningEffort()));
                     log(role, attempt, "completed", pages.size(), rois.size(), System.currentTimeMillis() - startedAt, null);
                     return response;
                 } catch (RuntimeException e) {
@@ -299,6 +300,13 @@ public interface VlmClient {
         public static String buildRequestBody(String model, String prompt, String instruction,
                                               List<PageImage> pages, List<RoiImage> rois,
                                               int maxOutputTokens, String imageDetail) {
+            return buildRequestBody(model, prompt, instruction, pages, rois, maxOutputTokens, imageDetail, null, null);
+        }
+
+        public static String buildRequestBody(String model, String prompt, String instruction,
+                                              List<PageImage> pages, List<RoiImage> rois,
+                                              int maxOutputTokens, String imageDetail,
+                                              String thinkingType, String reasoningEffort) {
             try {
                 ObjectMapper mapper = new ObjectMapper();
                 List<Object> content = new ArrayList<Object>();
@@ -321,7 +329,19 @@ public interface VlmClient {
                 inputMessage.put("content", content);
                 Map<String, Object> body = new LinkedHashMap<String, Object>();
                 body.put("model", model);
-                body.put("max_output_tokens", maxOutputTokens);
+                if (maxOutputTokens > 0) {
+                    body.put("max_output_tokens", maxOutputTokens);
+                }
+                if (thinkingType != null && thinkingType.trim().length() > 0) {
+                    Map<String, Object> thinking = new LinkedHashMap<String, Object>();
+                    thinking.put("type", thinkingType);
+                    body.put("thinking", thinking);
+                }
+                if (reasoningEffort != null && reasoningEffort.trim().length() > 0) {
+                    Map<String, Object> reasoning = new LinkedHashMap<String, Object>();
+                    reasoning.put("effort", reasoningEffort);
+                    body.put("reasoning", reasoning);
+                }
                 body.put("input", java.util.Collections.singletonList(inputMessage));
                 return mapper.writeValueAsString(body);
             } catch (IOException e) {

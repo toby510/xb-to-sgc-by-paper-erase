@@ -119,19 +119,20 @@
       },
       "roles": {
         "pattern": {
-          "max_output_tokens": 1200,
+          "thinking": { "type": "enabled" },
+          "reasoning": { "effort": "low" },
           "image_detail": "auto"
         },
         "locate": {
-          "max_output_tokens": 800,
+          "thinking": { "type": "disabled" },
           "image_detail": "high"
         },
         "verify": {
-          "max_output_tokens": 400,
+          "thinking": { "type": "disabled" },
           "image_detail": "high"
         },
         "audit": {
-          "max_output_tokens": 800,
+          "thinking": { "type": "disabled" },
           "image_detail": "high"
         }
       }

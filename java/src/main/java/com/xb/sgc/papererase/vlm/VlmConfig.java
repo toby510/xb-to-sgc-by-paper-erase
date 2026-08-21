@@ -52,6 +52,10 @@ public final class VlmConfig {
             int retries = roleOverride.path("network_retries").asInt(defaultRetries);
             int maxOutputTokens = roleOverride.path("max_output_tokens").asInt(0);
             String imageDetail = text(roleOverride.path("image_detail"));
+            String thinkingType = resolveText(roleOverride.path("thinking").path("type"),
+                    provider.path("thinking").path("type"), env, null);
+            String reasoningEffort = resolveText(roleOverride.path("reasoning").path("effort"),
+                    provider.path("reasoning").path("effort"), env, null);
             if (blank(prompt)) {
                 throw new IllegalStateException(role + " prompt is required");
             }
@@ -65,10 +69,11 @@ public final class VlmConfig {
                 throw new IllegalStateException(role + " api key is required");
             }
             if ("ark-responses".equals(providerKind)
-                    && (maxOutputTokens <= 0 || !("auto".equals(imageDetail) || "high".equals(imageDetail) || "low".equals(imageDetail)))) {
-                throw new IllegalStateException(role + " Ark output budget and image detail are required");
+                    && !("auto".equals(imageDetail) || "high".equals(imageDetail) || "low".equals(imageDetail))) {
+                throw new IllegalStateException(role + " Ark image detail is required");
             }
-            roles.put(role, new RoleConfig(role, prompt, model, endpoint, apiKey, retries, maxOutputTokens, imageDetail));
+            roles.put(role, new RoleConfig(role, prompt, model, endpoint, apiKey, retries, maxOutputTokens, imageDetail,
+                    thinkingType, reasoningEffort));
         }
         return new VlmConfig(roles, previewLongEdge, providerKind);
     }
@@ -169,9 +174,11 @@ public final class VlmConfig {
         private final int retries;
         private final int maxOutputTokens;
         private final String imageDetail;
+        private final String thinkingType;
+        private final String reasoningEffort;
 
         private RoleConfig(String role, String promptPath, String model, String endpoint, String apiKey, int retries,
-                           int maxOutputTokens, String imageDetail) {
+                           int maxOutputTokens, String imageDetail, String thinkingType, String reasoningEffort) {
             this.role = role;
             this.promptPath = promptPath;
             this.model = model;
@@ -180,6 +187,8 @@ public final class VlmConfig {
             this.retries = retries;
             this.maxOutputTokens = maxOutputTokens;
             this.imageDetail = imageDetail;
+            this.thinkingType = thinkingType;
+            this.reasoningEffort = reasoningEffort;
         }
 
         public String getRole() {
@@ -214,6 +223,16 @@ public final class VlmConfig {
         /** Ark 图片细节级别；pattern 可用 auto，其余安全判断保持 high。 */
         public String getImageDetail() {
             return imageDetail;
+        }
+
+        /** Ark 深度思考开关；未配置时不传该字段，交由接入点默认策略决定。 */
+        public String getThinkingType() {
+            return thinkingType;
+        }
+
+        /** Ark 推理工作量（low/medium/high）；仅在模型开启思考时配置。 */
+        public String getReasoningEffort() {
+            return reasoningEffort;
         }
 
         public String safeSummary() {

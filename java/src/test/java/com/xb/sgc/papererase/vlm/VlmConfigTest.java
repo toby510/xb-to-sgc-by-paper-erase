@@ -83,9 +83,12 @@ public class VlmConfigTest {
             assertTrue(roles.path("pattern").path("provider").isMissingNode());
             Method maxOutput = VlmConfig.RoleConfig.class.getMethod("getMaxOutputTokens");
             Method detail = VlmConfig.RoleConfig.class.getMethod("getImageDetail");
-            assertEquals(1200, ((Integer) maxOutput.invoke(config.role("pattern"))).intValue());
+            assertEquals(0, ((Integer) maxOutput.invoke(config.role("pattern"))).intValue());
+            assertEquals("enabled", config.role("pattern").getThinkingType());
+            assertEquals("low", config.role("pattern").getReasoningEffort());
             assertEquals("auto", detail.invoke(config.role("pattern")));
-            assertEquals(800, ((Integer) maxOutput.invoke(config.role("audit"))).intValue());
+            assertEquals(0, ((Integer) maxOutput.invoke(config.role("audit"))).intValue());
+            assertEquals("disabled", config.role("audit").getThinkingType());
             assertEquals("high", detail.invoke(config.role("audit")));
         } finally {
             Files.deleteIfExists(arkConfig);

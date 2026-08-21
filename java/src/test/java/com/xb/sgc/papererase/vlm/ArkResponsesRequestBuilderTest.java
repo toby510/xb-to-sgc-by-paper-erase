@@ -40,16 +40,18 @@ public class ArkResponsesRequestBuilderTest {
     }
 
     @Test
-    public void arkResponsesAddsConfiguredOutputBudgetAndImageDetail() throws Exception {
+    public void arkResponsesAddsLowReasoningForPatternWithoutOutputCap() throws Exception {
         Class<?> arkClient = Class.forName("com.xb.sgc.papererase.vlm.VlmClient$ArkResponses");
         Method builder = arkClient.getMethod("buildRequestBody", String.class, String.class, String.class,
-                java.util.List.class, java.util.List.class, int.class, String.class);
+                java.util.List.class, java.util.List.class, int.class, String.class, String.class, String.class);
         String body = (String) builder.invoke(null, "ep-ark-vision", "prompt", "instruction",
                 Collections.singletonList(new VlmClient.PageImage("p1", image())),
-                Collections.<VlmClient.RoiImage>emptyList(), 1200, "auto");
+                Collections.<VlmClient.RoiImage>emptyList(), 0, "auto", "enabled", "low");
 
         JsonNode root = new ObjectMapper().readTree(body);
-        assertEquals(1200, root.path("max_output_tokens").asInt());
+        assertTrue(root.path("max_output_tokens").isMissingNode());
+        assertEquals("enabled", root.path("thinking").path("type").asText());
+        assertEquals("low", root.path("reasoning").path("effort").asText());
         assertEquals("auto", root.path("input").path(0).path("content").path(2).path("detail").asText());
     }
 
