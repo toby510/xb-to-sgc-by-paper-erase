@@ -5,6 +5,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILL_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 JAVA_DIR="${SKILL_DIR}/java"
 MAIN_CLASS="com.xb.sgc.papererase.Main"
+DEFAULT_JDK="/Library/Java/JavaVirtualMachines/jdk1.8.0_291.jdk/Contents/Home"
+
+if [[ -z "${JAVA_HOME:-}" ]]; then
+  export JAVA_HOME="${DEFAULT_JDK}"
+fi
+export PATH="${JAVA_HOME}/bin:${PATH}"
 
 if [[ "${1:-}" == "echo" ]]; then
   echo "mvn -q -DskipTests exec:java -Dexec.mainClass=${MAIN_CLASS} -Dexec.args=\"run <test-root>\""
