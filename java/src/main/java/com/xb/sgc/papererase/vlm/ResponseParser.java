@@ -80,7 +80,39 @@ public final class ResponseParser {
         copyStringArray(root, "heterogeneous_page_ids", response.heterogeneous_page_ids, expected, raw);
         copyStringArray(root, "no_pagenum_page_ids", response.no_pagenum_page_ids, expected, raw);
         copyStringArray(root, "ungrouped_page_ids", response.ungrouped_page_ids, expected, raw);
+        requireExactPatternClassification(response, expected, raw);
         return response;
+    }
+
+    private static void requireExactPatternClassification(PatternResponse response, Set<String> expected, String raw) {
+        Set<String> seen = new HashSet<String>();
+        for (PatternGroup group : response.pattern_groups) {
+            for (String pageId : group.page_ids) {
+                if (!expected.contains(pageId)) {
+                    throw bad("unknown page_id in pattern classification: " + pageId, raw);
+                }
+                if (!seen.add(pageId)) {
+                    throw bad("page_ids must be classified exactly once", raw);
+                }
+            }
+        }
+        addClassified(response.heterogeneous_page_ids, expected, seen, raw);
+        addClassified(response.no_pagenum_page_ids, expected, seen, raw);
+        addClassified(response.ungrouped_page_ids, expected, seen, raw);
+        if (!seen.equals(expected)) {
+            throw bad("page_ids must be classified exactly once", raw);
+        }
+    }
+
+    private static void addClassified(List<String> pageIds, Set<String> expected, Set<String> seen, String raw) {
+        for (String pageId : pageIds) {
+            if (!expected.contains(pageId)) {
+                throw bad("unknown page_id in pattern classification: " + pageId, raw);
+            }
+            if (!seen.add(pageId)) {
+                throw bad("page_ids must be classified exactly once", raw);
+            }
+        }
     }
 
     public static LocateResponse parseLocate(String raw, String expectedPageId) {

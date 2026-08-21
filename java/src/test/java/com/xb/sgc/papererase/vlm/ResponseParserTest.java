@@ -48,6 +48,14 @@ public class ResponseParserTest {
     }
 
     @Test
+    public void rejectsPatternWhenPageIdsAreNotClassifiedExactlyOnce() {
+        assertPatternRejected(patternJson("[\"p1\",\"p2\"]", "[\"p2\"]", "[]", "[]"));
+        assertPatternRejected(patternJson("[\"p1\",\"p3\"]", "[]", "[]", "[]"));
+        assertPatternRejected(patternJson("[\"p1\"]", "[]", "[]", "[]"));
+        assertPatternRejected(patternJsonTwoGroups("[\"p1\"]", "[\"p1\"]"));
+    }
+
+    @Test
     public void parsesLocateVerifyAndAuditWithStrictCoordinatesAndDecisions() {
         LocateResponse locate = ResponseParser.parseLocate("{\"page_id\":\"p1\",\"status\":\"safe_to_erase\","
                 + "\"regions\":[{\"region_id\":\"r1\",\"x1\":0.45,\"y1\":0.94,\"x2\":0.55,\"y2\":0.98,"
@@ -94,6 +102,38 @@ public class ResponseParserTest {
         } catch (ResponseParser.ParseException expected) {
             assertTrue(expected.getMessage(), expected.getMessage().contains(messagePart));
         }
+    }
+
+    private void assertPatternRejected(String json) {
+        try {
+            ResponseParser.parsePattern(json, Arrays.asList("p1", "p2"));
+            throw new AssertionError("pattern should be rejected");
+        } catch (ResponseParser.ParseException expected) {
+            // The safety behavior is the contract; parser wording is deliberately not asserted.
+        }
+    }
+
+    private String patternJson(String groupPageIds, String heterogeneous, String noPagenum, String ungrouped) {
+        return "{\"page_directions\":["
+                + "{\"page_id\":\"p1\",\"reading_rotation\":0,\"confidence\":0.9},"
+                + "{\"page_id\":\"p2\",\"reading_rotation\":0,\"confidence\":0.9}],"
+                + "\"pattern_groups\":[{\"group_id\":\"g1\",\"edge\":\"bottom\",\"alignment\":\"center\","
+                + "\"layout_description\":\"footer\",\"page_ids\":" + groupPageIds + ",\"confidence\":0.9}],"
+                + "\"heterogeneous_page_ids\":" + heterogeneous + ","
+                + "\"no_pagenum_page_ids\":" + noPagenum + ","
+                + "\"ungrouped_page_ids\":" + ungrouped + "}";
+    }
+
+    private String patternJsonTwoGroups(String firstGroupPageIds, String secondGroupPageIds) {
+        return "{\"page_directions\":["
+                + "{\"page_id\":\"p1\",\"reading_rotation\":0,\"confidence\":0.9},"
+                + "{\"page_id\":\"p2\",\"reading_rotation\":0,\"confidence\":0.9}],"
+                + "\"pattern_groups\":["
+                + "{\"group_id\":\"g1\",\"edge\":\"bottom\",\"alignment\":\"center\","
+                + "\"layout_description\":\"footer\",\"page_ids\":" + firstGroupPageIds + ",\"confidence\":0.9},"
+                + "{\"group_id\":\"g2\",\"edge\":\"top\",\"alignment\":\"center\","
+                + "\"layout_description\":\"header\",\"page_ids\":" + secondGroupPageIds + ",\"confidence\":0.9}],"
+                + "\"heterogeneous_page_ids\":[],\"no_pagenum_page_ids\":[],\"ungrouped_page_ids\":[\"p2\"]}";
     }
 
     private void assertBadLocate(String json, String messagePart) {

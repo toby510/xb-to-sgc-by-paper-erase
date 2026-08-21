@@ -54,7 +54,13 @@ public final class ExamPipeline {
 
         List<PageOutcome> outcomes = new ArrayList<PageOutcome>();
         for (PageInput page : exam.getPages()) {
-            outcomes.add(processPage(exam, page, originals.get(page.getPageId()), bundle));
+            BufferedImage original = originals.get(page.getPageId());
+            try {
+                outcomes.add(processPage(exam, page, original, bundle));
+            } catch (RuntimeException e) {
+                outcomes.add(manual(page, original, original, transform(original, original, 0),
+                        "page_processing_error", bundle.groupByPage.get(page.getPageId()), null));
+            }
         }
         return new ExamOutcome(exam.getExamId(), "processed", "ok", outcomes, bundle.groups);
     }
@@ -168,7 +174,8 @@ public final class ExamPipeline {
             return new PageOutcome(page.getPageId(), "no_pagenum", "locate_no_pagenum", original, normalized,
                     normalized, transforms, group, Collections.<EraseRegion>emptyList(), locate, null);
         }
-        VerifyResponse verify = vlm.verify(pageImage, null, edgeRoi(group, locate.nearest_body_boundary, normalized));
+        VerifyResponse verify = vlm.verify(pageImage, null,
+                edgeRoi(page.getPageId(), group, locate.nearest_body_boundary, normalized));
         if ("no_pagenum".equals(verify.decision)) {
             return new PageOutcome(page.getPageId(), "no_pagenum", "edge_verify_no_pagenum", original, normalized,
                     normalized, transforms, group, Collections.<EraseRegion>emptyList(), locate, null);
@@ -180,7 +187,8 @@ public final class ExamPipeline {
                                               PageTransforms transforms, PatternGroup group, LocateResponse locate,
                                               VlmClient.PageImage pageImage, String deniedReason) {
         for (EraseRegion region : locate.regions) {
-            VerifyResponse verify = vlm.verify(pageImage, region, roi(region, locate.nearest_body_boundary, normalized));
+            VerifyResponse verify = vlm.verify(pageImage, region,
+                    roi(page.getPageId(), region, locate.nearest_body_boundary, normalized));
             if (!"safe_to_erase".equals(verify.decision)) {
                 if ("no_pagenum".equals(verify.decision)) {
                     return new PageOutcome(page.getPageId(), "no_pagenum", "verify_no_pagenum", original, normalized,
@@ -205,7 +213,7 @@ public final class ExamPipeline {
             candidate = erase.getCandidate();
         }
         AuditResponse audit = vlm.audit(pageImage, new VlmClient.PageImage(page.getPageId(), candidate),
-                locate.regions, rois(locate.regions, locate.nearest_body_boundary, normalized));
+                locate.regions, rois(page.getPageId(), locate.regions, locate.nearest_body_boundary, normalized));
         if (!"pass".equals(audit.decision) || !audit.body_unchanged || !audit.target_removed || !audit.background_acceptable) {
             return new PageOutcome(page.getPageId(), "manual_review", "audit_failed", original, normalized,
                     normalized, transforms, group, locate.regions, locate, audit);
@@ -214,13 +222,13 @@ public final class ExamPipeline {
                 candidate, transforms, group, locate.regions, locate, audit);
     }
 
-    private VlmClient.RoiImage roi(EraseRegion region, BodyBoundary boundary, BufferedImage image) {
-        RegionValidator.PixelRegion pixel = pixelRegion(region, image);
-        RoiTransform transform = RoiTransform.fromCandidate(image.getWidth(), image.getHeight(), pixel, boundary, 24);
-        return new VlmClient.RoiImage(region.region_id, crop(image, transform));
+    private VlmClient.RoiImage roi(String pageId, EraseRegion region, BodyBoundary boundary, BufferedImage image) {
+        RoiTransform transform = RoiTransform.fromNormalizedCandidate(
+                image.getWidth(), image.getHeight(), region, boundary, 24);
+        return new VlmClient.RoiImage(pageId, region.region_id, crop(image, transform));
     }
 
-    private VlmClient.RoiImage edgeRoi(PatternGroup group, BodyBoundary boundary, BufferedImage image) {
+    private VlmClient.RoiImage edgeRoi(String pageId, PatternGroup group, BodyBoundary boundary, BufferedImage image) {
         RoiTransform.PageEdge edge = RoiTransform.PageEdge.BOTTOM;
         if ("top".equals(group.edge)) {
             edge = RoiTransform.PageEdge.TOP;
@@ -229,53 +237,21 @@ public final class ExamPipeline {
         } else if ("right".equals(group.edge)) {
             edge = RoiTransform.PageEdge.RIGHT;
         }
-        return new VlmClient.RoiImage("edge", crop(image, RoiTransform.fromEdge(image.getWidth(), image.getHeight(), edge, boundary, 24)));
+        return new VlmClient.RoiImage(pageId, "edge",
+                crop(image, RoiTransform.fromEdge(image.getWidth(), image.getHeight(), edge, boundary, 24)));
     }
 
-    private List<VlmClient.RoiImage> rois(List<EraseRegion> regions, BodyBoundary boundary, BufferedImage image) {
+    private List<VlmClient.RoiImage> rois(String pageId, List<EraseRegion> regions,
+                                          BodyBoundary boundary, BufferedImage image) {
         List<VlmClient.RoiImage> rois = new ArrayList<VlmClient.RoiImage>();
         for (EraseRegion region : regions) {
-            rois.add(roi(region, boundary, image));
+            rois.add(roi(pageId, region, boundary, image));
         }
         return rois;
     }
 
     private BufferedImage crop(BufferedImage image, RoiTransform transform) {
         return image.getSubimage(transform.getX(), transform.getY(), transform.getWidth(), transform.getHeight());
-    }
-
-    private RegionValidator.PixelRegion pixelRegion(EraseRegion region, BufferedImage image) {
-        LocateResponse locate = new LocateResponse();
-        locate.page_id = "roi";
-        locate.status = "safe_to_erase";
-        locate.nearest_body_boundary = new BodyBoundary();
-        locate.nearest_body_boundary.y = 0.90;
-        locate.nearest_body_boundary.basis = "roi";
-        locate.regions.add(region);
-        RegionValidator.ValidationResult result = RegionValidator.validate(
-                new RegionValidator.PageLocateResult("roi", locate.status, locate.regions, locate.nearest_body_boundary), image);
-        if (result.isAccepted()) {
-            return result.getRegions().get(0);
-        }
-        int left = (int) Math.floor(region.x1 * image.getWidth());
-        int top = (int) Math.floor(region.y1 * image.getHeight());
-        int right = (int) Math.ceil(region.x2 * image.getWidth());
-        int bottom = (int) Math.ceil(region.y2 * image.getHeight());
-        return unsafePixelRegion("roi", region.region_id, left, top, right - left, bottom - top,
-                region.x1, region.y1, region.x2, region.y2, region.confidence);
-    }
-
-    private RegionValidator.PixelRegion unsafePixelRegion(String pageId, String regionId, int x, int y, int width, int height,
-                                                          double x1, double y1, double x2, double y2, double confidence) {
-        try {
-            java.lang.reflect.Constructor<RegionValidator.PixelRegion> c = RegionValidator.PixelRegion.class
-                    .getDeclaredConstructor(String.class, String.class, int.class, int.class, int.class, int.class,
-                            double.class, double.class, double.class, double.class, double.class);
-            c.setAccessible(true);
-            return c.newInstance(pageId, regionId, x, y, width, height, x1, y1, x2, y2, confidence);
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
     }
 
     private PageOutcome manual(PageInput page, BufferedImage original, BufferedImage normalized, PageTransforms transforms,

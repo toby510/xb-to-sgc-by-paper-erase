@@ -1,6 +1,7 @@
 package com.xb.sgc.papererase.image;
 
 import com.xb.sgc.papererase.model.ExamModels.BodyBoundary;
+import com.xb.sgc.papererase.model.ExamModels.EraseRegion;
 import com.xb.sgc.papererase.safety.RegionValidator;
 
 public final class RoiTransform {
@@ -56,6 +57,57 @@ public final class RoiTransform {
         if (bodyBoundary != null && bodyBoundary.x != null && finite(bodyBoundary.x)) {
             long bodyX = (long) Math.ceil(bodyBoundary.x * fullWidth);
             if (bodyX >= candidate.getX() + candidate.getWidth()) {
+                right = Math.max(right, bodyX);
+            } else {
+                left = Math.min(left, bodyX);
+            }
+        }
+        rejectIntOverflow(left, top, right, bottom);
+
+        int clampedLeft = clampToInt(left, 0, fullWidth);
+        int clampedTop = clampToInt(top, 0, fullHeight);
+        int clampedRight = clampToInt(right, clampedLeft, fullWidth);
+        int clampedBottom = clampToInt(bottom, clampedTop, fullHeight);
+        return new RoiTransform(clampedLeft, clampedTop, clampedRight - clampedLeft,
+                clampedBottom - clampedTop, fullWidth, fullHeight);
+    }
+
+    /** Builds an ROI directly from a VLM normalized candidate without bypassing coordinate validation. */
+    public static RoiTransform fromNormalizedCandidate(int fullWidth, int fullHeight, EraseRegion candidate,
+                                                       BodyBoundary bodyBoundary, int marginPixels) {
+        if (fullWidth <= 0 || fullHeight <= 0) {
+            throw new IllegalArgumentException("full image dimensions must be positive");
+        }
+        if (candidate == null) {
+            throw new IllegalArgumentException("candidate is required");
+        }
+        if (marginPixels < 0) {
+            throw new IllegalArgumentException("marginPixels must be non-negative");
+        }
+        validateOptionalBodyBoundary(bodyBoundary);
+        validateLocalRect(candidate.x1, candidate.y1, candidate.x2, candidate.y2);
+
+        long candidateLeft = (long) Math.floor(candidate.x1 * fullWidth);
+        long candidateTop = (long) Math.floor(candidate.y1 * fullHeight);
+        long candidateRight = (long) Math.ceil(candidate.x2 * fullWidth);
+        long candidateBottom = (long) Math.ceil(candidate.y2 * fullHeight);
+        long left = candidateLeft - marginPixels;
+        long top = candidateTop - marginPixels;
+        long right = candidateRight + marginPixels;
+        long bottom = candidateBottom + marginPixels;
+        rejectIntOverflow(left, top, right, bottom);
+
+        if (bodyBoundary != null && bodyBoundary.y != null) {
+            long bodyY = (long) Math.ceil(bodyBoundary.y * fullHeight);
+            if (bodyY >= candidateBottom) {
+                bottom = Math.max(bottom, bodyY);
+            } else {
+                top = Math.min(top, bodyY);
+            }
+        }
+        if (bodyBoundary != null && bodyBoundary.x != null) {
+            long bodyX = (long) Math.ceil(bodyBoundary.x * fullWidth);
+            if (bodyX >= candidateRight) {
                 right = Math.max(right, bodyX);
             } else {
                 left = Math.min(left, bodyX);

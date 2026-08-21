@@ -48,6 +48,29 @@ public class RoiTransformTest {
     }
 
     @Test
+    public void normalizedCandidateIsStrictlyValidatedBeforeRoiCreation() {
+        EraseRegion valid = new EraseRegion();
+        valid.region_id = "r1";
+        valid.x1 = 0.10;
+        valid.y1 = 0.90;
+        valid.x2 = 0.20;
+        valid.y2 = 0.95;
+        RoiTransform roi = RoiTransform.fromNormalizedCandidate(1000, 2000, valid, null, 20);
+        assertEquals(80, roi.getX());
+
+        final EraseRegion invalid = new EraseRegion();
+        invalid.x1 = Double.NaN;
+        invalid.y1 = 0.90;
+        invalid.x2 = 0.20;
+        invalid.y2 = 0.95;
+        assertIllegalArgument("local coordinates must be finite", new ThrowingRunnable() {
+            public void run() {
+                RoiTransform.fromNormalizedCandidate(1000, 2000, invalid, null, 20);
+            }
+        });
+    }
+
+    @Test
     public void fromEdgeRejectsBoundaryPlusMarginOverflowBeforeClamping() {
         assertIllegalArgument("marginPixels is too large", new ThrowingRunnable() {
             public void run() {
