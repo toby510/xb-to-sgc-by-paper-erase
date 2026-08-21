@@ -104,6 +104,25 @@ public class ExamScannerTest {
         assertTrue(result.getRejectedExams().get(0).getReason().contains("duplicate page_order"));
     }
 
+    @Test
+    public void scanFailsClosedWhenAnyExamIsRejected() throws Exception {
+        File root = temporaryFolder.newFolder("dataset");
+        touch(root, "英语", "bad-exam", "15065_bad-exam_1.png");
+        touch(root, "英语", "bad-exam", "15065_bad-exam_001.jpg");
+        touch(root, "数学", "good-exam", "15066_good-exam_1.png");
+
+        try {
+            new ExamScanner().scan(root.toPath());
+        } catch (IllegalStateException expected) {
+            assertTrue(expected.getMessage().contains("rejected exams: 1"));
+            assertTrue(expected.getMessage().contains("英语"));
+            assertTrue(expected.getMessage().contains("bad-exam"));
+            assertTrue(expected.getMessage().contains("duplicate page_order"));
+            return;
+        }
+        throw new AssertionError("Expected scan(Path) to fail closed when any exam is rejected");
+    }
+
     private void touch(File root, String subject, String examId, String filename) throws Exception {
         File examDir = new File(new File(root, subject), examId);
         assertTrue(examDir.mkdirs() || examDir.isDirectory());

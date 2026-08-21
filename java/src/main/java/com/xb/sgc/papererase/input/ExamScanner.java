@@ -21,7 +21,13 @@ import java.util.Set;
 
 public class ExamScanner {
     public List<ExamInput> scan(Path root) throws IOException {
-        return scanWithRejections(root).getExams();
+        ScanResult result = scanWithRejections(root);
+        if (!result.getRejectedExams().isEmpty()) {
+            RejectedExam first = result.getRejectedExams().get(0);
+            throw new IllegalStateException("rejected exams: " + result.getRejectedExams().size()
+                    + "; first=" + first.getSubject() + "/" + first.getExamId() + ": " + first.getReason());
+        }
+        return result.getExams();
     }
 
     public ScanResult scanWithRejections(Path root) throws IOException {

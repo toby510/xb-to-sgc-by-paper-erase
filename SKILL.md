@@ -27,7 +27,8 @@ JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_291.jdk/Contents/Home mvn -
 ```
 
 3. Load `config/vlm-providers.json` and the four role prompts from `references/`.
-4. Scan inputs with `ExamScanner.scan(Path root)`.
+4. Scan inputs with `ExamScanner.scanWithRejections(Path root)`.
+5. Stop the formal pipeline if `rejectedExams` is not empty; write each rejection's `subject`、`examId`、`reason` to the run report before continuing any erasable-page work.
 
 Input rules:
 
@@ -40,7 +41,7 @@ Input rules:
 ## TEST Flow
 
 1. Build the gate set from bad-image exam IDs, then find complete exams globally in the full dataset by exam ID.
-2. Aggregate each exam with `ExamScanner`.
+2. Aggregate each exam with `ExamScanner.scanWithRejections(Path root)` and fail the gate if any rejected exam is present.
 3. Split pages for pattern analysis with `PageBatcher.overlapping(pages, 8, 1)`.
 4. Pattern role analyzes reading direction and page-number layout only.
 5. Java will rotate pixels in later tasks; VLM never rotates output coordinates for Java.
