@@ -148,6 +148,10 @@ public interface VlmClient {
                 Map<String, Object> body = new LinkedHashMap<String, Object>();
                 body.put("model", model);
                 body.put("temperature", 0);
+                // qwen3.8-max 默认开启结构化 reasoning，对每页都做 26~47KB 离线思考
+                // （单次 130~470s），实测同图同答：开 reasoning=170.6s，关=9.1s 且坐标
+                // 像素级一致、答案字段更完整。生产环境统一关掉。
+                body.put("enable_thinking", false);
                 body.put("messages", java.util.Collections.singletonList(message));
                 return mapper.writeValueAsString(body);
             } catch (IOException e) {
