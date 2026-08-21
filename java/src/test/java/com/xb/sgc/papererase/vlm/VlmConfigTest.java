@@ -70,7 +70,7 @@ public class VlmConfigTest {
                     .getBytes(StandardCharsets.UTF_8));
             Map<String, String> env = new HashMap<String, String>();
             env.put("XB_PAPER_ERASE_ARK_API_KEY", "ark-secret");
-            env.put("XB_PAPER_ERASE_ARK_MODEL_ENDPOINT", "ep-ark-vision");
+            env.put("MST_XB_AI_ARK_MODEL_ENDPOINT", "ep-ark-vision");
 
             VlmConfig config = VlmConfig.load(arkConfig, env);
             assertEquals("ark-responses", config.getProviderKind());

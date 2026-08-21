@@ -38,7 +38,7 @@
         "env": "XB_PAPER_ERASE_DASHSCOPE_BASE_URL",
         "default": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
       },
-      "api_key": ["XB_PAPER_ERASE_QWEN_API_KEY", "MST_QWEN_API_KEY"],
+      "api_key": ["MST_QWEN_API_KEY"],
       "model": {
         "env": "XB_PAPER_ERASE_QWEN_MODEL",
         "default": "qwen3.8-max"
@@ -57,7 +57,7 @@
             "env": "XB_PAPER_ERASE_PATTERN_ENDPOINT",
             "default": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
           },
-          "api_key": ["XB_PAPER_ERASE_PATTERN_API_KEY", "XB_PAPER_ERASE_QWEN_API_KEY", "MST_QWEN_API_KEY"]
+          "api_key": ["XB_PAPER_ERASE_PATTERN_API_KEY", "MST_QWEN_API_KEY"]
         },
         "locate": {
           "model": {
@@ -72,7 +72,7 @@
             "env": "XB_PAPER_ERASE_LOCATE_ENDPOINT",
             "default": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
           },
-          "api_key": ["XB_PAPER_ERASE_LOCATE_API_KEY", "XB_PAPER_ERASE_QWEN_API_KEY", "MST_QWEN_API_KEY"]
+          "api_key": ["XB_PAPER_ERASE_LOCATE_API_KEY", "MST_QWEN_API_KEY"]
         },
         "verify": {
           "model": {
@@ -87,7 +87,7 @@
             "env": "XB_PAPER_ERASE_VERIFY_ENDPOINT",
             "default": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
           },
-          "api_key": ["XB_PAPER_ERASE_VERIFY_API_KEY", "XB_PAPER_ERASE_QWEN_API_KEY", "MST_QWEN_API_KEY"]
+          "api_key": ["XB_PAPER_ERASE_VERIFY_API_KEY", "MST_QWEN_API_KEY"]
         },
         "audit": {
           "model": {
@@ -102,20 +102,20 @@
             "env": "XB_PAPER_ERASE_AUDIT_ENDPOINT",
             "default": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
           },
-          "api_key": ["XB_PAPER_ERASE_AUDIT_API_KEY", "XB_PAPER_ERASE_QWEN_API_KEY", "MST_QWEN_API_KEY"]
+          "api_key": ["XB_PAPER_ERASE_AUDIT_API_KEY", "MST_QWEN_API_KEY"]
         }
       }
     },
     "ark": {
       "kind": "ark-responses",
-      "说明": "将 active 改为 ark 后，四个角色统一使用 Ark Responses API。XB_PAPER_ERASE_ARK_MODEL_ENDPOINT 的值是方舟模型或推理接入点 ID，会作为请求中的 model 发送。",
+      "说明": "将 active 改为 ark 后，四个角色统一使用 Ark Responses API。MST_XB_AI_ARK_MODEL_ENDPOINT 的值是方舟模型或推理接入点 ID，会作为请求中的 model 发送。",
       "base_url": {
         "env": "XB_PAPER_ERASE_ARK_BASE_URL",
         "default": "https://ark.cn-beijing.volces.com/api/v3/responses"
       },
       "api_key": ["XB_PAPER_ERASE_ARK_API_KEY", "MST_XB_AI_ARK_API_KEY"],
       "model": {
-        "env": "XB_PAPER_ERASE_ARK_MODEL_ENDPOINT"
+        "env": "MST_XB_AI_ARK_MODEL_ENDPOINT"
       }
     }
   }
