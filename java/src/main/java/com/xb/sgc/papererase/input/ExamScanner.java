@@ -38,9 +38,15 @@ public class ExamScanner {
                 if (!Files.isDirectory(subjectDir)) {
                     continue;
                 }
+                if (containsOutputSegment(subjectDir)) {
+                    continue;
+                }
                 String subject = subjectDir.getFileName().toString();
                 try (DirectoryStream<Path> examDirs = Files.newDirectoryStream(subjectDir)) {
                     for (Path examDir : examDirs) {
+                        if (containsOutputSegment(examDir)) {
+                            continue;
+                        }
                         if (Files.isDirectory(examDir)) {
                             String examId = examDir.getFileName().toString();
                             try {
@@ -155,6 +161,15 @@ public class ExamScanner {
     private boolean isImage(Path file) {
         String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
         return name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".webp");
+    }
+
+    private boolean containsOutputSegment(Path path) {
+        for (Path segment : path) {
+            if (segment.getFileName().toString().contains("output")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static final class ParsedName {

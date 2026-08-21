@@ -1,0 +1,34 @@
+{
+  "evals": [
+    {
+      "name": "normal_multi_page_exam_outputs",
+      "input": "multi-page exam with stable footer page numbers",
+      "assertions": [
+        "writes formal original PNGs without watermark",
+        "writes formal erased PNGs without watermark",
+        "writes original and erased Word with identical page count",
+        "writes regions JSON, consensus JSON, audit NDJSON, report, and run.json"
+      ]
+    },
+    {
+      "name": "page_number_touching_body_falls_back",
+      "input": "page number close to body text safety margin",
+      "assertions": [
+        "marks page manual_review",
+        "formal erased PNG is an unwatermarked original copy",
+        "manual review preview contains red mark",
+        "erased Word uses manual preview for that page"
+      ]
+    },
+    {
+      "name": "rotated_or_two_page_exam_keeps_protocol",
+      "input": "rotated or double-page exam image",
+      "assertions": [
+        "preserves stable page_id order",
+        "records transforms in page evidence",
+        "falls back to manual_review when safety is uncertain",
+        "does not call any baseline VLM"
+      ]
+    }
+  ]
+}
