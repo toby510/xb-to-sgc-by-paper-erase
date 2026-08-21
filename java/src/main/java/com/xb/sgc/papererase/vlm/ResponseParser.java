@@ -205,11 +205,12 @@ public final class ResponseParser {
     }
 
     private static JsonNode root(String raw) {
-        if (raw == null || !raw.trim().startsWith("{") || !raw.trim().endsWith("}")) {
+        String json = unwrapSingleCodeFence(raw);
+        if (json == null || !json.startsWith("{") || !json.endsWith("}")) {
             throw bad("strict JSON object required", raw);
         }
         try {
-            JsonParser parser = MAPPER.getFactory().createParser(raw);
+            JsonParser parser = MAPPER.getFactory().createParser(json);
             JsonToken first = parser.nextToken();
             if (first != JsonToken.START_OBJECT) {
                 throw bad("strict JSON object required", raw);
@@ -224,6 +225,36 @@ public final class ResponseParser {
         } catch (IOException e) {
             throw bad("strict JSON parse failed", raw);
         }
+    }
+
+    /**
+     * Ark 偶尔会把本来完整的结构化答案包进唯一的 Markdown 代码围栏。
+     * 这里只接受纯围栏包装，围栏前后出现任何解释文字仍拒绝，避免放宽 JSON 协议。
+     */
+    private static String unwrapSingleCodeFence(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String trimmed = raw.trim();
+        if (!trimmed.startsWith("```")) {
+            return trimmed;
+        }
+        int headerEnd = trimmed.indexOf('\n');
+        if (headerEnd < 0) {
+            return trimmed;
+        }
+        String header = trimmed.substring(0, headerEnd).trim();
+        if (!("```".equals(header) || "```json".equalsIgnoreCase(header))) {
+            return trimmed;
+        }
+        if (!trimmed.endsWith("```")) {
+            return trimmed;
+        }
+        String content = trimmed.substring(headerEnd + 1, trimmed.length() - 3);
+        if (!content.endsWith("\n")) {
+            return trimmed;
+        }
+        return content.substring(0, content.length() - 1).trim();
     }
 
     private static void requireFields(JsonNode node, String... fields) {

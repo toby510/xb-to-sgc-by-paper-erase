@@ -33,7 +33,7 @@ public class ResponseParserTest {
 
     @Test
     public void rejectsMarkdownGarbageUnknownFieldsBadEnumsDuplicateAndMissingPatternPages() {
-        assertBadPattern("```json\n{}\n```", "strict JSON");
+        assertBadPattern("```json\n{}\n```", "missing field");
         assertBadPattern("{\"page_directions\":[],\"pattern_groups\":[],\"heterogeneous_page_ids\":[],"
                 + "\"no_pagenum_page_ids\":[],\"ungrouped_page_ids\":[],\"extra\":true}", "unknown");
         assertBadPattern("{\"page_directions\":[{\"page_id\":\"p1\",\"reading_rotation\":45,\"confidence\":0.9}],"
@@ -74,6 +74,18 @@ public class ResponseParserTest {
                 + "\"body_unchanged\":true,\"target_removed\":true,\"background_acceptable\":true,"
                 + "\"evidence\":\"ok\"}", "p1");
         assertTrue(audit.body_unchanged);
+    }
+
+    @Test
+    public void parsesLocateWhenArkWrapsOtherwiseValidJsonInOneCodeFence() {
+        LocateResponse locate = ResponseParser.parseLocate("```json\n{\"page_id\":\"p1\",\"status\":\"safe_to_erase\","
+                + "\"regions\":[{\"region_id\":\"r1\",\"x1\":0.45,\"y1\":0.94,\"x2\":0.55,\"y2\":0.98,"
+                + "\"page_number_text\":\"1\",\"same_line_metadata\":\"page only\",\"on_line\":false,"
+                + "\"confidence\":0.99,\"safety_margin\":\"blank\"}],"
+                + "\"nearest_body_boundary\":{\"x\":null,\"y\":0.88,\"basis\":\"java\"},"
+                + "\"evidence\":\"ok\"}\n```", "p1");
+
+        assertEquals("r1", locate.regions.get(0).region_id);
     }
 
     @Test
