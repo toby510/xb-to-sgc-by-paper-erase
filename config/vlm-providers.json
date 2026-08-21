@@ -1,7 +1,7 @@
 {
   "active": "dashscope",
   "defaults": {
-    "max_preview_long_edge": 1536,
+    "max_preview_long_edge": 2048,
     "network_retries": 2,
     "fail_closed": true
   },
