@@ -1,9 +1,11 @@
 package com.xb.sgc.papererase.safety;
 
+import com.xb.sgc.papererase.erase.InkMaskEraser;
 import org.junit.Test;
 
 import java.awt.Color;
 import java.awt.image.BufferedImage;
+import java.lang.reflect.Constructor;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -13,6 +15,7 @@ public class ColorSeamGateTest {
     public void acceptsStableAndSlightMonotonicGradientRepairs() {
         BufferedImage original = gradientPage(40, 30, 240, 244);
         BufferedImage candidate = copy(original);
+        RegionValidator.PixelRegion region = validated(original);
         boolean[][] mask = mask(40, 30, 16, 10, 23, 15);
         for (int y = 10; y <= 15; y++) {
             for (int x = 16; x <= 23; x++) {
@@ -20,13 +23,14 @@ public class ColorSeamGateTest {
             }
         }
 
-        assertTrue(ColorSeamGate.check(original, candidate, mask).isPassed());
+        assertTrue(ColorSeamGate.check(original, candidate, InkMaskEraser.ApprovedMask.from(region, 40, 30, mask)).isPassed());
     }
 
     @Test
     public void rejectsVisibleSeamAndComplexLocalVariance() {
         BufferedImage original = gradientPage(40, 30, 240, 240);
         BufferedImage seam = copy(original);
+        RegionValidator.PixelRegion region = validated(original);
         boolean[][] mask = mask(40, 30, 16, 10, 23, 15);
         for (int y = 10; y <= 15; y++) {
             for (int x = 16; x <= 23; x++) {
@@ -34,7 +38,7 @@ public class ColorSeamGateTest {
             }
         }
 
-        assertFalse(ColorSeamGate.check(original, seam, mask).isPassed());
+        assertFalse(ColorSeamGate.check(original, seam, InkMaskEraser.ApprovedMask.from(region, 40, 30, mask)).isPassed());
 
         BufferedImage complex = gradientPage(40, 30, 240, 240);
         for (int y = 8; y <= 17; y++) {
@@ -50,7 +54,38 @@ public class ColorSeamGateTest {
             }
         }
 
-        assertFalse(ColorSeamGate.check(complex, complexCandidate, mask).isPassed());
+        assertFalse(ColorSeamGate.check(complex, complexCandidate, InkMaskEraser.ApprovedMask.from(region, 40, 30, mask)).isPassed());
+    }
+
+    @Test
+    public void rejectsInteriorArtifactsEmptyFullEdgeAndImageMismatches() {
+        BufferedImage original = gradientPage(40, 30, 240, 244);
+        RegionValidator.PixelRegion region = validated(original);
+        boolean[][] mask = mask(40, 30, 16, 10, 23, 15);
+        InkMaskEraser.ApprovedMask approvedMask = InkMaskEraser.ApprovedMask.from(region, 40, 30, mask);
+
+        BufferedImage interiorArtifact = copy(original);
+        for (int y = 10; y <= 15; y++) {
+            for (int x = 16; x <= 23; x++) {
+                interiorArtifact.setRGB(x, y, new Color(242, 242, 238).getRGB());
+            }
+        }
+        interiorArtifact.setRGB(19, 12, Color.WHITE.getRGB());
+        assertFalse(ColorSeamGate.check(original, interiorArtifact, approvedMask).isPassed());
+
+        assertFalse(ColorSeamGate.check(original, new BufferedImage(41, 30, BufferedImage.TYPE_INT_RGB), approvedMask).isPassed());
+        assertFalse(ColorSeamGate.check(original, new BufferedImage(40, 30, BufferedImage.TYPE_INT_ARGB), approvedMask).isPassed());
+
+        boolean[][] empty = new boolean[30][40];
+        assertFalse(ColorSeamGate.check(original, copy(original), InkMaskEraser.ApprovedMask.from(region, 40, 30, empty)).isPassed());
+
+        boolean[][] edge = new boolean[30][40];
+        edge[6][12] = true;
+        assertIllegalArgument("mask touches region boundary", new ThrowingRunnable() {
+            public void run() {
+                InkMaskEraser.ApprovedMask.from(region, 40, 30, edge);
+            }
+        });
     }
 
     private boolean[][] mask(int width, int height, int left, int top, int right, int bottom) {
@@ -82,5 +117,31 @@ public class ColorSeamGateTest {
             }
         }
         return copy;
+    }
+
+    private RegionValidator.PixelRegion validated(BufferedImage image) {
+        try {
+            Constructor<RegionValidator.PixelRegion> constructor = RegionValidator.PixelRegion.class.getDeclaredConstructor(
+                    String.class, String.class, int.class, int.class, int.class, int.class,
+                    double.class, double.class, double.class, double.class, double.class);
+            constructor.setAccessible(true);
+            return constructor.newInstance("page-1", "r1", 12, 6, 16, 14, 0.3, 0.2, 0.7, 0.6, 0.99);
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    private void assertIllegalArgument(String messagePart, ThrowingRunnable runnable) {
+        try {
+            runnable.run();
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains(messagePart));
+            return;
+        }
+        throw new AssertionError("Expected IllegalArgumentException containing: " + messagePart);
+    }
+
+    private interface ThrowingRunnable {
+        void run();
     }
 }

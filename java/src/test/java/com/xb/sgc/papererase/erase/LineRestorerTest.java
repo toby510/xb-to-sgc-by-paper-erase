@@ -11,6 +11,7 @@ import java.util.Arrays;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertTrue;
 
 public class LineRestorerTest {
@@ -20,16 +21,22 @@ public class LineRestorerTest {
         for (int x = 12; x <= 67; x++) {
             image.setRGB(x, 12, Color.BLACK.getRGB());
         }
-        boolean[][] mask = mask(image, 34, 10, 40, 15);
         RegionValidator.PixelRegion region = validated(0.25, 0.05, 0.75, 0.20);
+        InkMaskEraser.ApprovedMask mask = mask(image, region, 34, 10, 40, 14);
+        int originalGap = image.getRGB(34, 12);
 
         LineRestorer.LineRestoreResult result = LineRestorer.restoreHorizontal(image, region, mask);
 
         assertTrue(result.isRestored());
+        assertNotSame(image, result.getCandidate());
+        assertEquals(originalGap, image.getRGB(34, 12));
         for (int x = 34; x <= 40; x++) {
-            assertEquals(Color.BLACK.getRGB(), image.getRGB(x, 12));
+            assertEquals(Color.BLACK.getRGB(), result.getCandidate().getRGB(x, 12));
+            assertTrue(result.getLineMask().isApproved(x, 12));
         }
-        assertFalse(mask[12][33]);
+        BufferedImage exported = result.getCandidate();
+        exported.setRGB(34, 12, Color.MAGENTA.getRGB());
+        assertEquals(Color.BLACK.getRGB(), result.getCandidate().getRGB(34, 12));
     }
 
     @Test
@@ -54,14 +61,39 @@ public class LineRestorerTest {
     }
 
     private void assertRejected(BufferedImage image, String reason) {
-        LineRestorer.LineRestoreResult result = LineRestorer.restoreHorizontal(image, validated(0.25, 0.05, 0.75, 0.20),
-                mask(image, 34, 10, 40, 15));
+        RegionValidator.PixelRegion region = validated(0.25, 0.05, 0.75, 0.20);
+        LineRestorer.LineRestoreResult result = LineRestorer.restoreHorizontal(image, region,
+                mask(image, region, 34, 10, 40, 14));
 
         assertFalse(result.isRestored());
         assertTrue(result.getReason().contains(reason));
     }
 
-    private boolean[][] mask(BufferedImage image, int left, int top, int right, int bottom) {
+    @Test
+    public void rejectsInvalidMaskWithoutMutatingSource() {
+        BufferedImage image = page();
+        for (int x = 12; x <= 67; x++) {
+            image.setRGB(x, 12, Color.BLACK.getRGB());
+        }
+        RegionValidator.PixelRegion region = validated(0.25, 0.05, 0.75, 0.20);
+        boolean[][] outsideRaw = new boolean[image.getHeight()][image.getWidth()];
+        outsideRaw[30][30] = true;
+
+        assertIllegalArgument("outside region", new ThrowingRunnable() {
+            public void run() {
+                InkMaskEraser.ApprovedMask.from(region, image.getWidth(), image.getHeight(), outsideRaw);
+            }
+        });
+
+        InkMaskEraser.ApprovedMask empty = InkMaskEraser.ApprovedMask.from(region, image.getWidth(), image.getHeight(),
+                new boolean[image.getHeight()][image.getWidth()]);
+        LineRestorer.LineRestoreResult result = LineRestorer.restoreHorizontal(image, region, empty);
+        assertFalse(result.isRestored());
+        assertTrue(result.getReason().contains("empty"));
+        assertEquals(Color.BLACK.getRGB(), image.getRGB(12, 12));
+    }
+
+    private InkMaskEraser.ApprovedMask mask(BufferedImage image, RegionValidator.PixelRegion region, int left, int top, int right, int bottom) {
         boolean[][] mask = new boolean[image.getHeight()][image.getWidth()];
         for (int y = top; y <= bottom; y++) {
             for (int x = left; x <= right; x++) {
@@ -69,7 +101,7 @@ public class LineRestorerTest {
                 image.setRGB(x, y, new Color(245, 244, 238).getRGB());
             }
         }
-        return mask;
+        return InkMaskEraser.ApprovedMask.from(region, image.getWidth(), image.getHeight(), mask);
     }
 
     private RegionValidator.PixelRegion validated(double x1, double y1, double x2, double y2) {
@@ -96,5 +128,19 @@ public class LineRestorerTest {
             }
         }
         return image;
+    }
+
+    private void assertIllegalArgument(String messagePart, ThrowingRunnable runnable) {
+        try {
+            runnable.run();
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains(messagePart));
+            return;
+        }
+        throw new AssertionError("Expected IllegalArgumentException containing: " + messagePart);
+    }
+
+    private interface ThrowingRunnable {
+        void run();
     }
 }

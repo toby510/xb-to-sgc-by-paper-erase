@@ -1,5 +1,7 @@
 package com.xb.sgc.papererase.safety;
 
+import com.xb.sgc.papererase.erase.InkMaskEraser;
+
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import java.util.List;
@@ -7,37 +9,48 @@ import java.util.List;
 public final class ColorSeamGate {
     private static final double MAX_NEIGHBOR_STDDEV = 12.0;
     private static final int MAX_SEAM_DISTANCE = 32;
+    private static final int MAX_PIXEL_DISTANCE = 36;
 
     private ColorSeamGate() {
     }
 
-    public static GateResult check(BufferedImage original, BufferedImage candidate, boolean[][] approvedMask) {
+    public static GateResult check(BufferedImage original, BufferedImage candidate, InkMaskEraser.ApprovedMask approvedMask) {
         if (original == null || candidate == null || approvedMask == null) {
             return GateResult.failed("original, candidate and approved mask are required");
         }
         if (original.getWidth() != candidate.getWidth() || original.getHeight() != candidate.getHeight()
-                || approvedMask.length != original.getHeight()) {
+                || approvedMask.getImageWidth() != original.getWidth() || approvedMask.getImageHeight() != original.getHeight()) {
             return GateResult.failed("dimensions differ");
         }
+        if (original.getType() != candidate.getType()) {
+            return GateResult.failed("image types differ");
+        }
+        if (approvedMask.countApproved() == 0) {
+            return GateResult.failed("approved mask is empty");
+        }
+        boolean[][] mask = approvedMask.toArray();
         List<Integer> neighborLum = new ArrayList<Integer>();
         for (int y = 0; y < original.getHeight(); y++) {
-            if (approvedMask[y] == null || approvedMask[y].length != original.getWidth()) {
-                return GateResult.failed("dimensions differ");
-            }
             for (int x = 0; x < original.getWidth(); x++) {
-                if (!approvedMask[y][x] || !touchesUnmaskedNeighbor(approvedMask, x, y)) {
+                if (!mask[y][x]) {
                     continue;
                 }
-                for (int yy = Math.max(0, y - 2); yy <= Math.min(original.getHeight() - 1, y + 2); yy++) {
-                    for (int xx = Math.max(0, x - 2); xx <= Math.min(original.getWidth() - 1, x + 2); xx++) {
-                        if (!approvedMask[yy][xx]) {
-                            int neighbor = original.getRGB(xx, yy);
-                            neighborLum.add(luminance(neighbor));
-                            if (distance(candidate.getRGB(x, y), neighbor) > MAX_SEAM_DISTANCE) {
-                                return GateResult.failed("visible color seam");
-                            }
-                        }
-                    }
+                if (!approvedMask.containsRegion(x, y)) {
+                    return GateResult.failed("approved mask outside region");
+                }
+                LocalStats stats = localStats(original, mask, x, y);
+                if (stats.count == 0) {
+                    return GateResult.failed("no local seam samples");
+                }
+                neighborLum.addAll(stats.luminances);
+                if (stats.stddev() > MAX_NEIGHBOR_STDDEV) {
+                    return GateResult.failed("complex local variance");
+                }
+                if (touchesUnmaskedNeighbor(mask, x, y) && distance(candidate.getRGB(x, y), stats.averageArgb()) > MAX_SEAM_DISTANCE) {
+                    return GateResult.failed("visible color seam");
+                }
+                if (distance(candidate.getRGB(x, y), stats.averageArgb()) > MAX_PIXEL_DISTANCE) {
+                    return GateResult.failed("interior color artifact");
                 }
             }
         }
@@ -48,6 +61,20 @@ public final class ColorSeamGate {
             return GateResult.failed("complex local variance");
         }
         return GateResult.passed();
+    }
+
+    private static LocalStats localStats(BufferedImage original, boolean[][] mask, int x, int y) {
+        LocalStats stats = new LocalStats();
+        for (int radius = 1; radius <= 8 && stats.count < 6; radius++) {
+            for (int yy = Math.max(0, y - radius); yy <= Math.min(original.getHeight() - 1, y + radius); yy++) {
+                for (int xx = Math.max(0, x - radius); xx <= Math.min(original.getWidth() - 1, x + radius); xx++) {
+                    if (!mask[yy][xx]) {
+                        stats.add(original.getRGB(xx, yy));
+                    }
+                }
+            }
+        }
+        return stats;
     }
 
     private static boolean touchesUnmaskedNeighbor(boolean[][] mask, int x, int y) {
@@ -84,6 +111,33 @@ public final class ColorSeamGate {
             sum += d * d;
         }
         return Math.sqrt(sum / values.size());
+    }
+
+    private static final class LocalStats {
+        int count;
+        int redSum;
+        int greenSum;
+        int blueSum;
+        final List<Integer> luminances = new ArrayList<Integer>();
+
+        void add(int argb) {
+            count++;
+            redSum += (argb >>> 16) & 0xFF;
+            greenSum += (argb >>> 8) & 0xFF;
+            blueSum += argb & 0xFF;
+            luminances.add(luminance(argb));
+        }
+
+        int averageArgb() {
+            if (count == 0) {
+                return 0;
+            }
+            return 0xFF000000 | ((redSum / count) << 16) | ((greenSum / count) << 8) | (blueSum / count);
+        }
+
+        double stddev() {
+            return luminances.isEmpty() ? 0.0 : ColorSeamGate.stddev(luminances);
+        }
     }
 
     public static final class GateResult {

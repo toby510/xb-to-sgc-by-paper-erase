@@ -3,13 +3,14 @@
 ## Scope
 
 - Added `InkMaskEraser.erase(BufferedImage, PixelRegion)` with fail-closed outcomes.
-- Added immutable `ApprovedMask`, independent candidate image creation, and source-preserving failure paths.
-- Added `BackgroundEstimator` for stable local background median repair and rejection of insufficient samples, complex variance, colored non-target content, and gray rule lines.
-- Added `LineRestorer.restoreHorizontal(...)` for conservative same-row line restoration only when both sides are continuous and consistent.
-- Added `PixelDiffGate` and `ColorSeamGate` deterministic post-erase checks.
-- Added Task 3 tests for observable pixels, masks, statuses/reasons, ARGB preservation, complex backgrounds, colored stamps, gray lines, boundary-touch masks, line rejection, pixel diffs, and color seams.
+- Added immutable scope-aware `ApprovedMask`, independent candidate image creation, defensive getters, and source-preserving failure paths.
+- Added `BackgroundEstimator` with local RGB color plane fitting for stable and light-gradient backgrounds, plus rejection of insufficient samples, high residual texture, colored non-target content, and gray rule lines.
+- Added conservative connected-component and geometry gates for second text lines, long line components, table/crossing lines, broad masks, abnormal ink coverage, and region-boundary contact.
+- Added `LineRestorer.restoreHorizontal(...)` for conservative same-row line restoration only when both sides are continuous and consistent; it returns an independent candidate and line mask and never mutates input.
+- Added scope-aware `PixelDiffGate` and `ColorSeamGate` deterministic post-erase checks.
+- Added Task 3 tests for observable pixels, masks, statuses/reasons, ARGB/TYPE_CUSTOM preservation, defensive copies, invalid region/source mismatch, complex backgrounds, colored stamps, gray lines, second lines, same-line short metadata, long lines/tables/black blocks, broad masks, ragged masks, region-outside masks, interior artifacts, gradient repair, line rejection, pixel diffs, and color seams.
 
-No old skill, old `PaperEraser`, or `homeworkservice` files were modified or referenced.
+No legacy skill or external project files were modified or referenced.
 
 ## RED / GREEN Evidence
 
@@ -75,16 +76,62 @@ Output:
 Tests run: 33, Failures: 0, Errors: 0, Skipped: 0
 ```
 
+### Review Fix RED
+
+The Task 3 review found additional P1/P2/P3 safety gaps. I added failing tests before fixing them.
+
+Initial review RED:
+
+```text
+COMPILATION ERROR
+ApprovedMask.from(...) not found
+PixelDiffGate.check(... ApprovedMask) incompatible with boolean[][] entrypoint
+LineRestoreResult missing getCandidate()/getLineMask()
+```
+
+Follow-up RED examples:
+
+```text
+approvedMaskDoesNotExposePublicRawBooleanArrayConstructor
+expected:<MANUAL_REVIEW> but was:<SAFE_TO_ERASE>
+```
+
+The follow-up RED covered raw-mask public constructor exposure, long-line geometry, broad masks, TYPE_CUSTOM/defensive copy handling, background gradient/texture, and source/region mismatch.
+
+### Review Fix GREEN
+
+```bash
+JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_291.jdk/Contents/Home mvn -q -Dtest=InkMaskEraserTest,PixelDiffGateTest,ColorSeamGateTest,LineRestorerTest test
+```
+
+Output:
+
+```text
+Tests run: 18, Failures: 0, Errors: 0, Skipped: 0
+```
+
+```bash
+JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_291.jdk/Contents/Home mvn -q test
+```
+
+Output:
+
+```text
+Tests run: 42, Failures: 0, Errors: 0, Skipped: 0
+```
+
 ## Safety Notes
 
 - `InkMaskEraser` does not modify `source`; success returns a separate candidate image, and all manual paths return original-image semantics.
 - Only approved mask pixels inside the validated `PixelRegion` are modified.
 - Mask touching the validated region boundary returns `MANUAL_REVIEW`.
-- `PixelDiffGate` fails dimension/type mismatches, mask shape mismatches, any mask-outside ARGB change, and no-op approved masks.
-- `ColorSeamGate` uses local boundary samples and rejects obvious seams or complex local variance.
-- Line restoration is separate and conservative: inconsistent, crossing, or grid/table-like lines are rejected.
+- `ApprovedMask` has no public raw `boolean[][]` constructor; callers must use the validated `from(PixelRegion, width, height, mask)` factory.
+- `PixelDiffGate` fails dimension/type mismatches, scope mismatches, any mask-outside ARGB change, and no-op approved masks.
+- `ColorSeamGate` checks all approved pixels, not only mask boundary pixels, and rejects obvious seams, interior artifacts, empty masks, image mismatches, or complex local variance.
+- Line restoration is separate and conservative: inconsistent, crossing, grid/table-like, invalid mask, or no-op restoration is rejected without leaking partial edits.
+- Java does not claim semantic understanding. Semantic safety depends on Task 4 providing the final VLM-approved region, risk-triggered local verification, and post-erase VLM audit. Task 3 only enforces morphology, background, and deterministic pixel gates inside that approved region.
 
 ## Concerns
 
-- Gradient repair is currently covered through seam acceptance for slight monotonic gradients; `InkMaskEraser` itself uses stable median fill only. This is intentionally conservative and may route more pages to `manual_review` until a tested plane-fit repair is added.
-- `LineRestorer` is not wired into `InkMaskEraser`; Task 4 can choose whether to call it after local verification confirms a page number is on a safe standalone line.
+- `LineRestorer` is not wired into `InkMaskEraser`. Task 4 must only call it when `on_line=true` and local verify explicitly says the line is safe to restore.
+- The Java geometry gates are intentionally conservative; borderline layouts should go to `manual_review` rather than being treated as successful erasures.

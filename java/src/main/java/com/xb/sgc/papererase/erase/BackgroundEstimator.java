@@ -2,7 +2,6 @@ package com.xb.sgc.papererase.erase;
 
 import com.xb.sgc.papererase.safety.RegionValidator;
 
-import java.awt.Color;
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -10,17 +9,14 @@ import java.util.List;
 
 public final class BackgroundEstimator {
     private static final int MIN_SAMPLES = 40;
-    private static final double MAX_LOCAL_STDDEV = 8.0;
+    private static final double MAX_FIT_RESIDUAL = 7.0;
 
     private BackgroundEstimator() {
     }
 
     public static Estimate estimate(BufferedImage source, RegionValidator.PixelRegion region, boolean[][] mask) {
-        List<Integer> reds = new ArrayList<Integer>();
-        List<Integer> greens = new ArrayList<Integer>();
-        List<Integer> blues = new ArrayList<Integer>();
         List<Integer> alphas = new ArrayList<Integer>();
-        List<Integer> luminances = new ArrayList<Integer>();
+        List<Sample> samples = new ArrayList<Sample>();
 
         for (int y = region.getY(); y < region.getY() + region.getHeight(); y++) {
             for (int x = region.getX(); x < region.getX() + region.getWidth(); x++) {
@@ -35,23 +31,27 @@ public final class BackgroundEstimator {
                 if (c.luminance < 205) {
                     continue;
                 }
-                reds.add(c.red);
-                greens.add(c.green);
-                blues.add(c.blue);
                 alphas.add(c.alpha);
-                luminances.add(c.luminance);
+                samples.add(new Sample(x, y, c));
             }
         }
 
-        if (luminances.size() < MIN_SAMPLES) {
+        if (samples.size() < MIN_SAMPLES) {
             return Estimate.rejected("insufficient background samples");
         }
-        double stddev = stddev(luminances);
-        if (stddev > MAX_LOCAL_STDDEV) {
-            return Estimate.rejected("complex background variance");
+        Plane red = fit(samples, Channel.RED);
+        Plane green = fit(samples, Channel.GREEN);
+        Plane blue = fit(samples, Channel.BLUE);
+        if (red == null || green == null || blue == null) {
+            return Estimate.rejected("background fit failed");
         }
+        double residual = (red.residual + green.residual + blue.residual) / 3.0;
+        if (residual > MAX_FIT_RESIDUAL) {
+            return Estimate.rejected("background fit residual too high");
+        }
+        int alpha = median(alphas);
 
-        return Estimate.accepted(argb(median(alphas), median(reds), median(greens), median(blues)));
+        return Estimate.accepted(alpha, red, green, blue);
     }
 
     static boolean isInk(ColorParts c, int backgroundLum) {
@@ -78,18 +78,82 @@ public final class BackgroundEstimator {
         return new ColorParts(alpha, red, green, blue);
     }
 
-    private static double stddev(List<Integer> values) {
-        double mean = 0;
-        for (Integer value : values) {
-            mean += value.intValue();
+    private static Plane fit(List<Sample> samples, Channel channel) {
+        double[][] a = new double[3][3];
+        double[] b = new double[3];
+        for (Sample sample : samples) {
+            double x = sample.x;
+            double y = sample.y;
+            double v = value(sample.color, channel);
+            a[0][0] += x * x;
+            a[0][1] += x * y;
+            a[0][2] += x;
+            a[1][0] += x * y;
+            a[1][1] += y * y;
+            a[1][2] += y;
+            a[2][0] += x;
+            a[2][1] += y;
+            a[2][2] += 1;
+            b[0] += x * v;
+            b[1] += y * v;
+            b[2] += v;
         }
-        mean /= values.size();
-        double sum = 0;
-        for (Integer value : values) {
-            double d = value.intValue() - mean;
+        double[] coeff = solve(a, b);
+        if (coeff == null) {
+            return null;
+        }
+        double sum = 0.0;
+        for (Sample sample : samples) {
+            double d = value(sample.color, channel) - (coeff[0] * sample.x + coeff[1] * sample.y + coeff[2]);
             sum += d * d;
         }
-        return Math.sqrt(sum / values.size());
+        return new Plane(coeff[0], coeff[1], coeff[2], Math.sqrt(sum / samples.size()));
+    }
+
+    private static double[] solve(double[][] matrix, double[] rhs) {
+        double[][] a = new double[3][4];
+        for (int row = 0; row < 3; row++) {
+            System.arraycopy(matrix[row], 0, a[row], 0, 3);
+            a[row][3] = rhs[row];
+        }
+        for (int pivot = 0; pivot < 3; pivot++) {
+            int best = pivot;
+            for (int row = pivot + 1; row < 3; row++) {
+                if (Math.abs(a[row][pivot]) > Math.abs(a[best][pivot])) {
+                    best = row;
+                }
+            }
+            if (Math.abs(a[best][pivot]) < 0.000001) {
+                return null;
+            }
+            double[] tmp = a[pivot];
+            a[pivot] = a[best];
+            a[best] = tmp;
+            double divisor = a[pivot][pivot];
+            for (int col = pivot; col < 4; col++) {
+                a[pivot][col] /= divisor;
+            }
+            for (int row = 0; row < 3; row++) {
+                if (row == pivot) {
+                    continue;
+                }
+                double factor = a[row][pivot];
+                for (int col = pivot; col < 4; col++) {
+                    a[row][col] -= factor * a[pivot][col];
+                }
+            }
+        }
+        return new double[]{a[0][3], a[1][3], a[2][3]};
+    }
+
+    private static int value(ColorParts color, Channel channel) {
+        if (channel == Channel.RED) {
+            return color.red;
+        }
+        if (channel == Channel.GREEN) {
+            return color.green;
+        }
+        return color.blue;
     }
 
     private static int median(List<Integer> values) {
@@ -119,21 +183,27 @@ public final class BackgroundEstimator {
 
     public static final class Estimate {
         private final boolean accepted;
-        private final int argb;
+        private final int alpha;
+        private final Plane red;
+        private final Plane green;
+        private final Plane blue;
         private final String reason;
 
-        private Estimate(boolean accepted, int argb, String reason) {
+        private Estimate(boolean accepted, int alpha, Plane red, Plane green, Plane blue, String reason) {
             this.accepted = accepted;
-            this.argb = argb;
+            this.alpha = alpha;
+            this.red = red;
+            this.green = green;
+            this.blue = blue;
             this.reason = reason;
         }
 
-        static Estimate accepted(int argb) {
-            return new Estimate(true, argb, "stable background");
+        static Estimate accepted(int alpha, Plane red, Plane green, Plane blue) {
+            return new Estimate(true, alpha, red, green, blue, "plane background");
         }
 
         static Estimate rejected(String reason) {
-            return new Estimate(false, 0, reason);
+            return new Estimate(false, 0, null, null, null, reason);
         }
 
         public boolean isAccepted() {
@@ -141,11 +211,53 @@ public final class BackgroundEstimator {
         }
 
         public int getArgb() {
-            return argb;
+            return argbAt(0, 0);
+        }
+
+        public int argbAt(int x, int y) {
+            return argb(alpha, clamp(red.predict(x, y)), clamp(green.predict(x, y)), clamp(blue.predict(x, y)));
         }
 
         public String getReason() {
             return reason;
         }
+
+        private static int clamp(double value) {
+            return Math.max(0, Math.min(255, (int) Math.round(value)));
+        }
+    }
+
+    static final class Sample {
+        final int x;
+        final int y;
+        final ColorParts color;
+
+        Sample(int x, int y, ColorParts color) {
+            this.x = x;
+            this.y = y;
+            this.color = color;
+        }
+    }
+
+    static final class Plane {
+        final double xCoeff;
+        final double yCoeff;
+        final double intercept;
+        final double residual;
+
+        Plane(double xCoeff, double yCoeff, double intercept, double residual) {
+            this.xCoeff = xCoeff;
+            this.yCoeff = yCoeff;
+            this.intercept = intercept;
+            this.residual = residual;
+        }
+
+        double predict(int x, int y) {
+            return xCoeff * x + yCoeff * y + intercept;
+        }
+    }
+
+    private enum Channel {
+        RED, GREEN, BLUE
     }
 }

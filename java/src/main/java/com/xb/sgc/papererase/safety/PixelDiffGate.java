@@ -1,12 +1,14 @@
 package com.xb.sgc.papererase.safety;
 
+import com.xb.sgc.papererase.erase.InkMaskEraser;
+
 import java.awt.image.BufferedImage;
 
 public final class PixelDiffGate {
     private PixelDiffGate() {
     }
 
-    public static GateResult check(BufferedImage original, BufferedImage candidate, boolean[][] approvedMask) {
+    public static GateResult check(BufferedImage original, BufferedImage candidate, InkMaskEraser.ApprovedMask approvedMask) {
         if (original == null || candidate == null || approvedMask == null) {
             return GateResult.failed("original, candidate and approved mask are required");
         }
@@ -16,17 +18,18 @@ public final class PixelDiffGate {
         if (original.getType() != candidate.getType()) {
             return GateResult.failed("image types differ");
         }
-        if (approvedMask.length != original.getHeight()) {
+        if (approvedMask.getImageWidth() != original.getWidth() || approvedMask.getImageHeight() != original.getHeight()) {
             return GateResult.failed("approved mask dimensions differ");
         }
+        boolean[][] mask = approvedMask.toArray();
         boolean anyApprovedChange = false;
         for (int y = 0; y < original.getHeight(); y++) {
-            if (approvedMask[y] == null || approvedMask[y].length != original.getWidth()) {
-                return GateResult.failed("approved mask dimensions differ");
-            }
             for (int x = 0; x < original.getWidth(); x++) {
                 boolean changed = original.getRGB(x, y) != candidate.getRGB(x, y);
-                if (approvedMask[y][x]) {
+                if (mask[y][x]) {
+                    if (!approvedMask.containsRegion(x, y)) {
+                        return GateResult.failed("approved mask outside region");
+                    }
                     anyApprovedChange = anyApprovedChange || changed;
                 } else if (changed) {
                     return GateResult.failed("mask outside pixel changed at " + x + "," + y);

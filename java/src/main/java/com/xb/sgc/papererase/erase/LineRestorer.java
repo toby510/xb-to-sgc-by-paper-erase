@@ -1,18 +1,26 @@
 package com.xb.sgc.papererase.erase;
 
 import com.xb.sgc.papererase.safety.RegionValidator;
+import com.xb.sgc.papererase.safety.PixelDiffGate;
 
 import java.awt.image.BufferedImage;
+import java.awt.image.ColorModel;
+import java.awt.image.WritableRaster;
 
 public final class LineRestorer {
     private LineRestorer() {
     }
 
-    public static LineRestoreResult restoreHorizontal(BufferedImage image, RegionValidator.PixelRegion region, boolean[][] approvedMask) {
+    public static LineRestoreResult restoreHorizontal(BufferedImage image, RegionValidator.PixelRegion region, InkMaskEraser.ApprovedMask approvedMask) {
         if (image == null || region == null || approvedMask == null) {
             return LineRestoreResult.rejected("image, region and mask are required");
         }
-        Bounds bounds = bounds(approvedMask);
+        String invalid = invalidInputs(image, region, approvedMask);
+        if (invalid != null) {
+            return LineRestoreResult.rejected(invalid);
+        }
+        boolean[][] rawMask = approvedMask.toArray();
+        Bounds bounds = bounds(rawMask);
         if (bounds == null) {
             return LineRestoreResult.rejected("approved mask is empty");
         }
@@ -24,12 +32,39 @@ public final class LineRestorer {
             return LineRestoreResult.rejected("grid or table line detected");
         }
         int color = lineColor(image, bounds, lineY);
+        BufferedImage candidate = copy(image);
+        boolean[][] lineMask = new boolean[image.getHeight()][image.getWidth()];
         for (int x = bounds.left; x <= bounds.right; x++) {
-            if (approvedMask[lineY][x]) {
-                image.setRGB(x, lineY, color);
+            if (rawMask[lineY][x]) {
+                candidate.setRGB(x, lineY, color);
+                lineMask[lineY][x] = true;
             }
         }
-        return LineRestoreResult.restored();
+        InkMaskEraser.ApprovedMask approvedLineMask = InkMaskEraser.ApprovedMask.from(region, image.getWidth(), image.getHeight(), lineMask);
+        PixelDiffGate.GateResult diff = PixelDiffGate.check(image, candidate, approvedLineMask);
+        if (!diff.isPassed()) {
+            return LineRestoreResult.rejected(diff.getReason());
+        }
+        return LineRestoreResult.restored(candidate, approvedLineMask);
+    }
+
+    private static String invalidInputs(BufferedImage image, RegionValidator.PixelRegion region, InkMaskEraser.ApprovedMask mask) {
+        long right = (long) region.getX() + region.getWidth();
+        long bottom = (long) region.getY() + region.getHeight();
+        if (region.getX() < 0 || region.getY() < 0 || region.getWidth() <= 0 || region.getHeight() <= 0
+                || right > image.getWidth() || bottom > image.getHeight()) {
+            return "region outside image";
+        }
+        if (mask.getImageWidth() != image.getWidth() || mask.getImageHeight() != image.getHeight()) {
+            return "mask dimensions differ";
+        }
+        boolean[][] raw = mask.toArray();
+        Bounds bounds = bounds(raw);
+        if (bounds != null && (bounds.left < region.getX() || bounds.top < region.getY()
+                || bounds.right >= right || bounds.bottom >= bottom)) {
+            return "mask outside region";
+        }
+        return null;
     }
 
     private static int matchingLineY(BufferedImage image, RegionValidator.PixelRegion region, Bounds bounds) {
@@ -134,6 +169,15 @@ public final class LineRestorer {
         return Math.abs(ar - br) + Math.abs(ag - bg) + Math.abs(ab - bb) <= 18;
     }
 
+    private static BufferedImage copy(BufferedImage source) {
+        if (source == null) {
+            return null;
+        }
+        ColorModel colorModel = source.getColorModel();
+        WritableRaster raster = source.copyData(null);
+        return new BufferedImage(colorModel, raster, colorModel.isAlphaPremultiplied(), null);
+    }
+
     private static final class Bounds {
         final int left;
         final int top;
@@ -151,18 +195,22 @@ public final class LineRestorer {
     public static final class LineRestoreResult {
         private final boolean restored;
         private final String reason;
+        private final BufferedImage candidate;
+        private final InkMaskEraser.ApprovedMask lineMask;
 
-        private LineRestoreResult(boolean restored, String reason) {
+        private LineRestoreResult(boolean restored, String reason, BufferedImage candidate, InkMaskEraser.ApprovedMask lineMask) {
             this.restored = restored;
             this.reason = reason;
+            this.candidate = copy(candidate);
+            this.lineMask = lineMask;
         }
 
-        static LineRestoreResult restored() {
-            return new LineRestoreResult(true, "restored");
+        static LineRestoreResult restored(BufferedImage candidate, InkMaskEraser.ApprovedMask lineMask) {
+            return new LineRestoreResult(true, "restored", candidate, lineMask);
         }
 
         static LineRestoreResult rejected(String reason) {
-            return new LineRestoreResult(false, reason);
+            return new LineRestoreResult(false, reason, null, null);
         }
 
         public boolean isRestored() {
@@ -171,6 +219,14 @@ public final class LineRestorer {
 
         public String getReason() {
             return reason;
+        }
+
+        public BufferedImage getCandidate() {
+            return copy(candidate);
+        }
+
+        public InkMaskEraser.ApprovedMask getLineMask() {
+            return lineMask;
         }
     }
 }

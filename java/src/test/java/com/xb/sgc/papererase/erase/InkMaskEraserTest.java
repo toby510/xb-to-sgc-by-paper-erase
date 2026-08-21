@@ -6,7 +6,15 @@ import com.xb.sgc.papererase.safety.RegionValidator;
 import org.junit.Test;
 
 import java.awt.Color;
+import java.awt.Transparency;
+import java.awt.color.ColorSpace;
 import java.awt.image.BufferedImage;
+import java.awt.image.ColorModel;
+import java.awt.image.ComponentColorModel;
+import java.awt.image.DataBuffer;
+import java.awt.image.WritableRaster;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Modifier;
 import java.util.Arrays;
 
 import static org.junit.Assert.assertEquals;
@@ -19,12 +27,13 @@ public class InkMaskEraserTest {
     public void erasesOnlyApprovedInkInsideValidatedRegion() {
         BufferedImage source = page(80, 80, new Color(245, 244, 238));
         drawAntiAliasedDigit(source, 30, 8);
+        drawShortSameLineMetadata(source, 42, 10);
         source.setRGB(5, 40, Color.BLACK.getRGB());
         source.setRGB(32, 30, Color.BLACK.getRGB());
         int outsideDot = source.getRGB(5, 40);
         int nearbyBody = source.getRGB(32, 30);
         int originalInk = source.getRGB(33, 12);
-        RegionValidator.PixelRegion region = validated(source, 0.35, 0.05, 0.55, 0.20, 0.40);
+        RegionValidator.PixelRegion region = validated(source, 0.35, 0.05, 0.65, 0.20, 0.40);
 
         InkMaskEraser.EraseOutcome outcome = InkMaskEraser.erase(source, region);
 
@@ -35,12 +44,20 @@ public class InkMaskEraserTest {
         assertEquals(nearbyBody, outcome.getCandidate().getRGB(32, 30));
         assertTrue(outcome.getApprovedMask().isApproved(33, 12));
         assertTrue(outcome.getApprovedMask().isApproved(35, 13));
+        assertTrue(outcome.getApprovedMask().isApproved(43, 12));
         assertFalse(outcome.getApprovedMask().isApproved(32, 30));
         assertTrue(outcome.getCandidate().getRGB(33, 12) != originalInk);
+
+        BufferedImage exportedCandidate = outcome.getCandidate();
+        exportedCandidate.setRGB(33, 12, Color.MAGENTA.getRGB());
+        assertTrue(outcome.getCandidate().getRGB(33, 12) != Color.MAGENTA.getRGB());
 
         boolean[][] exported = outcome.getApprovedMask().toArray();
         exported[12][33] = false;
         assertTrue(outcome.getApprovedMask().isApproved(33, 12));
+        assertEquals(80, outcome.getApprovedMask().getImageWidth());
+        assertEquals(80, outcome.getApprovedMask().getImageHeight());
+        assertEquals(region.getX(), outcome.getApprovedMask().getRegionX());
     }
 
     @Test
@@ -53,7 +70,7 @@ public class InkMaskEraserTest {
             }
         }
         drawAntiAliasedDigit(textured, 30, 8);
-        assertManual(textured, 0.35, 0.05, 0.60, 0.20, 0.40, "complex background");
+        assertManual(textured, 0.35, 0.05, 0.60, 0.20, 0.40, "background fit residual");
 
         BufferedImage stamped = page(80, 80, new Color(245, 244, 238));
         drawAntiAliasedDigit(stamped, 30, 8);
@@ -81,6 +98,35 @@ public class InkMaskEraserTest {
     }
 
     @Test
+    public void rejectsUnsafeInkGeometryInsideValidatedRegion() {
+        BufferedImage secondLine = page(120, 120, new Color(245, 244, 238));
+        drawAntiAliasedDigit(secondLine, 34, 10);
+        drawGlyphBlock(secondLine, 36, 18, 8, 5);
+        assertManual(secondLine, 0.25, 0.05, 0.60, 0.20, 0.42, "multiple text lines");
+
+        BufferedImage longLine = page(120, 120, new Color(245, 244, 238));
+        drawAntiAliasedDigit(longLine, 34, 10);
+        for (int x = 50; x <= 75; x++) {
+            longLine.setRGB(x, 11, Color.BLACK.getRGB());
+        }
+        assertManual(longLine, 0.25, 0.05, 0.70, 0.20, 0.42, "long line");
+
+        BufferedImage table = page(120, 120, new Color(245, 244, 238));
+        drawAntiAliasedDigit(table, 34, 10);
+        for (int x = 50; x <= 72; x++) {
+            table.setRGB(x, 11, Color.BLACK.getRGB());
+        }
+        for (int y = 7; y <= 18; y++) {
+            table.setRGB(60, y, Color.BLACK.getRGB());
+        }
+        assertManual(table, 0.25, 0.05, 0.72, 0.20, 0.42, "table or crossing line");
+
+        BufferedImage blackBlock = page(120, 120, new Color(245, 244, 238));
+        drawGlyphBlock(blackBlock, 34, 9, 22, 10);
+        assertManual(blackBlock, 0.25, 0.05, 0.65, 0.20, 0.42, "ink coverage");
+    }
+
+    @Test
     public void preservesArgbTransparencyAndDoesNotConvertWholeImage() {
         BufferedImage source = new BufferedImage(80, 80, BufferedImage.TYPE_INT_ARGB);
         int paper = new Color(245, 244, 238, 210).getRGB();
@@ -99,6 +145,105 @@ public class InkMaskEraserTest {
         assertEquals(BufferedImage.TYPE_INT_ARGB, outcome.getCandidate().getType());
         assertEquals(new Color(10, 10, 10, 125).getRGB(), outcome.getCandidate().getRGB(5, 40));
         assertEquals(new Color(20, 20, 20, 210).getRGB(), source.getRGB(31, 9));
+    }
+
+    @Test
+    public void handlesCustomImageTypeAndManualDefensiveCandidateCopies() {
+        BufferedImage custom = customPage(80, 80, new Color(245, 244, 238, 190));
+        custom.setRGB(31, 9, new Color(20, 20, 20, 190).getRGB());
+        RegionValidator.PixelRegion region = validated(custom, 0.35, 0.05, 0.55, 0.20, 0.40);
+
+        InkMaskEraser.EraseOutcome safe = InkMaskEraser.erase(custom, region);
+
+        assertEquals(InkMaskEraser.Status.SAFE_TO_ERASE, safe.getStatus());
+        assertEquals(BufferedImage.TYPE_CUSTOM, safe.getCandidate().getType());
+        assertEquals(new Color(20, 20, 20, 190).getRGB(), custom.getRGB(31, 9));
+        BufferedImage candidate = safe.getCandidate();
+        candidate.setRGB(31, 9, Color.MAGENTA.getRGB());
+        assertTrue(safe.getCandidate().getRGB(31, 9) != Color.MAGENTA.getRGB());
+
+        BufferedImage manualSource = page(80, 80, new Color(245, 244, 238));
+        manualSource.setRGB(28, 8, new Color(130, 130, 130).getRGB());
+        InkMaskEraser.EraseOutcome manual = InkMaskEraser.erase(manualSource,
+                validated(manualSource, 0.35, 0.05, 0.55, 0.20, 0.40));
+        BufferedImage manualCandidate = manual.getCandidate();
+        manualCandidate.setRGB(28, 8, Color.MAGENTA.getRGB());
+        assertTrue(manual.getCandidate().getRGB(28, 8) != Color.MAGENTA.getRGB());
+    }
+
+    @Test
+    public void rejectsPixelRegionThatDoesNotMatchCurrentSourceWithoutThrowing() throws Exception {
+        BufferedImage source = page(80, 80, new Color(245, 244, 238));
+        RegionValidator.PixelRegion mismatched = pixelRegion("page-1", "r1", 70, 70, 20, 20);
+
+        InkMaskEraser.EraseOutcome outcome = InkMaskEraser.erase(source, mismatched);
+
+        assertEquals(InkMaskEraser.Status.MANUAL_REVIEW, outcome.getStatus());
+        assertTrue(outcome.getReason().contains("region outside source"));
+    }
+
+    @Test
+    public void fitsLightGradientBackgroundAndRejectsComplexTexture() {
+        BufferedImage gradient = gradientPage(120, 100, 235, 248);
+        drawAntiAliasedDigit(gradient, 38, 10);
+        RegionValidator.PixelRegion region = validated(gradient, 0.25, 0.05, 0.60, 0.20, 0.42);
+
+        InkMaskEraser.EraseOutcome outcome = InkMaskEraser.erase(gradient, region);
+
+        assertEquals(InkMaskEraser.Status.SAFE_TO_ERASE, outcome.getStatus());
+        int repaired = outcome.getCandidate().getRGB(41, 13);
+        int expectedRed = 235 + (248 - 235) * 41 / 119;
+        assertTrue(Math.abs(((repaired >>> 16) & 0xFF) - expectedRed) <= 3);
+
+        BufferedImage noisy = gradientPage(120, 100, 235, 248);
+        for (int y = 6; y <= 22; y++) {
+            for (int x = 30; x <= 72; x++) {
+                int v = ((x + y) % 3 == 0) ? 220 : 252;
+                noisy.setRGB(x, y, new Color(v, v, v).getRGB());
+            }
+        }
+        drawAntiAliasedDigit(noisy, 38, 10);
+        assertManual(noisy, 0.25, 0.05, 0.60, 0.20, 0.42, "background fit residual");
+    }
+
+    @Test
+    public void approvedMaskRejectsRaggedWrongSizedAndOutOfRegionMasks() {
+        BufferedImage source = page(80, 80, new Color(245, 244, 238));
+        RegionValidator.PixelRegion region = validated(source, 0.35, 0.05, 0.55, 0.20, 0.40);
+        boolean[][] ragged = new boolean[80][];
+        ragged[0] = new boolean[80];
+
+        assertIllegalArgument("rectangular", new ThrowingRunnable() {
+            public void run() {
+                InkMaskEraser.ApprovedMask.from(region, 80, 80, ragged);
+            }
+        });
+
+        boolean[][] wrongSize = new boolean[79][80];
+        assertIllegalArgument("dimensions", new ThrowingRunnable() {
+            public void run() {
+                InkMaskEraser.ApprovedMask.from(region, 80, 80, wrongSize);
+            }
+        });
+
+        boolean[][] outside = new boolean[80][80];
+        outside[30][30] = true;
+        assertIllegalArgument("outside region", new ThrowingRunnable() {
+            public void run() {
+                InkMaskEraser.ApprovedMask.from(region, 80, 80, outside);
+            }
+        });
+    }
+
+    @Test
+    public void approvedMaskDoesNotExposePublicRawBooleanArrayConstructor() {
+        Constructor<?>[] constructors = InkMaskEraser.ApprovedMask.class.getConstructors();
+        for (Constructor<?> constructor : constructors) {
+            Class<?>[] parameterTypes = constructor.getParameterTypes();
+            assertFalse(Modifier.isPublic(constructor.getModifiers())
+                    && parameterTypes.length == 1
+                    && parameterTypes[0].equals(boolean[][].class));
+        }
     }
 
     private void assertManual(BufferedImage source, double x1, double y1, double x2, double y2, double bodyY, String reason) {
@@ -138,6 +283,62 @@ public class InkMaskEraserTest {
         return image;
     }
 
+    private BufferedImage gradientPage(int width, int height, int leftValue, int rightValue) {
+        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int v = leftValue + (rightValue - leftValue) * x / Math.max(1, width - 1);
+                image.setRGB(x, y, new Color(v, v, 238).getRGB());
+            }
+        }
+        return image;
+    }
+
+    private BufferedImage customPage(int width, int height, Color color) {
+        ColorModel model = new ComponentColorModel(ColorSpace.getInstance(ColorSpace.CS_sRGB), true, false,
+                Transparency.TRANSLUCENT, DataBuffer.TYPE_BYTE);
+        WritableRaster raster = model.createCompatibleWritableRaster(width, height);
+        BufferedImage image = new BufferedImage(model, raster, false, null);
+        for (int y = 0; y < image.getHeight(); y++) {
+            for (int x = 0; x < image.getWidth(); x++) {
+                image.setRGB(x, y, color.getRGB());
+            }
+        }
+        return image;
+    }
+
+    private void drawShortSameLineMetadata(BufferedImage image, int x, int y) {
+        drawGlyphBlock(image, x, y + 1, 2, 4);
+        drawGlyphBlock(image, x + 4, y + 1, 2, 4);
+    }
+
+    private void drawGlyphBlock(BufferedImage image, int left, int top, int width, int height) {
+        for (int y = top; y < top + height; y++) {
+            for (int x = left; x < left + width; x++) {
+                image.setRGB(x, y, Color.BLACK.getRGB());
+            }
+        }
+    }
+
+    private RegionValidator.PixelRegion pixelRegion(String pageId, String regionId, int x, int y, int width, int height) throws Exception {
+        Constructor<RegionValidator.PixelRegion> constructor = RegionValidator.PixelRegion.class.getDeclaredConstructor(
+                String.class, String.class, int.class, int.class, int.class, int.class,
+                double.class, double.class, double.class, double.class, double.class);
+        constructor.setAccessible(true);
+        return constructor.newInstance(pageId, regionId, x, y, width, height,
+                0.0, 0.0, 1.0, 1.0, 0.99);
+    }
+
+    private void assertIllegalArgument(String messagePart, ThrowingRunnable runnable) {
+        try {
+            runnable.run();
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains(messagePart));
+            return;
+        }
+        throw new AssertionError("Expected IllegalArgumentException containing: " + messagePart);
+    }
+
     private void drawAntiAliasedDigit(BufferedImage image, int x, int y) {
         for (int yy = y + 1; yy <= y + 6; yy++) {
             image.setRGB(x + 3, yy, Color.BLACK.getRGB());
@@ -145,5 +346,9 @@ public class InkMaskEraserTest {
         }
         image.setRGB(x + 2, y + 2, new Color(130, 130, 130).getRGB());
         image.setRGB(x + 5, y + 5, new Color(150, 150, 150).getRGB());
+    }
+
+    private interface ThrowingRunnable {
+        void run();
     }
 }
