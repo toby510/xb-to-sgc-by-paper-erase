@@ -13,10 +13,12 @@ public final class VlmConfig {
     private static final String[] ROLES = {"pattern", "locate", "verify", "audit"};
     private final Map<String, RoleConfig> roles;
     private final int maxPreviewLongEdge;
+    private final String providerKind;
 
-    private VlmConfig(Map<String, RoleConfig> roles, int maxPreviewLongEdge) {
+    private VlmConfig(Map<String, RoleConfig> roles, int maxPreviewLongEdge, String providerKind) {
         this.roles = Collections.unmodifiableMap(new HashMap<String, RoleConfig>(roles));
         this.maxPreviewLongEdge = maxPreviewLongEdge;
+        this.providerKind = providerKind;
     }
 
     public static VlmConfig load(Path configPath) throws IOException {
@@ -35,13 +37,17 @@ public final class VlmConfig {
         if (provider.isMissingNode()) {
             throw new IllegalStateException("active provider is missing");
         }
+        String providerKind = text(provider.path("kind"));
+        if (!"openai-compatible".equals(providerKind) && !"ark-responses".equals(providerKind)) {
+            throw new IllegalStateException("active provider kind is unsupported");
+        }
         Map<String, RoleConfig> roles = new HashMap<String, RoleConfig>();
         for (String role : ROLES) {
             JsonNode roleRef = root.path("roles").path(role);
             JsonNode roleOverride = provider.path("roles").path(role);
             String prompt = text(roleRef.path("prompt"));
             String endpoint = resolveEndpoint(provider, roleOverride, env);
-            String model = resolveText(roleOverride.path("model"), provider.path("model"), env, "qwen3.8-max");
+            String model = resolveText(roleOverride.path("model"), provider.path("model"), env, null);
             String apiKey = resolveApiKey(roleOverride.path("api_key"), provider.path("api_key"), env);
             int retries = roleOverride.path("network_retries").asInt(defaultRetries);
             if (blank(prompt)) {
@@ -58,7 +64,7 @@ public final class VlmConfig {
             }
             roles.put(role, new RoleConfig(role, prompt, model, endpoint, apiKey, retries));
         }
-        return new VlmConfig(roles, previewLongEdge);
+        return new VlmConfig(roles, previewLongEdge, providerKind);
     }
 
     private static String resolveEndpoint(JsonNode provider, JsonNode roleOverride, Map<String, String> env) {
@@ -141,6 +147,11 @@ public final class VlmConfig {
 
     public int getMaxPreviewLongEdge() {
         return maxPreviewLongEdge;
+    }
+
+    /** 当前 active provider 的传输协议；客户端工厂据此选择请求/响应编解码方式。 */
+    public String getProviderKind() {
+        return providerKind;
     }
 
     public static final class RoleConfig {

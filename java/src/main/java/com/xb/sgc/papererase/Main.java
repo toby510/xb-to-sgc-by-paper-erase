@@ -30,7 +30,8 @@ public final class Main {
         }
         Path skillRoot = findSkillRoot();
         VlmConfig config = VlmConfig.load(skillRoot.resolve("config/vlm-providers.json"));
-        VlmClient vlm = new VlmClient.OpenAiCompatible(config, skillRoot);
+        // active 是唯一提供方开关；工厂按 kind 选择协议客户端，角色本身只决定提示词。
+        VlmClient vlm = VlmClient.create(config, skillRoot);
         List<ExamInput> exams;
         Path outputRoot;
         if ("run".equals(args[0])) {

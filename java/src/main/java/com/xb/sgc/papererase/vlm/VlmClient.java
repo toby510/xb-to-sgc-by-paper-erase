@@ -41,6 +41,23 @@ public interface VlmClient {
 
     AuditResponse audit(PageImage original, PageImage erased, List<EraseRegion> regions, List<RoiImage> rois);
 
+    /**
+     * active 是唯一的提供方选择入口。四个业务角色始终共享同一个协议客户端，避免出现
+     * pattern 走一个平台而 audit 走另一个平台的不可追溯结果。
+     */
+    static VlmClient create(VlmConfig config, Path skillRoot) {
+        if (config == null || skillRoot == null) {
+            throw new IllegalArgumentException("config and skillRoot are required");
+        }
+        if ("openai-compatible".equals(config.getProviderKind())) {
+            return new OpenAiCompatible(config, skillRoot);
+        }
+        if ("ark-responses".equals(config.getProviderKind())) {
+            return new ArkResponses(config, skillRoot);
+        }
+        throw new IllegalStateException("unsupported VLM provider kind: " + config.getProviderKind());
+    }
+
     final class OpenAiCompatible implements VlmClient {
         private final VlmConfig config;
         private final Path skillRoot;
@@ -190,6 +207,170 @@ public interface VlmClient {
             } catch (IOException e) {
                 throw new RuntimeException("VLM HTTP call failed", e);
             }
+        }
+
+        private String readPrompt(VlmConfig.RoleConfig role) {
+            try {
+                return new String(Files.readAllBytes(skillRoot.resolve(role.getPromptPath())), StandardCharsets.UTF_8);
+            } catch (IOException e) {
+                throw new RuntimeException("cannot read prompt for " + role.getRole(), e);
+            }
+        }
+
+        private static List<PageImage> one(PageImage page) {
+            List<PageImage> pages = new ArrayList<PageImage>();
+            pages.add(page);
+            return pages;
+        }
+    }
+
+    /**
+     * 火山方舟 Responses API 适配器。它与 Chat Completions 的差异仅限传输协议：请求
+     * 使用 input/content 的 input_text、input_image，结果从 output/content/output_text 取出；
+     * 上层仍复用同一套四角色解析、坐标校验和失败关闭策略。
+     */
+    final class ArkResponses implements VlmClient {
+        private final VlmConfig config;
+        private final Path skillRoot;
+        private final ObjectMapper mapper = new ObjectMapper();
+
+        public ArkResponses(VlmConfig config, Path skillRoot) {
+            this.config = config;
+            this.skillRoot = skillRoot;
+        }
+
+        public PatternResponse pattern(List<PageImage> pages) {
+            if (pages.size() > 8) {
+                throw new IllegalArgumentException("pattern accepts at most 8 pages");
+            }
+            List<String> ids = new ArrayList<String>();
+            for (PageImage page : pages) {
+                ids.add(page.getPageId());
+            }
+            return ResponseParser.parsePattern(call("pattern", "Analyze batch page_ids=" + ids, pages,
+                    java.util.Collections.<RoiImage>emptyList()), ids);
+        }
+
+        public LocateResponse locate(PageImage page, PatternGroup group) {
+            return ResponseParser.parseLocate(call("locate", "Locate page_id=" + page.getPageId()
+                    + " pattern_group=" + (group == null ? "none" : group.group_id), one(page),
+                    java.util.Collections.<RoiImage>emptyList()), page.getPageId());
+        }
+
+        public VerifyResponse verify(PageImage page, EraseRegion region, RoiImage roi) {
+            String regionId = region == null ? "edge" : region.region_id;
+            return ResponseParser.parseVerify(call("verify", "Verify page_id=" + page.getPageId()
+                    + " region_id=" + regionId, one(page), java.util.Collections.singletonList(roi)),
+                    page.getPageId(), regionId);
+        }
+
+        public AuditResponse audit(PageImage original, PageImage erased, List<EraseRegion> regions, List<RoiImage> rois) {
+            return ResponseParser.parseAudit(call("audit", "Audit page_id=" + original.getPageId(),
+                    java.util.Arrays.asList(original.withImageRole("ORIGINAL"), erased.withImageRole("ERASED")),
+                    rois == null ? java.util.Collections.<RoiImage>emptyList() : rois), original.getPageId());
+        }
+
+        private String call(String role, String instruction, List<PageImage> pages, List<RoiImage> rois) {
+            VlmConfig.RoleConfig roleConfig = config.role(role);
+            RuntimeException last = null;
+            for (int attempt = 0; attempt <= roleConfig.getRetries(); attempt++) {
+                try {
+                    return http(roleConfig, buildRequestBody(roleConfig.getModel(), readPrompt(roleConfig), instruction, pages, rois));
+                } catch (RuntimeException e) {
+                    last = e;
+                }
+            }
+            throw last == null ? new RuntimeException(role + " Ark call failed") : last;
+        }
+
+        /** 对应 Ark Responses：input 是消息数组，图片 URL 是字符串而非 image_url.url 对象。 */
+        public static String buildRequestBody(String model, String prompt, String instruction,
+                                              List<PageImage> pages, List<RoiImage> rois) {
+            try {
+                ObjectMapper mapper = new ObjectMapper();
+                List<Object> content = new ArrayList<Object>();
+                content.add(arkTextPart(prompt + "\n" + instruction));
+                for (PageImage page : pages) {
+                    String label = "PAGE_ID: " + page.getPageId();
+                    if (page.getImageRole() != null) {
+                        label += "\nIMAGE_ROLE: " + page.getImageRole();
+                    }
+                    content.add(arkTextPart(label));
+                    content.add(arkImagePart(page.previewDataUrl()));
+                }
+                for (RoiImage roi : rois) {
+                    String label = roi.getPageId() == null ? "" : "ROI_PAGE_ID: " + roi.getPageId() + "\n";
+                    content.add(arkTextPart(label + "ROI_REGION_ID: " + roi.getRegionId()));
+                    content.add(arkImagePart(roi.dataUrl()));
+                }
+                Map<String, Object> inputMessage = new LinkedHashMap<String, Object>();
+                inputMessage.put("role", "user");
+                inputMessage.put("content", content);
+                Map<String, Object> body = new LinkedHashMap<String, Object>();
+                body.put("model", model);
+                body.put("input", java.util.Collections.singletonList(inputMessage));
+                return mapper.writeValueAsString(body);
+            } catch (IOException e) {
+                throw new RuntimeException("cannot build Ark request", e);
+            }
+        }
+
+        private static Map<String, Object> arkTextPart(String text) {
+            Map<String, Object> part = new LinkedHashMap<String, Object>();
+            part.put("type", "input_text");
+            part.put("text", text);
+            return part;
+        }
+
+        private static Map<String, Object> arkImagePart(String dataUrl) {
+            Map<String, Object> part = new LinkedHashMap<String, Object>();
+            part.put("type", "input_image");
+            part.put("image_url", dataUrl);
+            part.put("detail", "high");
+            return part;
+        }
+
+        private String http(VlmConfig.RoleConfig role, String body) {
+            try {
+                HttpURLConnection conn = (HttpURLConnection) new URL(role.getEndpoint()).openConnection();
+                conn.setRequestMethod("POST");
+                conn.setConnectTimeout(30000);
+                conn.setReadTimeout(120000);
+                conn.setRequestProperty("Authorization", "Bearer " + role.getApiKey());
+                conn.setRequestProperty("Content-Type", "application/json");
+                conn.setDoOutput(true);
+                OutputStream out = conn.getOutputStream();
+                out.write(body.getBytes(StandardCharsets.UTF_8));
+                out.close();
+                int code = conn.getResponseCode();
+                java.io.InputStream stream = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
+                JsonNode root = mapper.readTree(stream);
+                if (code < 200 || code >= 300) {
+                    throw new RuntimeException("Ark HTTP " + code);
+                }
+                return responseText(root);
+            } catch (IOException e) {
+                throw new RuntimeException("Ark HTTP call failed", e);
+            }
+        }
+
+        /** 只接收已完成响应中的 output_text；缺少该字段即协议失败，交由上层失败关闭。 */
+        static String responseText(JsonNode root) {
+            if (!"completed".equals(root.path("status").asText())) {
+                throw new RuntimeException("Ark response is not completed");
+            }
+            StringBuilder text = new StringBuilder();
+            for (JsonNode output : root.path("output")) {
+                for (JsonNode content : output.path("content")) {
+                    if ("output_text".equals(content.path("type").asText())) {
+                        text.append(content.path("text").asText());
+                    }
+                }
+            }
+            if (text.length() == 0) {
+                throw new RuntimeException("Ark response output_text is missing");
+            }
+            return text.toString();
         }
 
         private String readPrompt(VlmConfig.RoleConfig role) {

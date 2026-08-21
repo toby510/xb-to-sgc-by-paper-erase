@@ -7,28 +7,24 @@
   },
   "roles": {
     "pattern": {
-      "provider": "dashscope",
       "说明": "整卷共性识别：先比较同一试卷多页的阅读方向、页码是否存在、所在边缘和跨页规律；它不输出可擦除像素。",
       "输入": "同一试卷的一批整页缩略图（最多 8 页，带 PAGE_ID）。",
       "调用时机": "每份试卷处理开始时；分批结果会在 Java 侧合并并校验 PAGE_ID。",
       "prompt": "references/01-整卷共性识别/pattern-prompt-v2.md"
     },
     "locate": {
-      "provider": "dashscope",
       "说明": "单页页码定位：根据整卷共性，在一张标准化页面中找候选页码框和最近正文边界；结果仍只是候选。",
       "输入": "一张标准化后的整页图（带 PAGE_ID）及所属 pattern_group。",
       "调用时机": "pattern 建立共性后，对试卷每一页调用一次。",
       "prompt": "references/02-单页页码定位/locate-prompt-v2.md"
     },
     "verify": {
-      "provider": "dashscope",
       "说明": "局部安全复核：仅判断候选页码 ROI 是否可安全擦除，专门处理低置信度、旋转、同线和正文过近等风险页面。",
       "输入": "原分辨率整页图和候选区域 ROI（带 PAGE_ID、ROI_PAGE_ID、ROI_REGION_ID）。",
       "调用时机": "只有 RiskGate 判定为高风险，或需要确认无页码时才调用，避免每页重复消耗。",
       "prompt": "references/03-局部安全复核/verify-prompt-v3.md"
     },
     "audit": {
-      "provider": "dashscope",
       "说明": "擦除结果审计：对比擦除前后，确认正文未变、目标页码已消失，并独立评估背景色。",
       "输入": "同一页的 ORIGINAL、ERASED 两张图及所有相关 ROI。",
       "调用时机": "每张实际发生过像素擦除的页面完成后；正文或目标判断失败即回退人工审核。",
@@ -112,17 +108,14 @@
     },
     "ark": {
       "kind": "ark-responses",
+      "说明": "将 active 改为 ark 后，四个角色统一使用 Ark Responses API。XB_PAPER_ERASE_ARK_MODEL_ENDPOINT 的值是方舟模型或推理接入点 ID，会作为请求中的 model 发送。",
       "base_url": {
         "env": "XB_PAPER_ERASE_ARK_BASE_URL",
         "default": "https://ark.cn-beijing.volces.com/api/v3/responses"
       },
       "api_key": ["XB_PAPER_ERASE_ARK_API_KEY", "MST_XB_AI_ARK_API_KEY"],
-      "endpoint_env": "XB_PAPER_ERASE_ARK_MODEL_ENDPOINT",
-      "role_endpoint_env": {
-        "pattern": "XB_PAPER_ERASE_PATTERN_ENDPOINT",
-        "locate": "XB_PAPER_ERASE_LOCATE_ENDPOINT",
-        "verify": "XB_PAPER_ERASE_VERIFY_ENDPOINT",
-        "audit": "XB_PAPER_ERASE_AUDIT_ENDPOINT"
+      "model": {
+        "env": "XB_PAPER_ERASE_ARK_MODEL_ENDPOINT"
       }
     }
   }

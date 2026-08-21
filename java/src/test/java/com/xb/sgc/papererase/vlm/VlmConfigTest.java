@@ -1,8 +1,13 @@
 package com.xb.sgc.papererase.vlm;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.Test;
 
 import java.nio.file.Paths;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -53,6 +58,30 @@ public class VlmConfigTest {
         } catch (IllegalStateException expected) {
             assertTrue(expected.getMessage().contains("endpoint"));
             assertFalse(expected.getMessage().contains("pattern-secret"));
+        }
+    }
+
+    @Test
+    public void selectsArkResponsesFromActiveProviderWithoutRoleProviderFields() throws Exception {
+        String source = new String(Files.readAllBytes(Paths.get("../config/vlm-providers.json")), StandardCharsets.UTF_8);
+        Path arkConfig = Files.createTempFile("paper-erase-ark", ".json");
+        try {
+            Files.write(arkConfig, source.replace("\"active\": \"dashscope\"", "\"active\": \"ark\"")
+                    .getBytes(StandardCharsets.UTF_8));
+            Map<String, String> env = new HashMap<String, String>();
+            env.put("XB_PAPER_ERASE_ARK_API_KEY", "ark-secret");
+            env.put("XB_PAPER_ERASE_ARK_MODEL_ENDPOINT", "ep-ark-vision");
+
+            VlmConfig config = VlmConfig.load(arkConfig, env);
+            assertEquals("ark-responses", config.getProviderKind());
+            assertEquals("ep-ark-vision", config.role("audit").getModel());
+            assertTrue(config.role("audit").getEndpoint().endsWith("/responses"));
+            assertFalse(config.role("audit").safeSummary().contains("ark-secret"));
+            assertTrue(VlmClient.create(config, Paths.get("..")).getClass().getName().endsWith("VlmClient$ArkResponses"));
+            JsonNode roles = new ObjectMapper().readTree(source).path("roles");
+            assertTrue(roles.path("pattern").path("provider").isMissingNode());
+        } finally {
+            Files.deleteIfExists(arkConfig);
         }
     }
 }
