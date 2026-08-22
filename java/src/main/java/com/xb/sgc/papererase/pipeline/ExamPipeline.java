@@ -280,15 +280,24 @@ public final class ExamPipeline {
         RegionValidator.ValidationResult validation = RegionValidator.validate(
                 new RegionValidator.PageLocateResult(locate.page_id, locate.status, locate.regions, locate.nearest_body_boundary),
                 normalizedImage);
+        boolean refinedByVlm = false;
         if (!validation.isAccepted()) {
             context.event("validation", exam.getExamId(), page.getPageId(), "rejected", validation.getReasons().toString(), 0);
-            return manual(page, original, normalizedImage, transforms, "validation_rejected", group, locate);
+            // 模型已给出明确页码语义但像素框/正文边界未过门禁时，先让模型在完整边缘高清图
+            // 中重测；绝不由 Java 放宽规则或自行移动候选框。
+            Refinement refinement = refineEmptyTargetBox(exam, page, normalizedImage, locate, pageImage, context);
+            if (refinement == null) {
+                return manual(page, original, normalizedImage, transforms, "validation_rejected", group, locate);
+            }
+            locate = refinement.locate;
+            validation = refinement.validation;
+            refinedByVlm = true;
+            context.event("validation", exam.getExamId(), page.getPageId(), "accepted", "coordinate_refined_after_rejection", 0);
         }
         context.event("validation", exam.getExamId(), page.getPageId(), "accepted", "region_count=" + validation.getRegions().size(), 0);
         // 首次定位已经通过空间门禁、但候选框本身没有任何可擦墨迹时，不能让 Java 沿边缘猜
         // 测页码。改由模型查看同一边缘带的高清图，重新给出局部坐标和正文边界；没有明确
         // 坐标就关闭失败。这针对的是“语义识别对、归一化坐标偏移”的模型已知失效模式。
-        boolean refinedByVlm = false;
         if (hasEmptyTargetBox(normalizedImage, validation.getRegions())) {
             Refinement refinement = refineEmptyTargetBox(exam, page, normalizedImage, locate, pageImage, context);
             if (refinement == null) {
