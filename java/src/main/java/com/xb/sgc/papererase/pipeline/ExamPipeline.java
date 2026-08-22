@@ -43,6 +43,7 @@ import java.util.Map;
  */
 public final class ExamPipeline {
     private static final double MIN_DIRECTION_CONFIDENCE = 0.90;
+    private static final int ROI_MAPPING_GUARD_PIXELS = 4;
     private final VlmClient vlm;
     private final int patternSampleMaxPages;
 
@@ -532,6 +533,25 @@ public final class ExamPipeline {
         double y1 = Math.max(0D, group.locate_window.y1 - 0.02D);
         double x2 = Math.min(1D, group.locate_window.x2 + 0.02D);
         double y2 = Math.min(1D, group.locate_window.y2 + 0.02D);
+        // 粗窗口只确定“靠哪一边”。为了让模型能测到真正的正文边界，沿页码基线的轴必须
+        // 看完整条页面；朝正文方向固定再扩 15%，但仍远小于整页，不会退化为整图定位。
+        if ("bottom".equals(group.edge)) {
+            x1 = 0D;
+            x2 = 1D;
+            y1 = Math.max(0D, y1 - 0.15D);
+        } else if ("top".equals(group.edge)) {
+            x1 = 0D;
+            x2 = 1D;
+            y2 = Math.min(1D, y2 + 0.15D);
+        } else if ("left".equals(group.edge)) {
+            y1 = 0D;
+            y2 = 1D;
+            x2 = Math.min(1D, x2 + 0.15D);
+        } else if ("right".equals(group.edge)) {
+            y1 = 0D;
+            y2 = 1D;
+            x1 = Math.max(0D, x1 - 0.15D);
+        }
         if (x1 >= x2 || y1 >= y2) {
             return null;
         }
@@ -552,11 +572,17 @@ public final class ExamPipeline {
         full.nearest_body_boundary = mapBoundary(local.nearest_body_boundary, transform, width, height);
         for (EraseRegion region : local.regions) {
             EraseRegion mapped = copyRegion(region);
-            RoiTransform.NormalizedRect rect = transform.localRectToFullNormalized(region.x1, region.y1, region.x2, region.y2);
-            mapped.x1 = rect.getX1();
-            mapped.y1 = rect.getY1();
-            mapped.x2 = rect.getX2();
-            mapped.y2 = rect.getY2();
+            RoiTransform.PixelRect rect = transform.localRectToFullPixels(region.x1, region.y1, region.x2, region.y2);
+            // ROI 相对坐标经模型量化再映射回原图时会损失少量边缘笔画。仅在这条局部定位
+            // 主链路统一补 4px，并交由既有正文空白带、掩码边界与审计门禁重新证明安全。
+            int left = Math.max(0, rect.getX() - ROI_MAPPING_GUARD_PIXELS);
+            int top = Math.max(0, rect.getY() - ROI_MAPPING_GUARD_PIXELS);
+            int right = Math.min(width, rect.getX() + rect.getWidth() + ROI_MAPPING_GUARD_PIXELS);
+            int bottom = Math.min(height, rect.getY() + rect.getHeight() + ROI_MAPPING_GUARD_PIXELS);
+            mapped.x1 = left / (double) width;
+            mapped.y1 = top / (double) height;
+            mapped.x2 = right / (double) width;
+            mapped.y2 = bottom / (double) height;
             full.regions.add(mapped);
         }
         return full;
