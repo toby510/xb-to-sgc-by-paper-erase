@@ -31,4 +31,25 @@ public final class PageBatcher {
         }
         return batches;
     }
+
+    /**
+     * 从有序试卷中均匀选取代表页。首尾页始终被覆盖；0 表示全量，防止配置切换时改变页序。
+     */
+    public static List<PageInput> representative(List<PageInput> pages, int maxPages) {
+        if (pages == null) {
+            throw new IllegalArgumentException("pages are required");
+        }
+        if (maxPages < 0) {
+            throw new IllegalArgumentException("maxPages must be >= 0");
+        }
+        if (maxPages == 0 || pages.size() <= maxPages) {
+            return new ArrayList<PageInput>(pages);
+        }
+        List<PageInput> selected = new ArrayList<PageInput>();
+        for (int i = 0; i < maxPages; i++) {
+            int index = (int) Math.round(i * (pages.size() - 1D) / (maxPages - 1D));
+            selected.add(pages.get(index));
+        }
+        return selected;
+    }
 }

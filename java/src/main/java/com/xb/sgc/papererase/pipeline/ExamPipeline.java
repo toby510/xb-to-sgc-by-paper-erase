@@ -44,12 +44,24 @@ import java.util.Map;
 public final class ExamPipeline {
     private static final double MIN_DIRECTION_CONFIDENCE = 0.90;
     private final VlmClient vlm;
+    private final int patternSampleMaxPages;
 
     public ExamPipeline(VlmClient vlm) {
+        this(vlm, 0);
+    }
+
+    /**
+     * @param patternSampleMaxPages 0 表示全页 pattern；正数表示稳定试卷的代表页上限。
+     */
+    public ExamPipeline(VlmClient vlm, int patternSampleMaxPages) {
         if (vlm == null) {
             throw new IllegalArgumentException("vlm is required");
         }
+        if (patternSampleMaxPages < 0) {
+            throw new IllegalArgumentException("patternSampleMaxPages must be >= 0");
+        }
         this.vlm = vlm;
+        this.patternSampleMaxPages = patternSampleMaxPages;
     }
 
     public ExamOutcome process(ExamInput exam, RunContext context) {
@@ -104,31 +116,36 @@ public final class ExamPipeline {
 
     private PatternBundle buildPattern(ExamInput exam, Map<String, BufferedImage> originals, RunContext context) {
         PatternBundle bundle = new PatternBundle();
+        List<PageInput> representative = PageBatcher.representative(exam.getPages(), patternSampleMaxPages);
+        if (representative.size() < exam.getPages().size()) {
+            PatternResponse sampled = analyzePatternBatch(exam, representative, originals, context, "representative");
+            if (canInheritRepresentativePattern(sampled, representative)) {
+                PatternGroup inherited = copyPatternGroup(sampled.pattern_groups.get(0));
+                inherited.page_ids.clear();
+                int rotation = sampled.page_directions.get(0).reading_rotation;
+                double directionConfidence = sampled.page_directions.get(0).confidence;
+                for (PageInput page : exam.getPages()) {
+                    PageDirection direction = new PageDirection();
+                    direction.page_id = page.getPageId();
+                    direction.reading_rotation = rotation;
+                    direction.confidence = directionConfidence;
+                    bundle.directions.put(direction.page_id, direction);
+                    inherited.page_ids.add(page.getPageId());
+                    bundle.groupByPage.put(page.getPageId(), inherited);
+                }
+                bundle.groups.add(inherited);
+                context.event("pattern", exam.getExamId(), null, "inherited",
+                        "representative_page_count=" + representative.size(), 0);
+                return bundle;
+            }
+            // 代表页不能证明整卷同质时，成本让位于安全：保留原有全页分析，而不猜测未采样页。
+            context.event("pattern", exam.getExamId(), null, "fallback_full", "representative_not_stable", 0);
+        }
         int batchIndex = 0;
-        for (List<PageInput> batch : PageBatcher.overlapping(exam.getPages(), 8, 1)) {
-            long startedAt = System.currentTimeMillis();
+        int fullPatternBatchSize = patternSampleMaxPages == 0 ? 8 : 6;
+        for (List<PageInput> batch : PageBatcher.overlapping(exam.getPages(), fullPatternBatchSize, 1)) {
             batchIndex++;
-            List<VlmClient.PageImage> images = new ArrayList<VlmClient.PageImage>();
-            List<String> expected = new ArrayList<String>();
-            for (PageInput page : batch) {
-                images.add(new VlmClient.PageImage(page.getPageId(), originals.get(page.getPageId())));
-                expected.add(page.getPageId());
-            }
-            context.event("pattern", exam.getExamId(), null, "started", "batch=" + batchIndex + " page_count=" + images.size(), 0);
-            PatternResponse response;
-            try {
-                response = vlm.pattern(images);
-                context.event("pattern", exam.getExamId(), null, "completed", "batch=" + batchIndex + " page_count=" + images.size(),
-                        System.currentTimeMillis() - startedAt);
-            } catch (RuntimeException e) {
-                context.event("pattern", exam.getExamId(), null, "failed", e.getClass().getSimpleName(),
-                        System.currentTimeMillis() - startedAt);
-                throw e;
-            }
-            // 绝不用响应数组位置对齐；错页坐标是“擦到正文”的高风险来源。
-            if (!pageIds(response).equals(new java.util.HashSet<String>(expected))) {
-                throw new ResponseParser.ParseException("batch page ids mismatch", "");
-            }
+            PatternResponse response = analyzePatternBatch(exam, batch, originals, context, "batch=" + batchIndex);
             for (PageDirection direction : response.page_directions) {
                 PageDirection existing = bundle.directions.get(direction.page_id);
                 if (existing != null && (existing.reading_rotation != direction.reading_rotation
@@ -150,6 +167,62 @@ public final class ExamPipeline {
             }
         }
         return bundle;
+    }
+
+    private PatternResponse analyzePatternBatch(ExamInput exam, List<PageInput> pages, Map<String, BufferedImage> originals,
+                                                RunContext context, String label) {
+        long startedAt = System.currentTimeMillis();
+        List<VlmClient.PageImage> images = new ArrayList<VlmClient.PageImage>();
+        List<String> expected = new ArrayList<String>();
+        for (PageInput page : pages) {
+            images.add(new VlmClient.PageImage(page.getPageId(), originals.get(page.getPageId())));
+            expected.add(page.getPageId());
+        }
+        context.event("pattern", exam.getExamId(), null, "started", label + " page_count=" + images.size(), 0);
+        PatternResponse response;
+        try {
+            response = vlm.pattern(images);
+            context.event("pattern", exam.getExamId(), null, "completed", label + " page_count=" + images.size(),
+                    System.currentTimeMillis() - startedAt);
+        } catch (RuntimeException e) {
+            context.event("pattern", exam.getExamId(), null, "failed", e.getClass().getSimpleName(),
+                    System.currentTimeMillis() - startedAt);
+            throw e;
+        }
+        if (!pageIds(response).equals(new java.util.HashSet<String>(expected))) {
+            throw new ResponseParser.ParseException("batch page ids mismatch", "");
+        }
+        return response;
+    }
+
+    private boolean canInheritRepresentativePattern(PatternResponse response, List<PageInput> representative) {
+        if (response.pattern_groups.size() != 1 || !response.heterogeneous_page_ids.isEmpty()
+                || !response.no_pagenum_page_ids.isEmpty() || !response.ungrouped_page_ids.isEmpty()) {
+            return false;
+        }
+        PatternGroup group = response.pattern_groups.get(0);
+        if (group.confidence < 0.95 || group.locate_window == null || group.page_ids.size() != representative.size()
+                || response.page_directions.size() != representative.size()) {
+            return false;
+        }
+        int rotation = response.page_directions.get(0).reading_rotation;
+        for (PageDirection direction : response.page_directions) {
+            if (direction.reading_rotation != rotation || direction.confidence < MIN_DIRECTION_CONFIDENCE) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private PatternGroup copyPatternGroup(PatternGroup source) {
+        PatternGroup copy = new PatternGroup();
+        copy.group_id = source.group_id;
+        copy.edge = source.edge;
+        copy.alignment = source.alignment;
+        copy.layout_description = source.layout_description;
+        copy.confidence = source.confidence;
+        copy.locate_window = source.locate_window;
+        return copy;
     }
 
     private java.util.Set<String> pageIds(PatternResponse response) {
@@ -181,7 +254,14 @@ public final class ExamPipeline {
         try {
             long startedAt = System.currentTimeMillis();
             context.event("locate", exam.getExamId(), page.getPageId(), "started", null, 0);
-            locate = vlm.locate(pageImage, group);
+            LocateRoi locateRoi = patternSampleMaxPages > 0 ? locateRoi(page.getPageId(), group, normalizedImage) : null;
+            if (locateRoi == null) {
+                locate = vlm.locate(pageImage, group);
+            } else {
+                // locate 只看局部高清图；其响应坐标在此处统一映射回整页坐标，后续安全门禁无需特判。
+                locate = mapLocateToFull(vlm.locate(pageImage, group, locateRoi.image), locateRoi.transform,
+                        normalizedImage.getWidth(), normalizedImage.getHeight());
+            }
             context.event("locate", exam.getExamId(), page.getPageId(), "completed", locate.status,
                     System.currentTimeMillis() - startedAt);
         } catch (RuntimeException e) {
@@ -444,6 +524,44 @@ public final class ExamPipeline {
         return new VlmClient.RoiImage(pageId, region.region_id, crop(image, transform));
     }
 
+    private LocateRoi locateRoi(String pageId, PatternGroup group, BufferedImage image) {
+        if (group == null || group.locate_window == null) {
+            return null;
+        }
+        double x1 = Math.max(0D, group.locate_window.x1 - 0.02D);
+        double y1 = Math.max(0D, group.locate_window.y1 - 0.02D);
+        double x2 = Math.min(1D, group.locate_window.x2 + 0.02D);
+        double y2 = Math.min(1D, group.locate_window.y2 + 0.02D);
+        if (x1 >= x2 || y1 >= y2) {
+            return null;
+        }
+        int left = (int) Math.floor(x1 * image.getWidth());
+        int top = (int) Math.floor(y1 * image.getHeight());
+        int right = (int) Math.ceil(x2 * image.getWidth());
+        int bottom = (int) Math.ceil(y2 * image.getHeight());
+        RoiTransform transform = new RoiTransform(left, top, Math.max(1, right - left), Math.max(1, bottom - top),
+                image.getWidth(), image.getHeight());
+        return new LocateRoi(transform, new VlmClient.RoiImage(pageId, "locate", crop(image, transform)));
+    }
+
+    private LocateResponse mapLocateToFull(LocateResponse local, RoiTransform transform, int width, int height) {
+        LocateResponse full = new LocateResponse();
+        full.page_id = local.page_id;
+        full.status = local.status;
+        full.evidence = local.evidence + "; coordinates_mapped_from_locate_roi";
+        full.nearest_body_boundary = mapBoundary(local.nearest_body_boundary, transform, width, height);
+        for (EraseRegion region : local.regions) {
+            EraseRegion mapped = copyRegion(region);
+            RoiTransform.NormalizedRect rect = transform.localRectToFullNormalized(region.x1, region.y1, region.x2, region.y2);
+            mapped.x1 = rect.getX1();
+            mapped.y1 = rect.getY1();
+            mapped.x2 = rect.getX2();
+            mapped.y2 = rect.getY2();
+            full.regions.add(mapped);
+        }
+        return full;
+    }
+
     private VlmClient.RoiImage edgeRoi(String pageId, PatternGroup group, BodyBoundary boundary, BufferedImage image) {
         RoiTransform.PageEdge edge = RoiTransform.PageEdge.BOTTOM;
         if ("top".equals(group.edge)) {
@@ -518,6 +636,16 @@ public final class ExamPipeline {
         final VlmClient.RoiImage image;
 
         EdgeRoi(RoiTransform transform, VlmClient.RoiImage image) {
+            this.transform = transform;
+            this.image = image;
+        }
+    }
+
+    private static final class LocateRoi {
+        final RoiTransform transform;
+        final VlmClient.RoiImage image;
+
+        LocateRoi(RoiTransform transform, VlmClient.RoiImage image) {
             this.transform = transform;
             this.image = image;
         }

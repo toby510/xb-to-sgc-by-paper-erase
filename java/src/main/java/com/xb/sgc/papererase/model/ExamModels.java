@@ -165,6 +165,21 @@ public final class ExamModels {
         public List<String> page_ids = new ArrayList<String>();
         @JsonProperty(required = true)
         public double confidence;
+        @JsonProperty(required = true)
+        public LocateWindow locate_window;
+    }
+
+    /** pattern 给 locate 的宽松工作窗口；坐标属于 Java 旋正后的页面，不可直接擦除。 */
+    @JsonIgnoreProperties(ignoreUnknown = false)
+    public static final class LocateWindow {
+        @JsonProperty(required = true)
+        public double x1;
+        @JsonProperty(required = true)
+        public double y1;
+        @JsonProperty(required = true)
+        public double x2;
+        @JsonProperty(required = true)
+        public double y2;
     }
 
     @JsonIgnoreProperties(ignoreUnknown = false)

@@ -37,6 +37,14 @@ public interface VlmClient {
 
     LocateResponse locate(PageImage page, PatternGroup group);
 
+    /**
+     * 新主链路仅向 locate 发送 pattern 给出的高清局部图。默认实现保留旧 fake/client 兼容；
+     * 真实客户端必须覆写，禁止把整页与 ROI 同时发送而降低局部坐标精度。
+     */
+    default LocateResponse locate(PageImage page, PatternGroup group, RoiImage roi) {
+        return locate(page, group);
+    }
+
     VerifyResponse verify(PageImage page, EraseRegion region, RoiImage roi);
 
     AuditResponse audit(PageImage original, PageImage erased, List<EraseRegion> regions, List<RoiImage> rois);
@@ -94,6 +102,14 @@ public interface VlmClient {
             return ResponseParser.parseLocate(call("locate", "Locate page_id=" + page.getPageId()
                     + " pattern_group=" + (group == null ? "none" : group.group_id), one(page),
                     java.util.Collections.<RoiImage>emptyList()), page.getPageId());
+        }
+
+        @Override
+        public LocateResponse locate(PageImage page, PatternGroup group, RoiImage roi) {
+            return ResponseParser.parseLocate(call("locate", "Locate ROI for page_id=" + page.getPageId()
+                    + " pattern_group=" + (group == null ? "none" : group.group_id)
+                    + " edge=" + (group == null ? "unknown" : group.edge),
+                    java.util.Collections.<PageImage>emptyList(), java.util.Collections.singletonList(roi)), page.getPageId());
         }
 
         public VerifyResponse verify(PageImage page, EraseRegion region, RoiImage roi) {
@@ -268,6 +284,14 @@ public interface VlmClient {
             return ResponseParser.parseLocate(call("locate", "Locate page_id=" + page.getPageId()
                     + " pattern_group=" + (group == null ? "none" : group.group_id), one(page),
                     java.util.Collections.<RoiImage>emptyList()), page.getPageId());
+        }
+
+        @Override
+        public LocateResponse locate(PageImage page, PatternGroup group, RoiImage roi) {
+            return ResponseParser.parseLocate(call("locate", "Locate ROI for page_id=" + page.getPageId()
+                    + " pattern_group=" + (group == null ? "none" : group.group_id)
+                    + " edge=" + (group == null ? "unknown" : group.edge),
+                    java.util.Collections.<PageImage>emptyList(), java.util.Collections.singletonList(roi)), page.getPageId());
         }
 
         public VerifyResponse verify(PageImage page, EraseRegion region, RoiImage roi) {

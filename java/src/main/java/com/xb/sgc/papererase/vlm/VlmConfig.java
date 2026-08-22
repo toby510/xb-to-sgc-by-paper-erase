@@ -13,11 +13,13 @@ public final class VlmConfig {
     private static final String[] ROLES = {"pattern", "locate", "verify", "audit"};
     private final Map<String, RoleConfig> roles;
     private final int maxPreviewLongEdge;
+    private final int patternSampleMaxPages;
     private final String providerKind;
 
-    private VlmConfig(Map<String, RoleConfig> roles, int maxPreviewLongEdge, String providerKind) {
+    private VlmConfig(Map<String, RoleConfig> roles, int maxPreviewLongEdge, int patternSampleMaxPages, String providerKind) {
         this.roles = Collections.unmodifiableMap(new HashMap<String, RoleConfig>(roles));
         this.maxPreviewLongEdge = maxPreviewLongEdge;
+        this.patternSampleMaxPages = patternSampleMaxPages;
         this.providerKind = providerKind;
     }
 
@@ -31,6 +33,10 @@ public final class VlmConfig {
         }
         JsonNode root = new ObjectMapper().readTree(configPath.toFile());
         int previewLongEdge = root.path("defaults").path("max_preview_long_edge").asInt(1536);
+        int patternSampleMaxPages = root.path("defaults").path("pattern_sample_max_pages").asInt(6);
+        if (patternSampleMaxPages < 0) {
+            throw new IllegalStateException("pattern_sample_max_pages must be >= 0");
+        }
         int defaultRetries = root.path("defaults").path("network_retries").asInt(2);
         String active = text(root.path("active"));
         JsonNode provider = root.path("providers").path(active);
@@ -75,7 +81,7 @@ public final class VlmConfig {
             roles.put(role, new RoleConfig(role, prompt, model, endpoint, apiKey, retries, maxOutputTokens, imageDetail,
                     thinkingType, reasoningEffort));
         }
-        return new VlmConfig(roles, previewLongEdge, providerKind);
+        return new VlmConfig(roles, previewLongEdge, patternSampleMaxPages, providerKind);
     }
 
     private static String resolveEndpoint(JsonNode provider, JsonNode roleOverride, Map<String, String> env) {
@@ -158,6 +164,11 @@ public final class VlmConfig {
 
     public int getMaxPreviewLongEdge() {
         return maxPreviewLongEdge;
+    }
+
+    /** 每卷用于建立共性的代表页上限；0 表示不采样、全页分析。 */
+    public int getPatternSampleMaxPages() {
+        return patternSampleMaxPages;
     }
 
     /** 当前 active provider 的传输协议；客户端工厂据此选择请求/响应编解码方式。 */

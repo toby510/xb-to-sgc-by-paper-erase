@@ -12,6 +12,7 @@ import com.xb.sgc.papererase.model.ExamModels.AuditResponse;
 import com.xb.sgc.papererase.model.ExamModels.BodyBoundary;
 import com.xb.sgc.papererase.model.ExamModels.EraseRegion;
 import com.xb.sgc.papererase.model.ExamModels.LocateResponse;
+import com.xb.sgc.papererase.model.ExamModels.LocateWindow;
 import com.xb.sgc.papererase.model.ExamModels.PageDirection;
 import com.xb.sgc.papererase.model.ExamModels.PatternGroup;
 import com.xb.sgc.papererase.model.ExamModels.PatternResponse;
@@ -60,8 +61,8 @@ public final class ResponseParser {
             throw bad("pattern batch page ids must match exactly", raw);
         }
         for (JsonNode item : array(root, "pattern_groups")) {
-            requireFields(item, "group_id", "edge", "alignment", "layout_description", "page_ids", "confidence");
-            rejectUnknown(item, "group_id", "edge", "alignment", "layout_description", "page_ids", "confidence");
+            requireFields(item, "group_id", "edge", "alignment", "layout_description", "page_ids", "confidence", "locate_window");
+            rejectUnknown(item, "group_id", "edge", "alignment", "layout_description", "page_ids", "confidence", "locate_window");
             PatternGroup group = new PatternGroup();
             group.group_id = requiredText(item, "group_id");
             group.edge = enumText(item, "edge", "bottom", "top", "left", "right", "mixed");
@@ -75,6 +76,7 @@ public final class ResponseParser {
                 group.page_ids.add(id);
             }
             group.confidence = requiredFiniteUnit(item, "confidence", raw);
+            group.locate_window = parseLocateWindow(item.path("locate_window"), raw);
             response.pattern_groups.add(group);
         }
         copyStringArray(root, "heterogeneous_page_ids", response.heterogeneous_page_ids, expected, raw);
@@ -82,6 +84,20 @@ public final class ResponseParser {
         copyStringArray(root, "ungrouped_page_ids", response.ungrouped_page_ids, expected, raw);
         requireExactPatternClassification(response, expected, raw);
         return response;
+    }
+
+    private static LocateWindow parseLocateWindow(JsonNode node, String raw) {
+        requireFields(node, "x1", "y1", "x2", "y2");
+        rejectUnknown(node, "x1", "y1", "x2", "y2");
+        LocateWindow window = new LocateWindow();
+        window.x1 = requiredFiniteUnit(node, "x1", raw);
+        window.y1 = requiredFiniteUnit(node, "y1", raw);
+        window.x2 = requiredFiniteUnit(node, "x2", raw);
+        window.y2 = requiredFiniteUnit(node, "y2", raw);
+        if (window.x1 >= window.x2 || window.y1 >= window.y2) {
+            throw bad("locate_window must have positive area", raw);
+        }
+        return window;
     }
 
     private static void requireExactPatternClassification(PatternResponse response, Set<String> expected, String raw) {

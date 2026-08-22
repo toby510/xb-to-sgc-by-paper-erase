@@ -25,6 +25,20 @@ public class PageBatcherTest {
         assertOrders(batches.get(2), 15, 18);
     }
 
+    @Test
+    public void representativeSamplingCoversFirstMiddleAndLastWithoutChangingPageOrder() {
+        List<PageInput> pages = new ArrayList<PageInput>();
+        for (int pageOrder = 1; pageOrder <= 15; pageOrder++) {
+            pages.add(new PageInput("exam-1:" + pageOrder, "exam-1", pageOrder, Paths.get(pageOrder + ".png")));
+        }
+        List<PageInput> selected = PageBatcher.representative(pages, 6);
+        assertEquals(6, selected.size());
+        assertEquals(1, selected.get(0).getPageOrder());
+        assertEquals(15, selected.get(5).getPageOrder());
+        assertEquals(7, selected.get(2).getPageOrder());
+        assertEquals(9, selected.get(3).getPageOrder());
+    }
+
     private void assertOrders(List<PageInput> batch, int first, int last) {
         assertEquals(first, batch.get(0).getPageOrder());
         assertEquals(last, batch.get(batch.size() - 1).getPageOrder());

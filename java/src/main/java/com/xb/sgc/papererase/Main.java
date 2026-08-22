@@ -63,7 +63,7 @@ public final class Main {
         System.err.println("run_dir=" + runDir.toAbsolutePath());
         System.err.println("progress_file=" + runDir.resolve("_progress.ndjson").toAbsolutePath());
         List<ExamOutcome> outcomes = new ArrayList<ExamOutcome>();
-        ExamPipeline pipeline = new ExamPipeline(vlm);
+        ExamPipeline pipeline = new ExamPipeline(vlm, config.getPatternSampleMaxPages());
         RunWriter runWriter = new RunWriter();
         int pages = 0;
         for (ExamInput exam : exams) {

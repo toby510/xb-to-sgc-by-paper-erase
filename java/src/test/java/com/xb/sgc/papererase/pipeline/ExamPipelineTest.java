@@ -181,6 +181,7 @@ public class ExamPipelineTest {
             group.alignment = "center";
             group.layout_description = "bottom center";
             group.confidence = 0.99;
+            group.locate_window = window(0.20, 0.80, 0.80, 1.00);
             for (VlmClient.PageImage page : pages) {
                 PageDirection direction = new PageDirection();
                 direction.page_id = page.getPageId();
@@ -191,6 +192,15 @@ public class ExamPipelineTest {
             }
             response.pattern_groups.add(group);
             return response;
+        }
+
+        private com.xb.sgc.papererase.model.ExamModels.LocateWindow window(double x1, double y1, double x2, double y2) {
+            com.xb.sgc.papererase.model.ExamModels.LocateWindow window = new com.xb.sgc.papererase.model.ExamModels.LocateWindow();
+            window.x1 = x1;
+            window.y1 = y1;
+            window.x2 = x2;
+            window.y2 = y2;
+            return window;
         }
 
         public LocateResponse locate(VlmClient.PageImage page, PatternGroup group) {
