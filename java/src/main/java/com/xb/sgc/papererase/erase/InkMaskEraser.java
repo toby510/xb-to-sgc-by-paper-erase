@@ -13,8 +13,9 @@ import java.util.List;
 import java.util.Queue;
 
 /**
- * 掩码级擦除器。它不会用矩形平涂候选区域，而是只改写被判定为目标墨迹的像素；随后由
- * PixelDiffGate 证明批准掩码外没有任何改动。这是正文零误伤的最后一层本地保障。
+ * 目标行擦除器。候选区域可以是页码本体，也可以是“页码及明确同行非正文元数据”组成的
+ * 完整独立页眉/页脚行；它从不根据文字形状猜测语义。随后由 PixelDiffGate 证明批准掩码外
+ * 没有任何改动。这是正文零误伤的最后一层本地保障。
  */
 public final class InkMaskEraser {
     private InkMaskEraser() {
@@ -47,24 +48,27 @@ public final class InkMaskEraser {
         if (touchesRegionBoundary(mask, region)) {
             return EraseOutcome.manual(copy(source), new ApprovedMask(mask), "mask touches region boundary");
         }
-        String geometryReason = invalidInkGeometryReason(mask, region);
+        String geometryReason = invalidInkGeometryReason(mask, region, coloredTargetVerified);
         if (geometryReason != null) {
             return EraseOutcome.manual(copy(source), new ApprovedMask(mask), geometryReason);
         }
 
-        // 背景拟合是观感优化而非正文安全条件，失败时只在掩码内降级纯白。
-        BackgroundEstimator.Estimate estimate = BackgroundEstimator.estimate(source, region, mask);
-        boolean whiteFallback = !estimate.isAccepted();
+        // 此时区域已经过“页码语义 + 空白带 + 边界墨迹 + 文字几何”全部批准。整框重建比
+        // 仅擦深色掩码更能去掉扫描页码的灰色抗锯齿残影；批准框外不改一像素。
+        boolean[][] approvedPixels = fullRegionMask(source, region);
+        BackgroundEstimator.Estimate estimate = BackgroundEstimator.estimateFromOuterRing(source, region);
+        // 外环决定重建颜色；框内原始纸张纹理过复杂时，宁可纯白也不把不可靠的拟合带回框内。
+        boolean whiteFallback = !estimate.isAccepted() || !BackgroundEstimator.estimate(source, region, mask).isAccepted();
 
         BufferedImage candidate = copy(source);
         for (int y = region.getY(); y < region.getY() + region.getHeight(); y++) {
             for (int x = region.getX(); x < region.getX() + region.getWidth(); x++) {
-                if (mask[y][x]) {
+                if (approvedPixels[y][x]) {
                     candidate.setRGB(x, y, whiteFallback ? whiteAt(source, x, y) : estimate.argbAt(x, y));
                 }
             }
         }
-        ApprovedMask approvedMask = ApprovedMask.from(region, source.getWidth(), source.getHeight(), mask);
+        ApprovedMask approvedMask = ApprovedMask.fromApprovedBox(region, source.getWidth(), source.getHeight(), approvedPixels);
         // 写回后逐像素复核，防止算法、颜色模型或未来改动造成掩码外的意外变化。
         PixelDiffGate.GateResult diff = PixelDiffGate.check(source, candidate, approvedMask);
         if (!diff.isPassed()) {
@@ -109,16 +113,37 @@ public final class InkMaskEraser {
         return false;
     }
 
+    /**
+     * 色块、边框或装饰线不等于正文，但不能仅凭 Java 像素形状自行放行。
+     * 命中后由流水线请求一次局部 VLM 复核；复核确认后才允许 {@link #erase}
+     * 擦除整个已批准的独立页脚/页眉区域。
+     */
+    public static boolean requiresVisualTargetConfirmation(BufferedImage source, List<RegionValidator.PixelRegion> regions) {
+        if (source == null || regions == null) {
+            return false;
+        }
+        for (RegionValidator.PixelRegion region : regions) {
+            if (nonTargetReason(source, region) != null) {
+                return true;
+            }
+            boolean[][] mask = extractMask(source, region, false);
+            String reason = invalidInkGeometryReason(mask, region, false);
+            // 空框由流水线先走坐标精定位；其余形状异常都必须先让 VLM 看局部图，
+            // 不能让 Java 把页码装饰、色块或同行元数据误判成正文表格。
+            if (reason != null && !"no target ink found".equals(reason)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static boolean[][] extractMask(BufferedImage source, RegionValidator.PixelRegion region,
                                            boolean coloredTargetVerified) {
-        int backgroundLum = medianLightLuminance(source, region);
+        int backgroundLum = BackgroundEstimator.medianLightLuminance(source, region);
         boolean[][] mask = new boolean[source.getHeight()][source.getWidth()];
         for (int y = region.getY(); y < region.getY() + region.getHeight(); y++) {
             for (int x = region.getX(); x < region.getX() + region.getWidth(); x++) {
-                BackgroundEstimator.ColorParts c = BackgroundEstimator.parts(source.getRGB(x, y));
-                if (BackgroundEstimator.isInk(c, backgroundLum)
-                        || (coloredTargetVerified && BackgroundEstimator.isColoredNonTarget(c)
-                        && c.luminance <= backgroundLum - 25)) {
+                if (BackgroundEstimator.isErasableInk(source.getRGB(x, y), backgroundLum, coloredTargetVerified)) {
                     mask[y][x] = true;
                 }
             }
@@ -150,31 +175,6 @@ public final class InkMaskEraser {
         return "color_warning: " + seamReason;
     }
 
-    private static int medianLightLuminance(BufferedImage source, RegionValidator.PixelRegion region) {
-        int[] counts = new int[256];
-        int total = 0;
-        for (int y = region.getY(); y < region.getY() + region.getHeight(); y++) {
-            for (int x = region.getX(); x < region.getX() + region.getWidth(); x++) {
-                BackgroundEstimator.ColorParts c = BackgroundEstimator.parts(source.getRGB(x, y));
-                if (c.luminance >= 180 && !BackgroundEstimator.isColoredNonTarget(c)) {
-                    counts[c.luminance]++;
-                    total++;
-                }
-            }
-        }
-        if (total == 0) {
-            return 255;
-        }
-        int seen = 0;
-        for (int i = 0; i < counts.length; i++) {
-            seen += counts[i];
-            if (seen > total / 2) {
-                return i;
-            }
-        }
-        return 255;
-    }
-
     private static boolean hasApprovedPixel(boolean[][] mask, RegionValidator.PixelRegion region) {
         for (int y = region.getY(); y < region.getY() + region.getHeight(); y++) {
             for (int x = region.getX(); x < region.getX() + region.getWidth(); x++) {
@@ -184,6 +184,16 @@ public final class InkMaskEraser {
             }
         }
         return false;
+    }
+
+    private static boolean[][] fullRegionMask(BufferedImage source, RegionValidator.PixelRegion region) {
+        boolean[][] approved = new boolean[source.getHeight()][source.getWidth()];
+        for (int y = region.getY(); y < region.getY() + region.getHeight(); y++) {
+            for (int x = region.getX(); x < region.getX() + region.getWidth(); x++) {
+                approved[y][x] = true;
+            }
+        }
+        return approved;
     }
 
     private static boolean touchesRegionBoundary(boolean[][] mask, RegionValidator.PixelRegion region) {
@@ -204,7 +214,8 @@ public final class InkMaskEraser {
         return false;
     }
 
-    private static String invalidInkGeometryReason(boolean[][] mask, RegionValidator.PixelRegion region) {
+    private static String invalidInkGeometryReason(boolean[][] mask, RegionValidator.PixelRegion region,
+                                                   boolean visuallyConfirmedIndependentTarget) {
         List<Component> components = components(mask, region);
         if (components.isEmpty()) {
             return "no target ink found";
@@ -212,37 +223,67 @@ public final class InkMaskEraser {
         int inkCount = 0;
         for (Component component : components) {
             inkCount += component.count;
-            if (component.width() >= Math.max(16, region.getWidth() * 0.45) && component.height() <= 3) {
+            if (!visuallyConfirmedIndependentTarget
+                    && component.width() >= Math.max(16, region.getWidth() * 0.45) && component.height() <= 3) {
                 return "long line component";
             }
-            if (component.height() >= Math.max(10, region.getHeight() * 0.70) && component.width() <= 3) {
+            if (!visuallyConfirmedIndependentTarget
+                    && component.height() >= Math.max(10, region.getHeight() * 0.70) && component.width() <= 3) {
                 return "long line component";
             }
-            if (component.width() * component.height() >= region.getWidth() * region.getHeight() * 0.35
-                    || component.count >= region.getWidth() * region.getHeight() * 0.25) {
+            if (!visuallyConfirmedIndependentTarget
+                    && (component.width() * component.height() >= region.getWidth() * region.getHeight() * 0.35
+                    || component.count >= region.getWidth() * region.getHeight() * 0.25)) {
                 return "ink coverage too high";
             }
         }
-        if (inkCount >= region.getWidth() * region.getHeight() * 0.28) {
+        if (!visuallyConfirmedIndependentTarget && inkCount >= region.getWidth() * region.getHeight() * 0.28) {
             return "ink coverage too high";
         }
-        if (hasLongHorizontalRun(mask, region)) {
+        if (!visuallyConfirmedIndependentTarget && hasLongHorizontalRun(mask, region)) {
             return "long line component";
         }
-        int minCenter = Integer.MAX_VALUE;
-        int maxCenter = Integer.MIN_VALUE;
-        for (Component component : components) {
-            int center = (component.top + component.bottom) / 2;
-            minCenter = Math.min(minCenter, center);
-            maxCenter = Math.max(maxCenter, center);
-        }
-        if (maxCenter - minCenter > Math.max(5, region.getHeight() / 3)) {
+        // 连通组件不能直接代表“文字行”：一个中文字符、括号或抗锯齿笔画可能被拆成多个
+        // 上下错开的组件。改以整行横向投影识别独立墨迹带：仅在候选框内存在两个被空白行
+        // 分隔的文字带时拒绝，避免把一行页码误当两行正文。
+        if (!visuallyConfirmedIndependentTarget && hasMultipleTextLineBands(mask, region)) {
             return "multiple text lines";
         }
-        if (hasCrossing(mask, region)) {
+        if (!visuallyConfirmedIndependentTarget && hasCrossing(mask, region)) {
             return "table or crossing line";
         }
         return null;
+    }
+
+    private static boolean hasMultipleTextLineBands(boolean[][] mask, RegionValidator.PixelRegion region) {
+        int bands = 0;
+        boolean inBand = false;
+        int blankRows = 0;
+        for (int y = region.getY(); y < region.getY() + region.getHeight(); y++) {
+            int ink = 0;
+            for (int x = region.getX(); x < region.getX() + region.getWidth(); x++) {
+                if (mask[y][x]) {
+                    ink++;
+                }
+            }
+            // 单像素抗锯齿噪点不能单独形成一行；真正的字符行至少有两个墨迹像素。
+            if (ink >= 2) {
+                if (!inBand) {
+                    bands++;
+                    inBand = true;
+                }
+                blankRows = 0;
+            } else if (inBand) {
+                blankRows++;
+                // 横向投影跨整行字符：真正的单行页码不会在所有字符上同时出现空白行；
+                // 一行全空白已足以分隔两行，且能保留双行正文的拒绝能力。
+                if (blankRows >= 1) {
+                    inBand = false;
+                    blankRows = 0;
+                }
+            }
+        }
+        return bands > 1;
     }
 
     private static boolean hasLongHorizontalRun(boolean[][] mask, RegionValidator.PixelRegion region) {
@@ -405,7 +446,13 @@ public final class InkMaskEraser {
         }
 
         public static ApprovedMask from(RegionValidator.PixelRegion region, int imageWidth, int imageHeight, boolean[][] mask) {
-            validate(region, imageWidth, imageHeight, mask);
+            validate(region, imageWidth, imageHeight, mask, false);
+            return new ApprovedMask(region, imageWidth, imageHeight, mask);
+        }
+
+        /** 仅供已通过全部语义/像素门禁的整框背景重建使用。 */
+        static ApprovedMask fromApprovedBox(RegionValidator.PixelRegion region, int imageWidth, int imageHeight, boolean[][] mask) {
+            validate(region, imageWidth, imageHeight, mask, true);
             return new ApprovedMask(region, imageWidth, imageHeight, mask);
         }
 
@@ -457,7 +504,8 @@ public final class InkMaskEraser {
             return x >= regionX && y >= regionY && x < regionX + regionWidth && y < regionY + regionHeight;
         }
 
-        private static void validate(RegionValidator.PixelRegion region, int imageWidth, int imageHeight, boolean[][] mask) {
+        private static void validate(RegionValidator.PixelRegion region, int imageWidth, int imageHeight, boolean[][] mask,
+                                     boolean wholeApprovedBox) {
             if (region == null || mask == null) {
                 throw new IllegalArgumentException("region and mask are required");
             }
@@ -482,14 +530,14 @@ public final class InkMaskEraser {
                     if (x < region.getX() || y < region.getY() || x >= right || y >= bottom) {
                         throw new IllegalArgumentException("approved pixel outside region");
                     }
-                    if (x == region.getX() || y == region.getY() || x == right - 1 || y == bottom - 1) {
+                    if (!wholeApprovedBox && (x == region.getX() || y == region.getY() || x == right - 1 || y == bottom - 1)) {
                         throw new IllegalArgumentException("mask touches region boundary");
                     }
                     count++;
                 }
             }
             int regionArea = region.getWidth() * region.getHeight();
-            if (regionArea > 0 && count > Math.max(6, regionArea * 35 / 100)) {
+            if (!wholeApprovedBox && regionArea > 0 && count > Math.max(6, regionArea * 35 / 100)) {
                 throw new IllegalArgumentException("mask coverage is too broad");
             }
         }

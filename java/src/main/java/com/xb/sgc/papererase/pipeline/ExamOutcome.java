@@ -45,6 +45,13 @@ public final class ExamOutcome {
         return consensus;
     }
 
+    /** writeExam 落盘成功后由 Main 逐卷调用，释放本卷所有页大图，避免全量累积超堆。 */
+    public void releaseImages() {
+        for (PageOutcome page : pages) {
+            page.releaseImages();
+        }
+    }
+
     public PageOutcome page(String pageId) {
         for (PageOutcome page : pages) {
             if (page.getPageId().equals(pageId)) {
@@ -58,9 +65,10 @@ public final class ExamOutcome {
         private final String pageId;
         private final String status;
         private final String reason;
-        private final BufferedImage original;
-        private final BufferedImage normalized;
-        private final BufferedImage candidate;
+        // 非 final：writeExam 落盘后由 releaseImages() 置空，让 GC 跨卷回收大图，避免全量 100 卷累积超堆。
+        private BufferedImage original;
+        private BufferedImage normalized;
+        private BufferedImage candidate;
         private final PageTransforms transforms;
         private final PatternGroup consensus;
         private final List<EraseRegion> regions;
@@ -107,6 +115,13 @@ public final class ExamOutcome {
 
         public BufferedImage getCandidate() {
             return candidate;
+        }
+
+        /** 落盘后释放本页大图引用；releaseImages() 之后仍可读 status/reason/regions 等元数据。 */
+        public void releaseImages() {
+            this.original = null;
+            this.normalized = null;
+            this.candidate = null;
         }
 
         public PageTransforms getTransforms() {

@@ -67,18 +67,42 @@ public final class ManualReviewWatermarker {
                 int y2 = Math.max(y1, Math.min(source.getHeight(), (int) Math.ceil(region.y2 * source.getHeight())));
                 g.fillRect(x1, y1, x2 - x1, y2 - y1);
             }
-            g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-            g.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, 0.35f));
-            g.setColor(Color.RED);
-            int fontSize = Math.max(18, Math.min(source.getWidth(), source.getHeight()) / 11);
-            g.setFont(new Font("SansSerif", Font.BOLD, fontSize));
-            String text = "模型坐标擦除预览（不可交付）";
-            FontMetrics metrics = g.getFontMetrics();
-            g.drawString(text, Math.max(4, (source.getWidth() - metrics.stringWidth(text)) / 2),
-                    Math.max(metrics.getAscent(), source.getHeight() / 2));
+            drawNotDeliverableNotice(g, source.getWidth(), source.getHeight());
         } finally {
             g.dispose();
         }
         ImageIO.write(copy, "png", output.toFile());
+    }
+
+    /** 为没有模型候选坐标的人工页保留原候选图，并在角落标明不可交付。 */
+    public static void writeNotDeliverableCopy(BufferedImage source, Path output) throws IOException {
+        Files.createDirectories(output.getParent());
+        BufferedImage copy = new BufferedImage(source.getWidth(), source.getHeight(), BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = copy.createGraphics();
+        try {
+            g.drawImage(source, 0, 0, null);
+            drawNotDeliverableNotice(g, source.getWidth(), source.getHeight());
+        } finally {
+            g.dispose();
+        }
+        ImageIO.write(copy, "png", output.toFile());
+    }
+
+    private static void drawNotDeliverableNotice(Graphics2D g, int width, int height) {
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        int fontSize = Math.max(12, Math.min(width, height) / 55);
+        g.setFont(new Font("SansSerif", Font.PLAIN, fontSize));
+        String text = "不可交付，仅供核对";
+        FontMetrics metrics = g.getFontMetrics();
+        int padding = Math.max(4, fontSize / 3);
+        int x = Math.max(0, width - metrics.stringWidth(text) - padding * 2);
+        int y = Math.max(metrics.getAscent() + padding, height - padding);
+        g.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, 0.72f));
+        g.setColor(Color.WHITE);
+        g.fillRect(x, y - metrics.getAscent() - padding, metrics.stringWidth(text) + padding * 2,
+                metrics.getHeight() + padding);
+        g.setComposite(AlphaComposite.SrcOver);
+        g.setColor(Color.DARK_GRAY);
+        g.drawString(text, x + padding, y - metrics.getDescent());
     }
 }

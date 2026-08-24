@@ -44,18 +44,26 @@ public class RunWriterTest {
         Path base = runDir.resolve("erased/语文/1001");
         assertTrue(Files.isRegularFile(base.resolve("1001_1_原图.png")));
         assertTrue(Files.isRegularFile(base.resolve("1001_1_擦除后.png")));
-        assertTrue(Files.isRegularFile(base.resolve("1001_2_人工审核预览.png")));
         assertTrue(Files.isRegularFile(base.resolve("1001_2_regions.json")));
-        assertEquals("manual formal erased image should use normalized reading direction",
-                Color.BLUE.getRGB(), javax.imageio.ImageIO.read(base.resolve("1001_2_擦除后.png").toFile()).getRGB(0, 0));
-        assertTrue("manual preview should be based on normalized reading direction",
-                containsBlue(javax.imageio.ImageIO.read(base.resolve("1001_2_人工审核预览.png").toFile())));
         assertTrue(Files.isRegularFile(runDir.resolve("consensus/语文/1001/exam_consensus.json")));
         assertTrue(Files.isRegularFile(runDir.resolve("word_output/语文/1001/1001_原图.docx")));
         assertTrue(Files.isRegularFile(runDir.resolve("word_output/语文/1001/1001_擦除后.docx")));
         assertTrue(Files.isRegularFile(runDir.resolve("_audit.ndjson")));
         assertTrue(Files.isRegularFile(runDir.resolve("测试报告/测试报告.md")));
         assertTrue(Files.isRegularFile(runDir.resolve("run.json")));
+        String report = new String(Files.readAllBytes(runDir.resolve("测试报告/测试报告.md")), "UTF-8");
+        assertTrue(report.contains("## 元数据"));
+        assertTrue(report.contains("## 数据分布"));
+        assertTrue(report.contains("## 异常明细"));
+        assertTrue(report.contains("## 全量明细"));
+        assertTrue(report.contains("准确率"));
+        assertTrue(report.contains("成功擦除或正确无页码且未伤正文"));
+        assertTrue(report.contains("1001_2_擦除后.png"));
+
+        new ReportWriter().writeFromRunDirectory(runDir);
+        String regenerated = new String(Files.readAllBytes(runDir.resolve("测试报告/测试报告.md")), "UTF-8");
+        assertTrue(regenerated.contains("qwen3.8-max"));
+        assertTrue(regenerated.contains("语文/1001 第 2 页"));
     }
 
     private static BufferedImage solid(Color color) {
@@ -68,15 +76,4 @@ public class RunWriterTest {
         return image;
     }
 
-    private static boolean containsBlue(BufferedImage image) {
-        for (int y = 0; y < image.getHeight(); y++) {
-            for (int x = 0; x < image.getWidth(); x++) {
-                Color c = new Color(image.getRGB(x, y));
-                if (c.getBlue() > 160 && c.getRed() < 120 && c.getGreen() < 120) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
 }

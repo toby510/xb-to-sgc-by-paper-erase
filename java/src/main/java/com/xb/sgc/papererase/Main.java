@@ -24,9 +24,15 @@ public final class Main {
     }
 
     public static void main(String[] args) throws Exception {
-        if (args.length < 2 || (!"run".equals(args[0]) && !"gate".equals(args[0]))) {
-            System.err.println("Usage: Main run <test-root> | Main gate <bad-root> <full-root>");
+        if (args.length < 2 || (!"run".equals(args[0]) && !"gate".equals(args[0]) && !"report".equals(args[0]))) {
+            System.err.println("Usage: Main run <test-root> | Main gate <bad-root> <full-root> | Main report <run-dir>");
             System.exit(2);
+        }
+        if ("report".equals(args[0])) {
+            Path runDir = Paths.get(args[1]);
+            new ReportWriter().writeFromRunDirectory(runDir);
+            System.out.println(runDir.resolve("测试报告").resolve("测试报告.md").toAbsolutePath().toString());
+            return;
         }
         Path skillRoot = findSkillRoot();
         VlmConfig config = VlmConfig.load(skillRoot.resolve("config/vlm-providers.json"));
@@ -71,6 +77,8 @@ public final class Main {
             context.event("output", exam.getExamId(), null, "started", null, 0);
             ExamOutcome outcome = pipeline.process(exam, context);
             runWriter.writeExam(exam, outcome, runDir);
+            // 已落盘原图/擦除图/Word 与审计，本卷大图不再被 ReportWriter 引用，立即释放避免 100 卷累积超堆。
+            outcome.releaseImages();
             context.event("output", exam.getExamId(), null, "completed", null, 0);
             outcomes.add(outcome);
             pages += exam.getPages().size();

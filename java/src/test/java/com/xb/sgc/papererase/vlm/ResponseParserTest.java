@@ -67,7 +67,7 @@ public class ResponseParserTest {
 
         VerifyResponse verify = ResponseParser.parseVerify("{\"page_id\":\"p1\",\"region_id\":\"r1\","
                 + "\"decision\":\"safe_to_erase\",\"allowed_scope\":\"page number only\","
-                + "\"evidence\":\"ok\",\"refined_region\":null,\"refined_nearest_body_boundary\":null}", "p1", "r1");
+                + "\"evidence\":\"ok\",\"refined_region\":null}", "p1", "r1");
         assertEquals("safe_to_erase", verify.decision);
 
         AuditResponse audit = ResponseParser.parseAudit("{\"page_id\":\"p1\",\"decision\":\"pass\","
@@ -99,6 +99,20 @@ public class ResponseParserTest {
     }
 
     @Test
+    public void extractsOnlyOneSchemaValidJsonObjectFromModelExplanation() {
+        String json = "{\"page_id\":\"p1\",\"status\":\"safe_to_erase\","
+                + "\"regions\":[{\"region_id\":\"r1\",\"x1\":0.45,\"y1\":0.94,\"x2\":0.55,\"y2\":0.98,"
+                + "\"page_number_text\":\"1\",\"same_line_metadata\":\"page only\",\"on_line\":false,"
+                + "\"confidence\":0.99,\"safety_margin\":\"blank\"}],"
+                + "\"nearest_body_boundary\":{\"x\":null,\"y\":0.88,\"basis\":\"java\"},"
+                + "\"evidence\":\"ok\"}";
+
+        LocateResponse locate = ResponseParser.parseLocate("分析完成：\n" + json + "\n以上为结果。", "p1");
+        assertEquals("r1", locate.regions.get(0).region_id);
+        assertBadLocate(json + "\n另一个对象：{}", "strict JSON");
+    }
+
+    @Test
     public void rejectsUnsafeLocateVerifyAuditAndStoresShortSafeRawSummary() {
         assertBadLocate("{\"page_id\":\"p1\",\"status\":\"safe\",\"regions\":[],"
                 + "\"nearest_body_boundary\":{\"x\":null,\"y\":0.8,\"basis\":\"java\"},\"evidence\":\"x\"}", "status");
@@ -116,6 +130,14 @@ public class ResponseParserTest {
         ResponseParser.ParseException ex = ResponseParser.parseFailure("token=secret-1234567890 " + repeat("x", 500));
         assertTrue(ex.getRawSummary().length() <= 240);
         assertFalse(ex.getRawSummary().contains("secret-1234567890"));
+    }
+
+    @Test
+    public void acceptsAuditPassWithOnlyBackgroundWarning() {
+        AuditResponse audit = ResponseParser.parseAudit("{\"page_id\":\"p1\",\"decision\":\"pass\","
+                + "\"body_unchanged\":true,\"target_removed\":true,\"background_acceptable\":false,"
+                + "\"evidence\":\"only background tone differs\"}", "p1");
+        assertFalse(audit.background_acceptable);
     }
 
     private void assertBadPattern(String json, String messagePart) {

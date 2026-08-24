@@ -2,6 +2,7 @@ package com.xb.sgc.papererase.image;
 
 import com.xb.sgc.papererase.model.ExamModels.BodyBoundary;
 import com.xb.sgc.papererase.model.ExamModels.EraseRegion;
+import com.xb.sgc.papererase.model.ExamModels.LocateWindow;
 import com.xb.sgc.papererase.safety.RegionValidator;
 import org.junit.Test;
 
@@ -13,6 +14,29 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 public class RoiTransformTest {
+
+    @Test
+    public void coordinateRefineRoiRetainsPatternWindowWhenInitialCandidateIsVerticallyOffset() {
+        EraseRegion candidate = new EraseRegion();
+        candidate.x1 = 0.48;
+        candidate.y1 = 0.955;
+        candidate.x2 = 0.52;
+        candidate.y2 = 0.975;
+        LocateWindow window = new LocateWindow();
+        window.x1 = 0.35;
+        window.y1 = 0.90;
+        window.x2 = 0.65;
+        window.y2 = 1.00;
+        // 整页模型可能把另一栏正文误报为 0.66；pattern 已限定页脚窗口，局部图不能被
+        // 这条全局边界拉到页面中段，否则三倍放大无法获得页码的精确坐标。
+        BodyBoundary boundary = boundary(null, 0.66);
+
+        RoiTransform roi = RoiTransform.fromNormalizedCandidateAndWindow(1122, 1594, candidate, window, boundary, 16);
+
+        assertTrue("pattern y1 must keep a page number above a misplaced candidate visible", roi.getY() <= 1434);
+        assertTrue("a conflicting whole-page boundary must not dilute the pattern-guided local ROI", roi.getY() >= 1418);
+        assertEquals(1594, roi.getY() + roi.getHeight());
+    }
     @Test
     public void fromCandidateIncludesCandidateBlankAndNearestBodyLine() {
         BufferedImage image = blankPage(1000, 2000);

@@ -23,7 +23,9 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -32,6 +34,25 @@ import static org.junit.Assert.assertTrue;
 public class ExamPipelineTest {
     @Rule
     public TemporaryFolder tmp = new TemporaryFolder();
+    private final Set<Integer> coloredImageOrders = new HashSet<Integer>();
+
+    @Test
+    public void fullPageSemanticLocateIsNotOverruledByLocalNoPageNumForSafeColoredTarget() throws Exception {
+        /*
+         * 整页 locate 已确认“独立页脚目标”，并且 RegionValidator 已证明其与正文的像素空白带。
+         * 局部 ROI 只能用于坐标精化；若它漏看色块页码而答 no_pagenum，不能推翻整页语义结论。
+         */
+        coloredImageOrders.add(1);
+        FakeVlm fake = FakeVlm.stable();
+        fake.verifyNoPageNumRegionIds.add("p1:r1");
+
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
+
+        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
+        assertFalse("accepted full-page locate must not spend a semantic-overriding local verify",
+                fake.verifyCalls.contains("p1:r1"));
+        assertTrue(fake.auditPageIds.contains("p1"));
+    }
 
     @Test
     public void batchesPatternWithOverlapAndRunsStableFastPathWithMandatoryAudit() throws Exception {
@@ -112,6 +133,64 @@ public class ExamPipelineTest {
         assertEquals("safe_to_erase", isolated.page("p3").getStatus());
     }
 
+    @Test
+    public void retriesTheSameLocalVerifyRoiOnceAfterProtocolFailure() throws Exception {
+        FakeVlm fake = FakeVlm.stable();
+        fake.verifyThrowsOnceRegionIds.add("p2:r1");
+
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(2, false), new ExamPipeline.RunContext());
+
+        assertEquals("safe_to_erase", outcome.page("p2").getStatus());
+        assertEquals(Arrays.asList("p2:r1", "p2:r1"), fake.verifyCalls);
+    }
+
+    @Test
+    public void locallySnapsTightPageNumberBoxBeforeSpendingCoordinateRefineCall() throws Exception {
+        FakeVlm fake = FakeVlm.stable();
+        fake.tightLocatePages.add("p1");
+
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
+
+        assertEquals(outcome.page("p1").getReason(), "safe_to_erase", outcome.page("p1").getStatus());
+        assertTrue("a safe local blank-band snap must not call VLM refinement", fake.verifyCalls.isEmpty());
+    }
+
+    @Test
+    public void coordinateRefineKeepsWholePageBodyBoundaryWhenLocalResponseHasNoBoundary() throws Exception {
+        FakeVlm fake = FakeVlm.stable();
+        fake.coordinateRefinePages.add("p1");
+
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
+
+        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
+        assertEquals(0.88, outcome.page("p1").getLocate().nearest_body_boundary.y, 0.0);
+        assertTrue(fake.verifyCalls.contains("p1:r1"));
+    }
+
+    @Test
+    public void localRefineMayReplaceOnlyAConflictingWholePageBoundaryWithProvenBlankBand() throws Exception {
+        FakeVlm fake = FakeVlm.stable();
+        fake.boundaryConflictPages.add("p1");
+
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
+
+        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
+        assertTrue(outcome.page("p1").getLocate().nearest_body_boundary.basis
+                .startsWith("java_10px_blank_band_replaced_conflicting_vlm_boundary"));
+        assertEquals(Arrays.asList("p1:r1"), fake.verifyCalls);
+    }
+
+    @Test
+    public void fullyContainedDuplicateRegionIsAnIdempotentErase() throws Exception {
+        FakeVlm fake = FakeVlm.stable();
+        fake.duplicateRegionPages.add("p1");
+
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
+
+        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
+        assertTrue(fake.auditPageIds.contains("p1"));
+    }
+
     private ExamInput exam(int pages, boolean incomplete) throws Exception {
         List<PageInput> inputs = new ArrayList<PageInput>();
         File dir = tmp.newFolder("exam-" + System.nanoTime());
@@ -143,6 +222,9 @@ public class ExamPipelineTest {
                 image.setRGB(x, y, Color.BLACK.getRGB());
             }
         }
+        if (coloredImageOrders.contains(pageOrder)) {
+            image.setRGB(50, 191, Color.BLUE.getRGB());
+        }
         return image;
     }
 
@@ -163,6 +245,11 @@ public class ExamPipelineTest {
         final List<String> locateThrowsPages = new ArrayList<String>();
         final List<String> onLinePages = new ArrayList<String>();
         final List<String> validationRejectedPages = new ArrayList<String>();
+        final List<String> verifyThrowsOnceRegionIds = new ArrayList<String>();
+        final List<String> tightLocatePages = new ArrayList<String>();
+        final List<String> coordinateRefinePages = new ArrayList<String>();
+        final List<String> boundaryConflictPages = new ArrayList<String>();
+        final List<String> duplicateRegionPages = new ArrayList<String>();
         boolean patternProtocolFailure;
 
         static FakeVlm stable() {
@@ -212,7 +299,9 @@ public class ExamPipelineTest {
             response.page_id = page.getPageId();
             response.evidence = "fake";
             BodyBoundary boundary = new BodyBoundary();
-            boundary.y = "p2".equals(page.getPageId()) ? 0.80 : 0.90;
+            boundary.y = "p2".equals(page.getPageId()) ? 0.80
+                    : boundaryConflictPages.contains(page.getPageId()) ? 0.95
+                    : coordinateRefinePages.contains(page.getPageId()) ? 0.88 : 0.90;
             boundary.basis = "java";
             response.nearest_body_boundary = boundary;
             if (locateManualPages.contains(page.getPageId())) {
@@ -226,16 +315,38 @@ public class ExamPipelineTest {
             response.status = "safe_to_erase";
             EraseRegion region = new EraseRegion();
             region.region_id = "r1";
-            region.x1 = eraseFailurePages.contains(page.getPageId()) ? 0.10 : 0.45;
-            region.y1 = validationRejectedPages.contains(page.getPageId()) ? 0.40 : 0.94;
-            region.x2 = eraseFailurePages.contains(page.getPageId()) ? 0.20 : 0.55;
-            region.y2 = validationRejectedPages.contains(page.getPageId()) ? 0.44 : 0.98;
+            region.x1 = eraseFailurePages.contains(page.getPageId()) ? 0.10
+                    : tightLocatePages.contains(page.getPageId()) ? 0.42
+                    : coordinateRefinePages.contains(page.getPageId()) ? 0.40 : 0.45;
+            region.y1 = validationRejectedPages.contains(page.getPageId()) ? 0.40
+                    : boundaryConflictPages.contains(page.getPageId()) ? 0.94
+                    : tightLocatePages.contains(page.getPageId()) ? 0.95 : 0.94;
+            region.x2 = eraseFailurePages.contains(page.getPageId()) ? 0.20
+                    : tightLocatePages.contains(page.getPageId()) ? 0.58
+                    : coordinateRefinePages.contains(page.getPageId()) ? 0.45 : 0.55;
+            region.y2 = validationRejectedPages.contains(page.getPageId()) ? 0.44
+                    : boundaryConflictPages.contains(page.getPageId()) ? 0.98
+                    : tightLocatePages.contains(page.getPageId()) ? 0.97 : 0.98;
             region.page_number_text = "1";
             region.same_line_metadata = "page only";
             region.on_line = onLinePages.contains(page.getPageId());
             region.confidence = lowConfidencePages.contains(page.getPageId()) ? 0.80 : 0.99;
             region.safety_margin = "blank";
             response.regions.add(region);
+            if (duplicateRegionPages.contains(page.getPageId())) {
+                EraseRegion duplicate = new EraseRegion();
+                duplicate.region_id = "r2";
+                duplicate.x1 = region.x1;
+                duplicate.y1 = region.y1;
+                duplicate.x2 = region.x2;
+                duplicate.y2 = region.y2;
+                duplicate.page_number_text = "I";
+                duplicate.same_line_metadata = "";
+                duplicate.on_line = false;
+                duplicate.confidence = region.confidence;
+                duplicate.safety_margin = "blank";
+                response.regions.add(duplicate);
+            }
             return response;
         }
 
@@ -248,12 +359,25 @@ public class ExamPipelineTest {
             response.allowed_scope = "page number only";
             response.evidence = "fake";
             String key = page.getPageId() + ":" + regionId;
+            if (verifyThrowsOnceRegionIds.remove(key)) {
+                throw new ResponseParser.ParseException("strict JSON object required", "not-json");
+            }
             if (verifyNoPageNumRegionIds.contains(key)) {
                 response.decision = "no_pagenum";
             } else if (verifyManualRegionIds.contains(key)) {
                 response.decision = "manual_review";
             } else {
                 response.decision = "safe_to_erase";
+            }
+            if ((coordinateRefinePages.contains(page.getPageId()) || boundaryConflictPages.contains(page.getPageId()))
+                    && "coordinate_refinement_requested".equals(region.safety_margin)) {
+                response.refined_region = new com.xb.sgc.papererase.model.ExamModels.LocalRegion();
+                // pattern 窗口已成为 coordinate refine ROI 的底座；这里的模拟坐标对应
+                // 新 ROI 中真实页码的位置，而不是历史候选小 ROI 的相对位置。
+                response.refined_region.x1 = boundaryConflictPages.contains(page.getPageId()) ? 0.42 : 0.44;
+                response.refined_region.y1 = boundaryConflictPages.contains(page.getPageId()) ? 0.64 : 0.82;
+                response.refined_region.x2 = boundaryConflictPages.contains(page.getPageId()) ? 0.68 : 0.54;
+                response.refined_region.y2 = boundaryConflictPages.contains(page.getPageId()) ? 0.79 : 0.94;
             }
             return response;
         }

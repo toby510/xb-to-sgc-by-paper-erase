@@ -2,6 +2,7 @@ package com.xb.sgc.papererase.image;
 
 import com.xb.sgc.papererase.model.ExamModels.BodyBoundary;
 import com.xb.sgc.papererase.model.ExamModels.EraseRegion;
+import com.xb.sgc.papererase.model.ExamModels.LocateWindow;
 import com.xb.sgc.papererase.safety.RegionValidator;
 
 public final class RoiTransform {
@@ -121,6 +122,28 @@ public final class RoiTransform {
         int clampedBottom = clampToInt(bottom, clampedTop, fullHeight);
         return new RoiTransform(clampedLeft, clampedTop, clampedRight - clampedLeft,
                 clampedBottom - clampedTop, fullWidth, fullHeight);
+    }
+
+    /**
+     * 坐标精定位必须同时保留“本页候选框”和 pattern 给出的宽松窗口。候选框可能整体偏移，
+     * 只围绕它裁 ROI 会把真实页码排除在图外，使局部模型只能错误回答 no_pagenum。
+     * pattern 窗口只决定本次复核可见范围，不拥有擦除权限；最终坐标仍完全由局部模型给出。
+     * 整页正文边界仅属于最终安全门禁，不能反向把已给出窗口的局部图拉回整页中部，否则
+     * 放大精定位会被正文/分栏线干扰而失去意义。
+     */
+    public static RoiTransform fromNormalizedCandidateAndWindow(int fullWidth, int fullHeight, EraseRegion candidate,
+                                                                 LocateWindow window, BodyBoundary bodyBoundary,
+                                                                 int marginPixels) {
+        if (window == null) {
+            return fromNormalizedCandidate(fullWidth, fullHeight, candidate, bodyBoundary, marginPixels);
+        }
+        validateLocalRect(window.x1, window.y1, window.x2, window.y2);
+        EraseRegion combined = new EraseRegion();
+        combined.x1 = Math.min(candidate.x1, window.x1);
+        combined.y1 = Math.min(candidate.y1, window.y1);
+        combined.x2 = Math.max(candidate.x2, window.x2);
+        combined.y2 = Math.max(candidate.y2, window.y2);
+        return fromNormalizedCandidate(fullWidth, fullHeight, combined, null, marginPixels);
     }
 
     public static RoiTransform fromEdge(int fullWidth, int fullHeight, PageEdge edge, BodyBoundary bodyBoundary,
@@ -279,7 +302,7 @@ public final class RoiTransform {
         private final int width;
         private final int height;
 
-        private PixelRect(int x, int y, int width, int height) {
+        public PixelRect(int x, int y, int width, int height) {
             this.x = x;
             this.y = y;
             this.width = width;

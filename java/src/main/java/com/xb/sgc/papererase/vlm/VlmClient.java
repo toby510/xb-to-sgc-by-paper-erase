@@ -45,7 +45,43 @@ public interface VlmClient {
         return locate(page, group);
     }
 
+    /**
+     * 坐标漂移后的局部重定位：沿用 locate 的“页码行语义”能力，但只发送 pattern 边缘
+     * ROI，且携带首次识别出的文字锚点。默认实现兼容旧测试替身。
+     */
+    default LocateResponse relocateCoordinateRefinement(PageImage page, PatternGroup group,
+                                                        EraseRegion semanticAnchor, RoiImage roi) {
+        VerifyResponse verified = verifyCoordinateRefinement(page, semanticAnchor, roi);
+        LocateResponse relocated = new LocateResponse();
+        relocated.page_id = page.getPageId();
+        relocated.status = verified.decision;
+        relocated.evidence = verified.evidence;
+        if ("safe_to_erase".equals(verified.decision) && verified.refined_region != null) {
+            EraseRegion local = new EraseRegion();
+            local.region_id = semanticAnchor.region_id;
+            local.x1 = verified.refined_region.x1;
+            local.y1 = verified.refined_region.y1;
+            local.x2 = verified.refined_region.x2;
+            local.y2 = verified.refined_region.y2;
+            local.page_number_text = semanticAnchor.page_number_text;
+            local.same_line_metadata = semanticAnchor.same_line_metadata;
+            local.on_line = semanticAnchor.on_line;
+            local.confidence = semanticAnchor.confidence;
+            local.safety_margin = semanticAnchor.safety_margin;
+            relocated.regions.add(local);
+        }
+        return relocated;
+    }
+
     VerifyResponse verify(PageImage page, EraseRegion region, RoiImage roi);
+
+    /**
+     * 坐标门禁拒绝后的二次定位只允许模型看到候选中心 ROI。整页版式已在首次 locate
+     * 中确认；此处再附整页会稀释小页码的像素定位精度。默认实现兼容测试替身。
+     */
+    default VerifyResponse verifyCoordinateRefinement(PageImage page, EraseRegion region, RoiImage roi) {
+        return verify(page, region, roi);
+    }
 
     AuditResponse audit(PageImage original, PageImage erased, List<EraseRegion> regions, List<RoiImage> rois);
 
@@ -70,9 +106,37 @@ public interface VlmClient {
     static String refinementInstruction(EraseRegion region) {
         if (region != null && "coordinate_refinement_requested".equals(region.safety_margin)) {
             return "\nCOORDINATE_REFINEMENT: This is a coordinate refinement request. Return non-null refined_region "
-                    + "and refined_nearest_body_boundary in ROI-relative 0..1 coordinates when and only when safe_to_erase.";
+                    + "in ROI-relative 0..1 coordinates when and only when safe_to_erase. Do not return or infer a body boundary; "
+                    + "the whole-page boundary from locate remains authoritative. "
+                    + "The first-pass semantic clues are page_number_text='" + safePromptText(region.page_number_text)
+                    + "' and same_line_metadata='" + safePromptText(region.same_line_metadata) + "'. "
+                    + "Search the entire ROI for the actually visible literal markers and measure that line's ink, rather than "
+                    + "blindly preserving the first-pass coordinates or selecting a nearby body line.";
         }
         return "";
+    }
+
+    static String relocationInstruction(EraseRegion region) {
+        return " LOCAL_RELOCATE: The image is an edge ROI, so all returned coordinates are ROI-relative. "
+                + "The whole-page semantic anchor is page_number_text='" + safePromptText(region.page_number_text)
+                + "' and same_line_metadata='" + safePromptText(region.same_line_metadata) + "'. "
+                + "Search the complete ROI for the visible matching line. The old coordinates are not evidence and must not be copied.";
+    }
+
+    /** JSON-free instruction text still must not let model evidence break the surrounding quoted clues. */
+    static String safePromptText(String value) {
+        return value == null ? "" : value.replace("'", "’").replace('\n', ' ').replace('\r', ' ');
+    }
+
+    /** 给局部定位提供整卷共性；粗窗口只用于核对，最终坐标仍必须按 ROI 可见墨迹测量。 */
+    static String locatePatternEvidence(PatternGroup group) {
+        if (group == null || group.locate_window == null) {
+            return " edge=unknown";
+        }
+        return " edge=" + group.edge + " alignment=" + group.alignment
+                + " coarse_window_full_page=" + group.locate_window.x1 + "," + group.locate_window.y1
+                + "," + group.locate_window.x2 + "," + group.locate_window.y2
+                + " (context only; measure final coordinates from visible ROI ink)";
     }
 
     final class OpenAiCompatible implements VlmClient {
@@ -99,16 +163,25 @@ public interface VlmClient {
         }
 
         public LocateResponse locate(PageImage page, PatternGroup group) {
-            return ResponseParser.parseLocate(call("locate", "Locate page_id=" + page.getPageId()
+            return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Locate")
                     + " pattern_group=" + (group == null ? "none" : group.group_id), one(page),
                     java.util.Collections.<RoiImage>emptyList()), page.getPageId());
         }
 
         @Override
         public LocateResponse locate(PageImage page, PatternGroup group, RoiImage roi) {
-            return ResponseParser.parseLocate(call("locate", "Locate ROI for page_id=" + page.getPageId()
+            return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Locate ROI")
                     + " pattern_group=" + (group == null ? "none" : group.group_id)
-                    + " edge=" + (group == null ? "unknown" : group.edge),
+                    + locatePatternEvidence(group),
+                    java.util.Collections.<PageImage>emptyList(), java.util.Collections.singletonList(roi)), page.getPageId());
+        }
+
+        @Override
+        public LocateResponse relocateCoordinateRefinement(PageImage page, PatternGroup group,
+                                                            EraseRegion semanticAnchor, RoiImage roi) {
+            return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Relocate")
+                    + " pattern_group=" + (group == null ? "none" : group.group_id)
+                    + locatePatternEvidence(group) + relocationInstruction(semanticAnchor),
                     java.util.Collections.<PageImage>emptyList(), java.util.Collections.singletonList(roi)), page.getPageId());
         }
 
@@ -116,6 +189,15 @@ public interface VlmClient {
             String regionId = region == null ? "edge" : region.region_id;
             return ResponseParser.parseVerify(call("verify", "Verify page_id=" + page.getPageId()
                     + " region_id=" + regionId + refinementInstruction(region), one(page), java.util.Collections.singletonList(roi)),
+                    page.getPageId(), regionId);
+        }
+
+        @Override
+        public VerifyResponse verifyCoordinateRefinement(PageImage page, EraseRegion region, RoiImage roi) {
+            String regionId = region.region_id;
+            return ResponseParser.parseVerify(call("verify", "Refine ROI coordinates only for page_id=" + page.getPageId()
+                    + " region_id=" + regionId + refinementInstruction(region),
+                    java.util.Collections.<PageImage>emptyList(), java.util.Collections.singletonList(roi)),
                     page.getPageId(), regionId);
         }
 
@@ -163,7 +245,11 @@ public interface VlmClient {
                 }
                 for (RoiImage roi : rois) {
                     String label = roi.getPageId() == null ? "" : "ROI_PAGE_ID: " + roi.getPageId() + "\n";
-                    content.add(textPart(label + "ROI_REGION_ID: " + roi.getRegionId()));
+                    label += "ROI_REGION_ID: " + roi.getRegionId();
+                    if (roi.getImageRole() != null) {
+                        label += "\nROI_IMAGE_ROLE: " + roi.getImageRole();
+                    }
+                    content.add(textPart(label));
                     content.add(imagePart(roi.dataUrl()));
                 }
                 Map<String, Object> message = new LinkedHashMap<String, Object>();
@@ -251,6 +337,11 @@ public interface VlmClient {
             pages.add(page);
             return pages;
         }
+
+        private static String exactPageIdInstruction(String pageId, String action) {
+            return action + " REQUEST_PAGE_ID='" + pageId + "'. "
+                    + "JSON page_id MUST be exactly this full quoted string; never use an example, page number, or abbreviated id. ";
+        }
     }
 
     /**
@@ -281,16 +372,25 @@ public interface VlmClient {
         }
 
         public LocateResponse locate(PageImage page, PatternGroup group) {
-            return ResponseParser.parseLocate(call("locate", "Locate page_id=" + page.getPageId()
+            return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Locate")
                     + " pattern_group=" + (group == null ? "none" : group.group_id), one(page),
                     java.util.Collections.<RoiImage>emptyList()), page.getPageId());
         }
 
         @Override
         public LocateResponse locate(PageImage page, PatternGroup group, RoiImage roi) {
-            return ResponseParser.parseLocate(call("locate", "Locate ROI for page_id=" + page.getPageId()
+            return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Locate ROI")
                     + " pattern_group=" + (group == null ? "none" : group.group_id)
-                    + " edge=" + (group == null ? "unknown" : group.edge),
+                    + locatePatternEvidence(group),
+                    java.util.Collections.<PageImage>emptyList(), java.util.Collections.singletonList(roi)), page.getPageId());
+        }
+
+        @Override
+        public LocateResponse relocateCoordinateRefinement(PageImage page, PatternGroup group,
+                                                            EraseRegion semanticAnchor, RoiImage roi) {
+            return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Relocate")
+                    + " pattern_group=" + (group == null ? "none" : group.group_id)
+                    + locatePatternEvidence(group) + relocationInstruction(semanticAnchor),
                     java.util.Collections.<PageImage>emptyList(), java.util.Collections.singletonList(roi)), page.getPageId());
         }
 
@@ -298,6 +398,15 @@ public interface VlmClient {
             String regionId = region == null ? "edge" : region.region_id;
             return ResponseParser.parseVerify(call("verify", "Verify page_id=" + page.getPageId()
                     + " region_id=" + regionId + refinementInstruction(region), one(page), java.util.Collections.singletonList(roi)),
+                    page.getPageId(), regionId);
+        }
+
+        @Override
+        public VerifyResponse verifyCoordinateRefinement(PageImage page, EraseRegion region, RoiImage roi) {
+            String regionId = region.region_id;
+            return ResponseParser.parseVerify(call("verify", "Refine ROI coordinates only for page_id=" + page.getPageId()
+                    + " region_id=" + regionId + refinementInstruction(region),
+                    java.util.Collections.<PageImage>emptyList(), java.util.Collections.singletonList(roi)),
                     page.getPageId(), regionId);
         }
 
@@ -358,7 +467,11 @@ public interface VlmClient {
                 }
                 for (RoiImage roi : rois) {
                     String label = roi.getPageId() == null ? "" : "ROI_PAGE_ID: " + roi.getPageId() + "\n";
-                    content.add(arkTextPart(label + "ROI_REGION_ID: " + roi.getRegionId()));
+                    label += "ROI_REGION_ID: " + roi.getRegionId();
+                    if (roi.getImageRole() != null) {
+                        label += "\nROI_IMAGE_ROLE: " + roi.getImageRole();
+                    }
+                    content.add(arkTextPart(label));
                     content.add(arkImagePart(roi.dataUrl(), imageDetail));
                 }
                 Map<String, Object> inputMessage = new LinkedHashMap<String, Object>();
@@ -458,6 +571,11 @@ public interface VlmClient {
             return pages;
         }
 
+        private static String exactPageIdInstruction(String pageId, String action) {
+            return action + " REQUEST_PAGE_ID='" + pageId + "'. "
+                    + "JSON page_id MUST be exactly this full quoted string; never use an example, page number, or abbreviated id. ";
+        }
+
         /** 仅记录角色、数量、耗时和异常类型；不记录提示词、图片 data URL 或任何凭据。 */
         private static void log(String role, int attempt, String event, int pageCount, int roiCount,
                                 long elapsedMillis, String errorType) {
@@ -511,18 +629,24 @@ public interface VlmClient {
         private final String pageId;
         private final String regionId;
         private final BufferedImage image;
+        private final String imageRole;
 
         public RoiImage(String regionId, BufferedImage image) {
-            this(null, regionId, image);
+            this(null, regionId, image, null);
         }
 
         public RoiImage(String pageId, String regionId, BufferedImage image) {
+            this(pageId, regionId, image, null);
+        }
+
+        public RoiImage(String pageId, String regionId, BufferedImage image, String imageRole) {
             if (regionId == null || image == null) {
                 throw new IllegalArgumentException("regionId and image are required");
             }
             this.pageId = pageId;
             this.regionId = regionId;
             this.image = image;
+            this.imageRole = imageRole;
         }
 
         public String getPageId() {
@@ -531,6 +655,10 @@ public interface VlmClient {
 
         public String getRegionId() {
             return regionId;
+        }
+
+        public String getImageRole() {
+            return imageRole;
         }
 
         public String dataUrl() {

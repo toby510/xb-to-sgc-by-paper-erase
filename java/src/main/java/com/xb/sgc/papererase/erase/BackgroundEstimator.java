@@ -54,6 +54,89 @@ public final class BackgroundEstimator {
         return Estimate.accepted(alpha, red, green, blue);
     }
 
+    /**
+     * 已通过视觉与像素门禁的页码框需要整框重建，才能清掉灰色抗锯齿残影。背景样本只能
+     * 来自框外的空白环，绝不能把框内页码残笔当作纸张颜色；样本不足时由调用方降级纯白。
+     */
+    public static Estimate estimateFromOuterRing(BufferedImage source, RegionValidator.PixelRegion region) {
+        List<Integer> alphas = new ArrayList<Integer>();
+        List<Sample> samples = new ArrayList<Sample>();
+        int ring = 3;
+        int left = Math.max(0, region.getX() - ring);
+        int top = Math.max(0, region.getY() - ring);
+        int right = Math.min(source.getWidth(), region.getX() + region.getWidth() + ring);
+        int bottom = Math.min(source.getHeight(), region.getY() + region.getHeight() + ring);
+        for (int y = top; y < bottom; y++) {
+            for (int x = left; x < right; x++) {
+                if (x >= region.getX() && x < region.getX() + region.getWidth()
+                        && y >= region.getY() && y < region.getY() + region.getHeight()) {
+                    continue;
+                }
+                ColorParts c = parts(source.getRGB(x, y));
+                if (isColoredNonTarget(c)) {
+                    return Estimate.rejected("colored non-target in outer ring");
+                }
+                if (c.luminance < 205) {
+                    continue;
+                }
+                alphas.add(c.alpha);
+                samples.add(new Sample(x, y, c));
+            }
+        }
+        if (samples.size() < MIN_SAMPLES) {
+            return Estimate.rejected("insufficient outer-ring background samples");
+        }
+        Plane red = fit(samples, Channel.RED);
+        Plane green = fit(samples, Channel.GREEN);
+        Plane blue = fit(samples, Channel.BLUE);
+        if (red == null || green == null || blue == null) {
+            return Estimate.rejected("outer-ring background fit failed");
+        }
+        double residual = (red.residual + green.residual + blue.residual) / 3.0;
+        if (residual > MAX_FIT_RESIDUAL) {
+            return Estimate.rejected("outer-ring background fit residual too high");
+        }
+        return Estimate.accepted(median(alphas), red, green, blue);
+    }
+
+    /** 擦除掩码的统一像素契约；校验器必须用同一规则证明批准框边缘无可擦墨迹。 */
+    public static boolean isErasableInk(int argb, int backgroundLum, boolean coloredTargetVerified) {
+        ColorParts c = parts(argb);
+        return isInk(c, backgroundLum)
+                || (coloredTargetVerified && isColoredNonTarget(c) && c.luminance <= backgroundLum - 25);
+    }
+
+    /** 供安全边界检测使用：彩色印刷内容也不能被误判为纸张空白。 */
+    public static boolean isColoredMark(int argb) {
+        return isColoredNonTarget(parts(argb));
+    }
+
+    /** 与擦除掩码一致的局部背景亮度估计，避免两层采用不同阈值。 */
+    public static int medianLightLuminance(BufferedImage source, RegionValidator.PixelRegion region) {
+        int[] counts = new int[256];
+        int total = 0;
+        for (int y = region.getY(); y < region.getY() + region.getHeight(); y++) {
+            for (int x = region.getX(); x < region.getX() + region.getWidth(); x++) {
+                ColorParts c = parts(source.getRGB(x, y));
+                if (c.luminance >= 180 && !isColoredNonTarget(c)) {
+                    counts[c.luminance]++;
+                    total++;
+                }
+            }
+        }
+        if (total == 0) {
+            return 255;
+        }
+        int seen = 0;
+        for (int i = 0; i < counts.length; i++) {
+            seen += counts[i];
+            if (seen > total / 2) {
+                return i;
+            }
+        }
+        return 255;
+    }
+
     static boolean isInk(ColorParts c, int backgroundLum) {
         return c.luminance <= backgroundLum - 25 && c.red <= 230 && c.green <= 230 && c.blue <= 230;
     }

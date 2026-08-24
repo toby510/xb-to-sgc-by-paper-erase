@@ -8,11 +8,27 @@ import java.awt.Color;
 import java.awt.image.BufferedImage;
 import java.util.Arrays;
 
+import com.xb.sgc.papererase.model.ExamModels.EraseRegion;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class VlmRequestBuilderTest {
+    @Test
+    public void coordinateRefinementCarriesFirstPassTextAsRoiSearchAnchor() {
+        EraseRegion region = new EraseRegion();
+        region.safety_margin = "coordinate_refinement_requested";
+        region.page_number_text = "第2页(共8页)";
+        region.same_line_metadata = "【英语(八)】";
+
+        String instruction = VlmClient.refinementInstruction(region);
+
+        assertTrue(instruction.contains("第2页(共8页)"));
+        assertTrue(instruction.contains("【英语(八)】"));
+        assertTrue(instruction.contains("Search the entire ROI"));
+    }
+
     @Test
     public void openAiCompatibleBodyUsesOrderedTextAndImageUrlPartsForPagesAndRoi() throws Exception {
         VlmClient.PageImage p1 = new VlmClient.PageImage("p1", image(Color.WHITE), "ORIGINAL");

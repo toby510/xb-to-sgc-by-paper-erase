@@ -61,7 +61,7 @@ public class InkMaskEraserTest {
     }
 
     @Test
-    public void rejectsComplexBackgroundColoredStampInsufficientSamplesAndMaskTouchingRegionEdge() {
+    public void handlesComplexBackgroundColoredStampAndValidatorExpandedTightBox() {
         BufferedImage textured = page(80, 80, new Color(245, 244, 238));
         for (int y = 4; y < 20; y++) {
             for (int x = 28; x < 48; x++) {
@@ -102,8 +102,13 @@ public class InkMaskEraserTest {
         assertTrue(tinyOutcome.getReason().contains("white_fallback"));
 
         BufferedImage touching = page(80, 80, new Color(245, 244, 238));
-        touching.setRGB(28, 8, new Color(130, 130, 130).getRGB());
-        assertManual(touching, 0.35, 0.05, 0.55, 0.20, 0.40, "mask touches region boundary");
+        // 220 灰度不满足旧校验器的固定 <210 阈值，但满足擦除器“局部背景 245 - 25”的
+        // 动态掩码阈值。两层必须以同一规则扩框，否则擦除器仍会在边界拒绝。
+        touching.setRGB(28, 8, new Color(220, 220, 220).getRGB());
+        touching.setRGB(34, 10, Color.BLACK.getRGB());
+        InkMaskEraser.EraseOutcome touchingOutcome = InkMaskEraser.erase(touching,
+                validated(touching, 0.35, 0.05, 0.55, 0.20, 0.40));
+        assertEquals(touchingOutcome.getReason(), InkMaskEraser.Status.SAFE_TO_ERASE, touchingOutcome.getStatus());
     }
 
     @Test

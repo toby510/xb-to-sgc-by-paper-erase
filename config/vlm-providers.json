@@ -14,22 +14,22 @@
       "prompt": "references/01-整卷共性识别/pattern-prompt-v2.md"
     },
     "locate": {
-      "说明": "单页页码定位：根据整卷共性，在一张标准化页面中找候选页码框和最近正文边界；结果仍只是候选。",
+      "说明": "单页目标行定位：根据整卷共性，在一张标准化页面中找页码及其明确同行非正文元数据组成的独立页眉/页脚行和最近正文边界；结果仍只是候选。",
       "输入": "一张标准化后的整页图（带 PAGE_ID）及所属 pattern_group。",
       "调用时机": "pattern 建立共性后，对试卷每一页调用一次。",
-      "prompt": "references/02-单页页码定位/locate-prompt-v2.md"
+      "prompt": "references/02-单页页码定位/locate-prompt-v15.md"
     },
     "verify": {
-      "说明": "局部安全复核：仅判断候选页码 ROI 是否可安全擦除，专门处理低置信度、旋转、同线和正文过近等风险页面。",
+      "说明": "局部安全复核：仅确认或细化候选独立页眉/页脚目标行的 ROI，目标包含页码及明确同行非正文元数据；专门处理低置信度、旋转和正文过近等风险页面。",
       "输入": "原分辨率整页图和候选区域 ROI（带 PAGE_ID、ROI_PAGE_ID、ROI_REGION_ID）。",
       "调用时机": "只有 RiskGate 判定为高风险，或需要确认无页码时才调用，避免每页重复消耗。",
-      "prompt": "references/03-局部安全复核/verify-prompt-v3.md"
+      "prompt": "references/03-局部安全复核/verify-prompt-v9.md"
     },
     "audit": {
-      "说明": "擦除结果审计：对比擦除前后，确认正文未变、目标页码已消失，并独立评估背景色。",
+      "说明": "擦除结果审计：对比擦除前后，确认正文未变、页码及获批同行非正文元数据组成的目标行已消失，并独立评估背景色。",
       "输入": "同一页的 ORIGINAL、ERASED 两张图及所有相关 ROI。",
       "调用时机": "每张实际发生过像素擦除的页面完成后；正文或目标判断失败即回退人工审核。",
-      "prompt": "references/04-擦除结果审计/audit-prompt-v3.md"
+      "prompt": "references/04-擦除结果审计/audit-prompt-v5.md"
     }
   },
   "providers": {

@@ -10,6 +10,7 @@ import java.util.Arrays;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class RegionValidatorTest {
@@ -78,7 +79,7 @@ public class RegionValidatorTest {
     }
 
     @Test
-    public void validateRejectsNonEdgeRegionInsufficientBodyGapAndInkTouchingBox() {
+    public void validateRejectsNonEdgeRegionAndInsufficientBodyGap() {
         assertRejected(region("r1", 0.40, 0.40, 0.50, 0.45), "edge band");
         assertRejected(region("r1", 0.10, 0.04, 0.20, 0.08), boundary(null, 0.10), "body blank gap");
         assertRejected(region("r1", 0.10, 0.04, 0.20, 0.08), boundary(null, 1.20), "body boundary y must be between 0 and 1");
@@ -93,11 +94,34 @@ public class RegionValidatorTest {
         assertFalse(bandResult.isAccepted());
         assertTrue(bandResult.getReasons().get(0).contains("body blank gap contains ink"));
 
+    }
+
+    @Test
+    public void validateExpandsTightBoxToTwoBlankScanlinesOnEverySide() {
         BufferedImage image = blankPage();
+        // 模型框为 x=10..19,y=8..15；实际页码抗锯齿延伸到右/上/左边界。
+        // 四侧均在很近处有两条空白线，应交给擦除器一个本身带空白边界的批准框。
         drawText(image, 10, 8, 20, 15);
+
         RegionValidator.ValidationResult result = RegionValidator.validate(
-                locate("page-1", region("r1", 0.10, 0.04, 0.20, 0.08), boundary(null, 0.16)),
-                image);
+                locate("page-1", region("r1", 0.10, 0.04, 0.20, 0.08), boundary(null, 0.16)), image);
+
+        assertTrue(result.getReasons().toString(), result.isAccepted());
+        RegionValidator.PixelRegion expanded = result.getRegions().get(0);
+        assertEquals(8, expanded.getX());
+        assertEquals(6, expanded.getY());
+        assertEquals(15, expanded.getWidth());
+        assertEquals(12, expanded.getHeight());
+    }
+
+    @Test
+    public void validateRejectsTightBoxWhenAContinuousNeighbouringInkRunHasNoBlankBoundary() {
+        BufferedImage image = blankPage();
+        // 右侧连续墨迹超过统一安全吸附上限 32px；不能猜它仍属于页码。
+        drawText(image, 10, 8, 60, 15);
+
+        RegionValidator.ValidationResult result = RegionValidator.validate(
+                locate("page-1", region("r1", 0.10, 0.04, 0.20, 0.08), boundary(null, 0.16)), image);
 
         assertFalse(result.isAccepted());
         assertTrue(result.getReasons().get(0).contains("mask touches candidate box"));
@@ -116,9 +140,9 @@ public class RegionValidatorTest {
 
         assertTrue(result.getReasons().toString(), result.isAccepted());
         RegionValidator.PixelRegion expanded = result.getRegions().get(0);
-        // 扩框额外留一像素白边，后续擦除器仍可验证笔画没有触及候选框边界。
-        assertEquals(86, expanded.getX());
-        assertEquals(10, expanded.getWidth());
+        // 四侧均保留两条空白扫描线，供后续擦除器复用相同边界语义。
+        assertEquals(85, expanded.getX());
+        assertEquals(13, expanded.getWidth());
     }
 
     @Test
@@ -150,6 +174,150 @@ public class RegionValidatorTest {
         assertTrue(result.getReasons().toString(), result.isAccepted());
         assertTrue(result.getRegions().get(0).isCoordinateRescued());
         assertEquals(169, result.getRegions().get(0).getY());
+    }
+
+    @Test
+    public void validateAcceptsMissingBoundaryOnlyWithSixteenPixelBlankBand() {
+        BufferedImage image = blankPage();
+        drawText(image, 45, 8, 54, 14);
+        RegionValidator.ValidationResult accepted = RegionValidator.validate(
+                locate("page-1", region("r1", 0.40, 0.04, 0.60, 0.08), null), image);
+        assertTrue(accepted.getReasons().toString(), accepted.isAccepted());
+
+        image.setRGB(48, 18, Color.BLACK.getRGB());
+        RegionValidator.ValidationResult rejected = RegionValidator.validate(
+                locate("page-1", region("r1", 0.40, 0.04, 0.60, 0.08), null), image);
+        assertFalse(rejected.isAccepted());
+        assertTrue(rejected.getReasons().get(0).contains("body blank gap"));
+    }
+
+    @Test
+    public void replacesOnlyAConflictingBoundaryWhenRefinedTargetHasATenPixelSafetyBand() {
+        BufferedImage image = blankPage();
+        drawText(image, 45, 8, 54, 14);
+        EraseRegion original = region("r1", 0.40, 0.04, 0.60, 0.08);
+        EraseRegion refined = region("r1", 0.42, 0.04, 0.58, 0.08);
+        BodyBoundary conflicting = boundary(null, 0.07);
+
+        BodyBoundary effective = RegionValidator.replaceConflictingBodyBoundary(original, refined, conflicting, image);
+
+        assertTrue(effective != null);
+        assertEquals(0.13, effective.y, 0.0);
+        assertTrue(effective.basis.startsWith("java_10px_blank_band_replaced_conflicting_vlm_boundary"));
+        assertTrue(effective.basis.contains("original_y=0.07"));
+        assertTrue(RegionValidator.validate(locate("page-1", refined, effective), image).isAccepted());
+    }
+
+    @Test
+    public void toleratesOnlyIsolatedScanNoiseInConflictingBoundarySafetyBand() {
+        BufferedImage image = blankPage();
+        drawText(image, 45, 8, 54, 14);
+        image.setRGB(48, 18, Color.BLACK.getRGB());
+        image.setRGB(51, 20, Color.BLACK.getRGB());
+
+        BodyBoundary effective = RegionValidator.replaceConflictingBodyBoundary(
+                region("r1", 0.40, 0.04, 0.60, 0.08),
+                region("r1", 0.42, 0.04, 0.58, 0.08), boundary(null, 0.07), image);
+
+        assertTrue(effective != null);
+        assertTrue(RegionValidator.validate(locate("page-1",
+                region("r1", 0.42, 0.04, 0.58, 0.08), effective), image).isAccepted());
+    }
+
+    @Test
+    public void refusesConflictingBoundaryReplacementForSubstantiveInkInSafetyBand() {
+        BufferedImage image = blankPage();
+        drawText(image, 45, 8, 54, 14);
+        drawText(image, 47, 18, 49, 18);
+
+        assertNull(RegionValidator.replaceConflictingBodyBoundary(
+                region("r1", 0.40, 0.04, 0.60, 0.08),
+                region("r1", 0.42, 0.04, 0.58, 0.08), boundary(null, 0.07), image));
+    }
+
+    @Test
+    public void conflictingBoundaryUsesActualOuterTargetInkBeforeComputingSafetyGap() {
+        BufferedImage image = blankPage();
+        // 局部 VLM 框从 y=180 开始，但页码抗锯齿最外沿还在 y=179。
+        drawText(image, 45, 179, 54, 190);
+        EraseRegion original = region("r1", 0.40, 0.90, 0.60, 0.98);
+        EraseRegion refined = region("r1", 0.42, 0.90, 0.58, 0.98);
+
+        BodyBoundary effective = RegionValidator.replaceConflictingBodyBoundary(
+                original, refined, boundary(null, 0.95), image);
+
+        assertTrue(effective != null);
+        assertEquals(0.845, effective.y, 0.0);
+        assertTrue(RegionValidator.validate(locate("page-1", refined, effective), image).isAccepted());
+    }
+
+    @Test
+    public void conflictingBoundaryProofTrimsOnlyBlankModelPaddingTowardBody() {
+        BufferedImage image = blankPage();
+        // 正文侧横线离模型框上沿很近，但距真实页码墨迹仍有安全空白。
+        drawText(image, 40, 174, 60, 174);
+        drawText(image, 47, 190, 53, 194);
+        EraseRegion original = region("r1", 0.40, 0.90, 0.60, 0.98);
+        EraseRegion refined = region("r1", 0.42, 0.90, 0.58, 0.98);
+
+        EraseRegion trimmed = RegionValidator.trimBodyFacingBlankPadding(refined, image);
+        BodyBoundary effective = RegionValidator.replaceConflictingBodyBoundary(
+                original, trimmed, boundary(null, 0.95), image);
+
+        assertTrue("blank padding may be trimmed, target ink may not", effective != null);
+        assertTrue(trimmed.y1 > refined.y1);
+        assertTrue(RegionValidator.validate(locate("page-1", trimmed, effective), image).isAccepted());
+    }
+
+    @Test
+    public void trimSkipsDetachedThinDividerBeforeFooterText() {
+        BufferedImage image = blankPage();
+        drawText(image, 50, 160, 50, 165);
+        drawText(image, 44, 174, 56, 181);
+        EraseRegion modelBox = region("r1", 0.40, 0.80, 0.60, 0.94);
+
+        EraseRegion trimmed = RegionValidator.trimBodyFacingBlankPadding(modelBox, image);
+
+        assertTrue("only a detached thin divider may be skipped: " + trimmed.y1, trimmed.y1 >= 0.86);
+        assertTrue("footer text must remain inside the approved box", trimmed.y1 <= 0.87);
+    }
+
+    @Test
+    public void validateDoesNotTreatSingleOutsideDividerAsBodyText() {
+        BufferedImage image = blankPage();
+        drawText(image, 48, 184, 54, 191);
+        drawText(image, 50, 170, 50, 177);
+        EraseRegion footer = region("r1", 0.40, 0.90, 0.60, 0.96);
+
+        assertFalse(RegionValidator.validate(locate("page-1", footer, boundary(null, 0.70)), image)
+                .getReasons().contains("body blank gap contains ink"));
+    }
+
+    @Test
+    public void validateAcceptsWideIndependentFooterTargetLine() {
+        BufferedImage image = new BufferedImage(400, 200, BufferedImage.TYPE_INT_RGB);
+        for (int y = 0; y < image.getHeight(); y++) {
+            for (int x = 0; x < image.getWidth(); x++) {
+                image.setRGB(x, y, Color.WHITE.getRGB());
+            }
+        }
+        // 页码与学校/试卷标识处在同一独立页脚行；各词之间留白，避免模拟表格或长线。
+        drawText(image, 35, 174, 56, 183);
+        drawText(image, 90, 174, 123, 183);
+        drawText(image, 160, 174, 189, 183);
+        drawText(image, 245, 174, 275, 183);
+        drawText(image, 315, 174, 344, 183);
+
+        EraseRegion targetLine = region("r1", 0.05, 0.85, 0.95, 0.95);
+        targetLine.page_number_text = "第1页";
+        targetLine.same_line_metadata = "某校 高一数学试卷";
+        RegionValidator.ValidationResult result = RegionValidator.validate(
+                locate("page-1", targetLine, boundary(null, 0.75)), image);
+
+        assertTrue(result.getReasons().toString(), result.isAccepted());
+        assertEquals(1, result.getRegions().size());
+        assertTrue("complete independent footer line must retain its width",
+                result.getRegions().get(0).getWidth() >= 360);
     }
 
     @Test

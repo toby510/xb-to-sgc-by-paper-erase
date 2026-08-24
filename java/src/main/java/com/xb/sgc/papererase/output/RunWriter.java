@@ -48,19 +48,18 @@ public class RunWriter {
             Path originalPath = erasedDir.resolve(stem + "_原图.png");
             Path erasedPath = erasedDir.resolve(stem + "_擦除后.png");
             ImageIO.write(pageOutcome.getOriginal(), "png", originalPath.toFile());
-            ImageIO.write(pageOutcome.getCandidate(), "png", erasedPath.toFile());
             originalWordPages.add(originalPath);
-            if (!pageOutcome.getRegions().isEmpty()) {
-                Path coordinatePreview = erasedDir.resolve(stem + "_模型坐标擦除预览_不可交付.png");
-                ManualReviewWatermarker.writeCoordinateErasePreview(pageOutcome.getNormalized(), pageOutcome.getRegions(), coordinatePreview);
-            }
             if ("manual_review".equals(pageOutcome.getStatus()) || "error".equals(pageOutcome.getStatus())) {
-                Path preview = erasedDir.resolve(stem + "_人工审核预览.png");
-                ManualReviewWatermarker.writePreview(pageOutcome.getCandidate(), preview);
-                erasedWordPages.add(preview);
+                if (!pageOutcome.getRegions().isEmpty()) {
+                    // 门禁未过也必须让用户看到按模型坐标擦除的效果；它只是不具备交付资格。
+                    ManualReviewWatermarker.writeCoordinateErasePreview(pageOutcome.getNormalized(), pageOutcome.getRegions(), erasedPath);
+                } else {
+                    ManualReviewWatermarker.writeNotDeliverableCopy(pageOutcome.getCandidate(), erasedPath);
+                }
             } else {
-                erasedWordPages.add(erasedPath);
+                ImageIO.write(pageOutcome.getCandidate(), "png", erasedPath.toFile());
             }
+            erasedWordPages.add(erasedPath);
             mapper.writeValue(erasedDir.resolve(stem + "_regions.json").toFile(), pageEvidence(page, pageOutcome));
             appendAudit(runDir.resolve("_audit.ndjson"), input, page, pageOutcome);
         }

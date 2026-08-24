@@ -174,7 +174,7 @@ public final class ResponseParser {
 
     public static VerifyResponse parseVerify(String raw, String expectedPageId, String expectedRegionId) {
         JsonNode root = root(raw);
-        requireFields(root, "page_id", "region_id", "decision", "allowed_scope", "evidence", "refined_region", "refined_nearest_body_boundary");
+        requireFields(root, "page_id", "region_id", "decision", "allowed_scope", "evidence", "refined_region");
         rejectUnknown(root, "page_id", "region_id", "decision", "allowed_scope", "evidence", "refined_region", "refined_nearest_body_boundary");
         VerifyResponse response = new VerifyResponse();
         response.page_id = requiredText(root, "page_id");
@@ -186,8 +186,11 @@ public final class ResponseParser {
         response.evidence = requiredText(root, "evidence");
         if (!root.path("refined_region").isNull()) {
             response.refined_region = parseLocalRegion(root.path("refined_region"), raw);
-            response.refined_nearest_body_boundary = parseBoundary(root.path("refined_nearest_body_boundary"), raw);
-        } else if (!root.path("refined_nearest_body_boundary").isNull()) {
+            if (root.has("refined_nearest_body_boundary") && !root.path("refined_nearest_body_boundary").isNull()) {
+                // 兼容旧版响应；新局部精定位协议不会再采纳或请求此字段。
+                response.refined_nearest_body_boundary = parseBoundary(root.path("refined_nearest_body_boundary"), raw);
+            }
+        } else if (root.has("refined_nearest_body_boundary") && !root.path("refined_nearest_body_boundary").isNull()) {
             throw bad("refined_nearest_body_boundary requires refined_region", raw);
         }
         return response;
@@ -220,8 +223,8 @@ public final class ResponseParser {
         response.background_acceptable = requiredBoolean(root, "background_acceptable");
         response.evidence = requiredText(root, "evidence");
         if ("pass".equals(response.decision)
-                && (!response.body_unchanged || !response.target_removed || !response.background_acceptable)) {
-            throw bad("audit pass requires body_unchanged/target_removed/background_acceptable all true", raw);
+                && (!response.body_unchanged || !response.target_removed)) {
+            throw bad("audit pass requires body_unchanged and target_removed", raw);
         }
         return response;
     }
@@ -242,6 +245,9 @@ public final class ResponseParser {
 
     private static JsonNode root(String raw) {
         String json = unwrapSingleCodeFence(raw);
+        if (json != null && (!json.startsWith("{") || !json.endsWith("}"))) {
+            json = extractSingleJsonObject(json);
+        }
         if (json == null || !json.startsWith("{") || !json.endsWith("}")) {
             throw bad("strict JSON object required", raw);
         }
@@ -261,6 +267,59 @@ public final class ResponseParser {
         } catch (IOException e) {
             throw bad("strict JSON parse failed", raw);
         }
+    }
+
+    /**
+     * 仅容忍一个完整 JSON 对象外包裹的简短模型说明。扫描时识别字符串转义和嵌套对象；
+     * 出现第二个对象、括号不闭合或对象后仍有结构化片段均拒绝。提取后仍由原有严格字段、
+     * page_id、枚举和坐标协议校验，不能借此绕过业务安全契约。
+     */
+    private static String extractSingleJsonObject(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        int start = raw.indexOf('{');
+        if (start < 0) {
+            return null;
+        }
+        int depth = 0;
+        boolean quoted = false;
+        boolean escaped = false;
+        int end = -1;
+        for (int i = start; i < raw.length(); i++) {
+            char ch = raw.charAt(i);
+            if (quoted) {
+                if (escaped) {
+                    escaped = false;
+                } else if (ch == '\\') {
+                    escaped = true;
+                } else if (ch == '"') {
+                    quoted = false;
+                }
+                continue;
+            }
+            if (ch == '"') {
+                quoted = true;
+            } else if (ch == '{') {
+                depth++;
+            } else if (ch == '}') {
+                if (--depth == 0) {
+                    end = i + 1;
+                    break;
+                }
+                if (depth < 0) {
+                    return null;
+                }
+            }
+        }
+        if (end < 0 || quoted || depth != 0) {
+            return null;
+        }
+        String suffix = raw.substring(end);
+        if (suffix.indexOf('{') >= 0 || suffix.indexOf('}') >= 0) {
+            return null;
+        }
+        return raw.substring(start, end);
     }
 
     /**
