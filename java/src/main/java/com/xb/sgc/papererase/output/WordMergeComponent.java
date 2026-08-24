@@ -64,9 +64,6 @@ import java.util.List;
  *   - 删除模板自带空段（避免首页空白）
  *   - 清空模板 footer page 字段
  *   - 等比缩放：min(cw/imgW, ch/imgH)
- */
-/**
- * Word 合并组件：按试卷原始页序把原图或擦除图写入可交付 Word。
  * 文档排版是产物层职责，不参与 VLM、坐标校验和正文保护决策。
  */
 public class WordMergeComponent {

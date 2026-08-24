@@ -24,20 +24,8 @@ public final class RegionValidator {
     }
 
     /**
-     * 擦除前的正文保护总门禁，按“协议→几何→正文安全带→候选墨迹”逐层收紧：
-     *
-     * <ol>
-     *   <li>协议层：page_id、safe_to_erase、region_id、坐标和置信度必须完整合法；</li>
-     *   <li>几何层：候选必须位于页边缘带，避免把正文中间的普通文字当页码；</li>
-     *   <li>正文层：根据真实像素扫描正文方向的 8px 连续无墨带，不能只相信 VLM 的归一化边界；</li>
-     *   <li>目标层：候选框内必须有目标墨迹，框边不能贴墨；必要时只沿已证明的同一目标补齐抗锯齿，
-     *       仍将新框重新送回本方法校验。</li>
-     * </ol>
-     *
-     * <p>任一层无法证明安全就返回拒绝，调用方必须保留原图；该方法不执行任何像素写入。</p>
-     */
-    /**
-     * 执行页面候选区域的完整正文保护校验。
+     * 执行页面候选区域的完整正文保护校验，按“协议→几何→正文安全带→候选墨迹”逐层收紧。
+     * 任一层无法证明安全就返回拒绝；该方法只读原图，不执行任何像素写入。
      *
      * @param locateResult locate 模型结果，包含整图归一化候选框和正文边界
      * @param image 旋正后的原图；所有像素校验均基于此图
@@ -299,11 +287,8 @@ public final class RegionValidator {
     }
 
     /**
-     * 删除模型框朝正文一侧的纯空白内边距，并保留 2px 抗锯齿缓冲。该操作只缩小框，且只在
-     * conflicting-boundary 的局部 VLM 精定位路径使用；没有检测到墨迹时保持原框并由后续门禁关闭。
-     */
-    /**
-     * 在像素坐标中沿正文方向寻找第一/最后一条目标墨迹，并保留 2px 抗锯齿余量。
+     * 在像素坐标中删除模型框朝正文一侧的纯空白内边距，并保留 2px 抗锯齿余量。
+     * 该操作只缩小框，仅用于 conflicting-boundary 局部精定位；没有检测到墨迹时保持原框。
      *
      * @param edge 候选框所在页面边缘
      * @param region 原图像素候选框
@@ -344,21 +329,8 @@ public final class RegionValidator {
     }
 
     /**
-     * 查找候选框内沿扫描方向遇到的第一条实质目标墨迹行，并跳过已证明与目标断开的细分隔线。
-     *
-     * @param image 原图
-     * @param left 扫描区域左边界，包含
-     * @param top 扫描区域上边界，包含
-     * @param right 扫描区域右边界，不包含
-     * @param bottom 扫描区域下边界，不包含
-     * @param backgroundLum 局部背景亮度
-     * @param forward true 从上到下扫描，false 从下到上扫描
-     * @return 第一条目标墨迹行的像素 Y，未找到返回 -1
-     */
-    /**
-     * 局部模型偶尔把页码上方/下方的独立分栏细线带入框内。只在该细线在朝正文方向连续至少
-     * 4px、随后有完整空白行、并且后面确有正常文字带时才跳过它；这证明它与目标行断开，
-     * 不会把页码字符当作装饰线裁掉。
+     * 沿指定方向寻找第一条实质目标墨迹行，并跳过已证明与目标断开的细分隔线。
+     * 只有细线连续、后有完整空白行且后方存在文字带时才跳过，避免把页码字符误当装饰线。
      */
     private static int firstTargetInkRow(BufferedImage image, int left, int top, int right, int bottom,
                                          int backgroundLum, boolean forward) {
@@ -587,10 +559,7 @@ public final class RegionValidator {
     }
 
     /**
-     * 返回包含两条空白扫描线的候选框；null 表示未能证明该方向安全。
-     */
-    /**
-     * 沿一个具体 side 逐扫描线扩展候选框，并检查正文安全带和物理页面边界。
+     * 沿一个具体 side 逐扫描线扩展候选框，直到出现两条空白扫描线，并检查正文安全带和页面边界。
      *
      * @param edge 页码语义所在边缘
      * @param region 原始像素候选框
@@ -681,10 +650,7 @@ public final class RegionValidator {
                 region.isCoordinateRescued());
     }
 
-    /**
-     * 只有朝正文的一侧受正文边界限制；其余三侧仍必须自行找到连续两条空白线。
-     */
-    /** 判断本次扩展扫描线是否越过正文边界前的 8px 安全带。 */
+    /** 判断扩展扫描线是否越过正文边界前的 8px 安全带；只有朝正文的一侧受该边界限制。 */
     private static boolean crossesBodySafetyBand(Edge edge, Side side, int left, int top, int right, int bottom,
                                                  BodyBoundary boundary, BufferedImage image) {
         int limit = bodyLimit(edge, boundary, image);
@@ -727,12 +693,7 @@ public final class RegionValidator {
         return Edge.NONE;
     }
 
-    /**
-     * 常规页面仍要求候选框完整落入 20% 边缘带。仅对长宽比至少 4:1 的横向短条页，
-     * 放宽上下边缘的几何资格到候选中心位于对应 25%；正文边界和 8px 像素空白带随后
-     * 仍会逐项验证，因此该分支不会按置信度或样本信息放行。
-     */
-    /** 判断候选框是否具有可证明的页边缘位置；极端横向扫描页允许 25% 特例。 */
+    /** 候选框必须位于 20% 边缘带；极端横向短条页允许中心落入对应 25% 特例，之后仍需像素门禁。 */
     private static Edge edgeForValidation(EraseRegion region, BufferedImage image) {
         Edge strict = edge(region);
         if (strict != Edge.NONE || !isExtremeHorizontalStrip(image)
@@ -792,10 +753,8 @@ public final class RegionValidator {
     }
 
     /**
-     * 仅补全“缺失”边界；畸形、越界等模型协议错误仍由 {@link #invalidBodyBoundaryReason} 拒绝。
-     */
-    /**
-     * 当模型漏报方向边界时，仅用候选框朝正文侧 16px 连续无墨带推导保守边界。
+     * 当模型漏报方向边界时，仅用候选框朝正文侧 16px 连续无墨带推导保守边界；
+     * 畸形或越界边界仍由协议校验拒绝。
      *
      * @param edge 候选框所在边缘
      * @param region 原图像素候选框
@@ -974,11 +933,7 @@ public final class RegionValidator {
                 && boundary.basis.startsWith("java_8px_blank_band_replaced_conflicting_vlm_boundary");
     }
 
-    /**
-     * 当整页 VLM 已明确声明正文边界排除了背透/浅影时，安全带中的淡灰扫描伪影不应
-     * 反过来推翻该语义结论；它既不在批准框内，也不会被擦除。真正的深色前景仍完全阻断。
-     */
-    /** 将安全带内单个像素按普通墨迹、背透浅影和彩色标记规则分类。 */
+    /** 将安全带内像素按普通墨迹、背透浅影和彩色标记分类；仅明确排除的浅影可豁免。 */
     private static boolean isBlockingGapMark(int argb, int backgroundLum, BodyBoundary boundary) {
         if (!isConservativeMark(argb, backgroundLum)) return false;
         if (!declaresBleedExcluded(boundary)) return true;
@@ -989,20 +944,13 @@ public final class RegionValidator {
         return luminance <= backgroundLum - 55 || BackgroundEstimator.isColoredMark(argb);
     }
 
-    /**
-     * 模型明确说明已排除背透时，Java 不得再把浅影向正文方向吸附为“目标”。
-     */
     /** 判断正文边界证据是否明确声明已经排除背透、透印或浅影。 */
     private static boolean declaresBleedExcluded(BodyBoundary boundary) {
         String basis = boundary == null ? "" : boundary.basis;
         return basis != null && (basis.contains("背透") || basis.contains("透印") || basis.contains("浅影"));
     }
 
-    /**
-     * 只向正文方向逐像素扫描，最多一个字高且不超过 32px；连续两条无墨扫描线立即停止。
-     * 这能容纳页码中断开的字形/括号抗锯齿，却不会跨越空白去吞并另一行或正文。
-     */
-    /** 沿同一目标的连续墨迹方向扩展像素框，最多 32px，遇到两条空白扫描线即停止。 */
+    /** 沿同一目标的连续墨迹方向扩展像素框，最多 32px；连续两条空白扫描线立即停止。 */
     private static PixelRegion expandConnectedTargetInk(Edge edge, PixelRegion region,
                                                           BodyBoundary boundary, BufferedImage image) {
         int bodyLimit = bodyLimit(edge, boundary, image);
@@ -1055,11 +1003,7 @@ public final class RegionValidator {
         return remainsInEdgeBand(edge, expanded, image) ? expanded : region;
     }
 
-    /**
-     * 处理“模型语义判断正确、但框整体偏到页外”的情形。仅从模型框与正文边界之间的
-     * 走廊寻找墨迹；该走廊外的正文永远不可进入。返回的区域还会在后续流程强制局部二检。
-     */
-    /** 在模型空框与正文边界之间的同侧走廊内寻找目标，不跨越正文安全带。 */
+    /** 处理模型语义正确但框偏到空白处的情形：只在框与正文边界之间的同侧走廊找回墨迹。 */
     private static PixelRegion rescueEmptyModelBox(Edge edge, PixelRegion region, int bodyLimit, BufferedImage image) {
         Bounds corridor = inwardCorridor(edge, region, bodyLimit);
         if (corridor == null || !corridor.isInside(image)) {
@@ -1185,30 +1129,12 @@ public final class RegionValidator {
         return false;
     }
 
-    /**
-     * 仅供“局部 VLM 精框与整页正文边界冲突”使用的空白带证明。扫描件在纯白区域也常有
-     * 1~2 个压缩灰点；把任意单像素都当正文会让正确精框永远无法推翻模型幻觉边界。
-     * 连续笔画仍会在某一扫描线形成至少 3 个墨点，或在多行累计至少 6 个墨点，因此继续
-     * 失败关闭。普通 locate、缺失边界和最终候选框校验仍使用严格的 bandHasInk。
-     *
-     * @param image 旋正后的原图
-     * @param reference 用于估计背景亮度的候选框
-     * @param left 条带左边界，包含
-     * @param top 条带上边界，包含
-     * @param rightExclusive 条带右边界，不包含
-     * @param bottomExclusive 条带下边界，不包含
-     * @return {@code true} 表示存在实质正文墨迹；孤立灰点不计入
-     */
-    /** 严格模式的实质墨迹扫描，不允许细分隔线豁免。 */
+    /** 严格模式的实质墨迹扫描，不允许细分隔线豁免；局部边界替换使用带豁免的重载方法。 */
     private static boolean bandHasSubstantiveInk(BufferedImage image, PixelRegion reference, int left, int top,
                                                    int rightExclusive, int bottomExclusive) {
         return bandHasSubstantiveInk(image, reference, left, top, rightExclusive, bottomExclusive, false);
     }
 
-    /**
-     * 仅在“局部精框替换冲突正文边界”的十像素证明带中，单根分栏/装订细线可忽略；
-     * 普通候选框校验仍传 false，继续把任何可疑墨迹作为正文风险拒绝。
-     */
     /** 统计安全带墨迹；可选地忽略单根细轴向分隔线，但不忽略文字或块状正文。 */
     private static boolean bandHasSubstantiveInk(BufferedImage image, PixelRegion reference, int left, int top,
                                                    int rightExclusive, int bottomExclusive, boolean ignoreThinAxisDivider) {
@@ -1298,18 +1224,7 @@ public final class RegionValidator {
         return false;
     }
 
-    /**
-     * 扫描候选框朝正文方向的一条窄带，判断目标墨迹是否仍连续存在。
-     *
-     * @param image           旋正后的原图
-     * @param left            扫描带左边界，包含
-     * @param top             扫描带上边界，包含
-     * @param rightExclusive  扫描带右边界，不包含
-     * @param bottomExclusive 扫描带下边界，不包含
-     * @param backgroundLum   候选区域估计的背景亮度
-     * @return {@code true} 表示可继续向正文方向扩展候选框；越界也返回 true 以失败关闭
-     */
-    /** 判断指定扫描线/矩形是否仍有可与目标连通的墨迹，用于安全扩框。 */
+    /** 判断指定扫描线/矩形是否仍有可与目标连通的墨迹；越界按有墨处理以失败关闭。 */
     private static boolean bandHasErasableInk(BufferedImage image, int left, int top, int rightExclusive,
                                                int bottomExclusive, int backgroundLum) {
         /*
@@ -1331,10 +1246,7 @@ public final class RegionValidator {
         return false;
     }
 
-    /**
-     * 彩色标记同样不能被当作安全空白；这让页码色块可被保守扩框，也阻止跨越彩色正文。
-     */
-    /** 将单个像素按深色墨迹或彩色内容统一分类为保守风险墨迹。 */
+    /** 将单个像素按深色墨迹或彩色内容统一分类为保守风险墨迹，防止扩框跨过彩色正文。 */
     private static boolean isConservativeMark(int argb, int backgroundLum) {
         /*
          * 保守墨迹是正文保护的统一底层判据：深色文字/线条和明显彩色内容都算风险。彩色
@@ -1393,7 +1305,6 @@ public final class RegionValidator {
             this.nearestBodyBoundary = nearestBodyBoundary;
         }
 
-        /** 返回页面稳定标识。 */
         /** 返回页面稳定标识。 */
         public String getPageId() {
             return pageId;

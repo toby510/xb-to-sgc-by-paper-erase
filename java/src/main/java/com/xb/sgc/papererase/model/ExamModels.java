@@ -135,8 +135,8 @@ public final class ExamModels {
         }
     }
 
-    @JsonIgnoreProperties(ignoreUnknown = false)
     /** 1-pattern 返回的整卷共性与页面分类。 */
+    @JsonIgnoreProperties(ignoreUnknown = false)
     public static final class PatternResponse {
         @JsonProperty(required = true)
         public List<PageDirection> page_directions = new ArrayList<PageDirection>();
@@ -150,8 +150,8 @@ public final class ExamModels {
         public List<String> ungrouped_page_ids = new ArrayList<String>();
     }
 
-    @JsonIgnoreProperties(ignoreUnknown = false)
     /** pattern 为每页提供的阅读方向；方向不可信时禁止坐标换算。 */
+    @JsonIgnoreProperties(ignoreUnknown = false)
     public static final class PageDirection {
         @JsonProperty(required = true)
         public String page_id;
@@ -161,8 +161,8 @@ public final class ExamModels {
         public double confidence;
     }
 
-    @JsonIgnoreProperties(ignoreUnknown = false)
     /** 同一页码版式的共性分组及其粗定位窗口。 */
+    @JsonIgnoreProperties(ignoreUnknown = false)
     public static final class PatternGroup {
         @JsonProperty(required = true)
         public String group_id;
@@ -197,8 +197,8 @@ public final class ExamModels {
         public double y2;
     }
 
-    @JsonIgnoreProperties(ignoreUnknown = false)
     /** 2-locate 的整页语义结果及候选擦除框。 */
+    @JsonIgnoreProperties(ignoreUnknown = false)
     public static final class LocateResponse {
         @JsonProperty(required = true)
         public String page_id;
@@ -212,8 +212,8 @@ public final class ExamModels {
         public String evidence;
     }
 
-    @JsonIgnoreProperties(ignoreUnknown = false)
     /** locate 输出的整页归一化候选框；通过 RegionValidator 后才转换为像素区域。 */
+    @JsonIgnoreProperties(ignoreUnknown = false)
     public static final class EraseRegion {
         @JsonProperty(required = true)
         public String region_id;
@@ -241,8 +241,8 @@ public final class ExamModels {
         public String safety_margin;
     }
 
-    @JsonIgnoreProperties(ignoreUnknown = false)
     /** 最近正文边界证据；x/y 只表示对应方向的正文侧边界。 */
+    @JsonIgnoreProperties(ignoreUnknown = false)
     public static final class BodyBoundary {
         @JsonProperty(required = true)
         public Double x;
@@ -252,8 +252,8 @@ public final class ExamModels {
         public String basis;
     }
 
-    @JsonIgnoreProperties(ignoreUnknown = false)
     /** 4-verify 的局部风险复核结果及可选精修框。 */
+    @JsonIgnoreProperties(ignoreUnknown = false)
     public static final class VerifyResponse {
         @JsonProperty(required = true)
         public String page_id;
@@ -274,8 +274,8 @@ public final class ExamModels {
         public BodyBoundary refined_nearest_body_boundary;
     }
 
-    @JsonIgnoreProperties(ignoreUnknown = false)
     /** verify ROI 内的局部归一化框，必须经 RoiTransform 映射回整图。 */
+    @JsonIgnoreProperties(ignoreUnknown = false)
     public static final class LocalRegion {
         @JsonProperty(required = true)
         /** 局部 ROI 归一化矩形左上角 X，不是整图坐标。 */
@@ -291,8 +291,8 @@ public final class ExamModels {
         public double y2;
     }
 
-    @JsonIgnoreProperties(ignoreUnknown = false)
     /** 7-audit 的最终审计结论：正文未变和目标移除是两个硬条件。 */
+    @JsonIgnoreProperties(ignoreUnknown = false)
     public static final class AuditResponse {
         @JsonProperty(required = true)
         public String page_id;

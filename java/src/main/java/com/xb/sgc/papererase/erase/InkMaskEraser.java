@@ -218,11 +218,8 @@ public final class InkMaskEraser {
     }
 
     /**
-     * 批准框掩码不是“猜测正文范围”，而是上游 RegionValidator 已证明安全的最终写入范围。
-     * 这里把框内全部像素列为可重建，框外保持 false，供 PixelDiffGate 做逐像素兜底。
-     */
-    /**
-     * 创建批准框整框写入掩码，用于重建纸张和清除抗锯齿残边。
+     * 创建批准框整框写入掩码：RegionValidator 已证明该矩形安全，框外保持 false，
+     * 供 PixelDiffGate 做逐像素兜底。
      *
      * @param source 原图，用于确定掩码尺寸
      * @param region 已批准的像素候选框

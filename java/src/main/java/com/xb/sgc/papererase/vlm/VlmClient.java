@@ -53,8 +53,8 @@ public interface VlmClient {
     }
 
     /**
-     * 新主链路仅向 locate 发送 pattern 给出的高清局部图。默认实现保留旧 fake/client 兼容；
-     * 真实客户端必须覆写，禁止把整页与 ROI 同时发送而降低局部坐标精度。
+     * 局部精修 locate 只发送 pattern/候选框生成的 ROI。默认实现保留旧 fake/client 兼容；
+     * 真实客户端覆写后不得把整页与 ROI 同时发送，以免降低局部坐标精度。
      */
     default LocateResponse locate(PageImage page, PatternGroup group, RoiImage roi) {
         return locate(page, group);
