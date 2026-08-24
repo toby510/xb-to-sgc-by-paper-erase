@@ -69,6 +69,15 @@ public final class ExamPipeline {
         this.patternSampleMaxPages = patternSampleMaxPages;
     }
 
+    /**
+     * 试卷级总入口：先建立整卷共性，再逐页执行“定位→像素门禁→风险复核→擦除→审计”。
+     *
+     * <p>这里故意把页面循环包在单页异常隔离边界内：某页模型超时、坐标非法或审计失败时，
+     * 只把该页交给人工，不让异常页影响同卷其他页的原图和产物。</p>
+     *
+     * @see #buildPattern(ExamInput, Map, RunContext)
+     * @see #processPage(ExamInput, PageInput, BufferedImage, PatternBundle, RunContext)
+     */
     public ExamOutcome process(ExamInput exam, RunContext context) {
         context = context == null ? new RunContext() : context;
         long examStartedAt = System.currentTimeMillis();
@@ -136,6 +145,11 @@ public final class ExamPipeline {
                 "internal_state_" + outcome.getStatus(), bundle.groupByPage.get(page.getPageId()), outcome.getLocate());
     }
 
+    /**
+     * 用同一试卷的代表页/分批页建立页码位置、阅读方向和版式共性。
+     * pattern 只提供“先验和粗窗口”，不产生可直接擦除的最终像素框；这样可把跨页共性
+     * 用于减少模型漂移，同时仍要求每页 locate 自己证明页码存在和正文安全距离。
+     */
     private PatternBundle buildPattern(ExamInput exam, Map<String, BufferedImage> originals, RunContext context) {
         PatternBundle bundle = new PatternBundle();
         List<PageInput> representative = PageBatcher.representative(exam.getPages(), patternSampleMaxPages);
@@ -204,17 +218,34 @@ public final class ExamPipeline {
         PatternResponse response;
         try {
             response = vlm.pattern(images);
+            validatePatternPageIds(response, expected);
             context.event("pattern", exam.getExamId(), null, "completed", label + " page_count=" + images.size(),
                     System.currentTimeMillis() - startedAt);
+        } catch (ResponseParser.ParseException firstFailure) {
+            // 严格 parser 明确指出协议违例时，带相同图片和精确 page_id 只纠错重发一次；
+            // 不把网络波动误当 JSON 问题，也不放宽解析契约。
+            context.event("pattern", exam.getExamId(), null, "protocol_correction_retry", shortError(firstFailure), 0);
+            try {
+                response = vlm.correctPatternAfterProtocolError(images, expected, firstFailure.getMessage());
+                validatePatternPageIds(response, expected);
+                context.event("pattern", exam.getExamId(), null, "completed", label + " corrected", System.currentTimeMillis() - startedAt);
+            } catch (ResponseParser.ParseException secondFailure) {
+                context.event("pattern", exam.getExamId(), null, "failed", shortError(secondFailure),
+                        System.currentTimeMillis() - startedAt);
+                throw secondFailure;
+            }
         } catch (RuntimeException e) {
             context.event("pattern", exam.getExamId(), null, "failed", e.getClass().getSimpleName(),
                     System.currentTimeMillis() - startedAt);
             throw e;
         }
+        return response;
+    }
+
+    private void validatePatternPageIds(PatternResponse response, List<String> expected) {
         if (!pageIds(response).equals(new java.util.HashSet<String>(expected))) {
             throw new ResponseParser.ParseException("batch page ids mismatch", "");
         }
-        return response;
     }
 
     private boolean canInheritRepresentativePattern(PatternResponse response, List<PageInput> representative) {
@@ -257,7 +288,19 @@ public final class ExamPipeline {
         return ids;
     }
 
+    /**
+     * 单页安全流水线。核心原则是“模型负责语义，Java 负责几何和像素证据”：模型说这是页码
+     * 以后，仍必须由 RegionValidator 证明它处在边缘、远离正文且框边不粘正文，之后才允许
+     * InkMaskEraser 写图；任何证明链断裂都返回 manual_review 并保留原图。
+     */
     private PageOutcome processPage(ExamInput exam, PageInput page, BufferedImage original, PatternBundle bundle, RunContext context) {
+        // 纯白占位页没有可擦页码，也没有正文；在方向门禁前用保守像素证据直接归类，
+        // 避免模型对无内容页面的方向置信度不足造成无意义的人工审核。
+        if (isVisiblyBlankPage(original)) {
+            return new PageOutcome(page.getPageId(), "no_pagenum", "blank_page", original, original,
+                    original, transform(original, original, 0), bundle.groupByPage.get(page.getPageId()),
+                    Collections.<EraseRegion>emptyList(), null, null);
+        }
         PageDirection direction = bundle.directions.get(page.getPageId());
         if (direction == null || direction.confidence < MIN_DIRECTION_CONFIDENCE) {
             return manual(page, original, original, transform(original, original, direction == null ? 0 : direction.reading_rotation),
@@ -281,6 +324,18 @@ public final class ExamPipeline {
             locate = vlm.locate(pageImage, group);
             context.event("locate", exam.getExamId(), page.getPageId(), "completed", locate.status,
                     System.currentTimeMillis() - startedAt);
+        } catch (ResponseParser.ParseException firstFailure) {
+            // page_number_text 等必填字段缺失时，用同一整页图和精确 page_id 纠错一次；
+            // 仍由严格 parser 决定是否接受，纠错失败立即降级人工审核。
+            context.event("locate", exam.getExamId(), page.getPageId(), "protocol_correction_retry", shortError(firstFailure), 0);
+            try {
+                locate = vlm.correctLocateAfterProtocolError(pageImage, group, firstFailure.getMessage());
+                context.event("locate", exam.getExamId(), page.getPageId(), "completed", locate.status,
+                        System.currentTimeMillis() - startedAt);
+            } catch (RuntimeException secondFailure) {
+                context.event("locate", exam.getExamId(), page.getPageId(), "failed", shortError(secondFailure), 0);
+                return manual(page, original, normalizedImage, transforms, "locate_error", group, null);
+            }
         } catch (RuntimeException firstFailure) {
             // 首轮整页模型偶发在 JSON 外附带解释；同请求只重试一次，避免把临时协议问题
             // 误记为“无页码”或无限消耗调用。
@@ -376,6 +431,22 @@ public final class ExamPipeline {
         boolean visuallyConfirmedIndependentTarget = true;
         return eraseAndAudit(exam, page, original, normalizedImage, transforms, group, locate, pageImage,
                 validation.getRegions(), visuallyConfirmedIndependentTarget, false, context);
+    }
+
+    /** 只接受真正无可见墨迹的页面；任何 RGB 通道低于 245 的像素都会保持原有人工门禁。 */
+    private static boolean isVisiblyBlankPage(BufferedImage image) {
+        if (image == null) {
+            return false;
+        }
+        for (int y = 0; y < image.getHeight(); y++) {
+            for (int x = 0; x < image.getWidth(); x++) {
+                int rgb = image.getRGB(x, y);
+                if (((rgb >>> 16) & 0xff) < 245 || ((rgb >>> 8) & 0xff) < 245 || (rgb & 0xff) < 245) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     private boolean hasOnLineRegion(List<EraseRegion> regions) {
@@ -487,15 +558,39 @@ public final class ExamPipeline {
         return copy;
     }
 
-    /** 审计仅发现残字时，针对候选中心做一次放大精定位；正文异常绝不进入本分支。 */
+    /**
+     * 审计仅发现残字时，对每个已批准候选分别做一次放大精定位；正文异常绝不进入本分支。
+     * 双页扫描的两个页码必须独立映射和验证，任一精修失败仍整页失败关闭。
+     */
     private Refinement refineAfterAudit(ExamInput exam, PageInput page, BufferedImage image, PatternGroup group,
                                         LocateResponse locate, VlmClient.PageImage pageImage, RunContext context) {
-        if (locate.regions.size() != 1) {
+        if (locate.regions.isEmpty()) {
             return null;
         }
-        EraseRegion originalRegion = locate.regions.get(0);
-        EdgeRoi roi = candidateCenteredRoi(page.getPageId(), originalRegion, group, locate.nearest_body_boundary, image);
-        return refineAtRoi(exam, page, image, group, locate, pageImage, originalRegion, roi, context, "audit_coordinate_refine", false);
+        if (locate.regions.size() == 1) {
+            EraseRegion originalRegion = locate.regions.get(0);
+            EdgeRoi roi = candidateCenteredRoi(page.getPageId(), originalRegion, group, locate.nearest_body_boundary, image);
+            return refineAtRoi(exam, page, image, group, locate, pageImage, originalRegion, roi, context,
+                    "audit_coordinate_refine", false);
+        }
+
+        LocateResponse combined = copyLocateWithoutRegions(locate);
+        List<RegionValidator.PixelRegion> approved = new ArrayList<RegionValidator.PixelRegion>();
+        for (EraseRegion originalRegion : locate.regions) {
+            LocateResponse single = copyLocateWithoutRegions(locate);
+            single.regions.add(originalRegion);
+            EdgeRoi roi = candidateCenteredRoi(page.getPageId(), originalRegion, group,
+                    locate.nearest_body_boundary, image);
+            Refinement refined = roi == null ? null : refineAtRoi(exam, page, image, group, single, pageImage,
+                    originalRegion, roi, context, "audit_coordinate_refine", false);
+            if (refined == null) {
+                return null;
+            }
+            combined.regions.add(refined.locate.regions.get(0));
+            approved.addAll(refined.validation.getRegions());
+            combined.evidence = combined.evidence + "; " + refined.locate.evidence;
+        }
+        return new Refinement(combined, RegionValidator.ValidationResult.acceptedResult(approved));
     }
 
     private Refinement refineAtRoi(ExamInput exam, PageInput page, BufferedImage image, PatternGroup group, LocateResponse locate,
@@ -719,6 +814,11 @@ public final class ExamPipeline {
         }
     }
 
+    /**
+     * 擦除与最终审计的收口点。擦除器只能改批准区域，PixelDiffGate 检查批准区域外零像素变化，
+     * audit 再用原图/擦除图确认“正文未变、目标已消失”；审计残留只允许一次局部坐标精修，
+     * 正文变化永远不进入重试放行路径。
+     */
     private PageOutcome eraseAndAudit(ExamInput exam, PageInput page, BufferedImage original, BufferedImage normalized, PageTransforms transforms,
                                       PatternGroup group, LocateResponse locate, VlmClient.PageImage pageImage,
                                       List<RegionValidator.PixelRegion> pixelRegions, boolean coloredTargetVerified,

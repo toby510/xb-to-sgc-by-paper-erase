@@ -11,6 +11,7 @@ import javax.imageio.ImageIO;
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -36,9 +37,11 @@ public class RunWriter {
         Path erasedDir = runDir.resolve("erased").resolve(input.getSubject()).resolve(input.getExamId());
         Path consensusDir = runDir.resolve("consensus").resolve(input.getSubject()).resolve(input.getExamId());
         Path wordDir = runDir.resolve("word_output").resolve(input.getSubject()).resolve(input.getExamId());
+        Path badExamDir = runDir.resolve("bad").resolve(input.getSubject()).resolve(input.getExamId());
         Files.createDirectories(erasedDir);
         Files.createDirectories(consensusDir);
         Files.createDirectories(wordDir);
+        deleteRecursively(badExamDir);
 
         List<Path> originalWordPages = new ArrayList<Path>();
         List<Path> erasedWordPages = new ArrayList<Path>();
@@ -60,13 +63,34 @@ public class RunWriter {
                 ImageIO.write(pageOutcome.getCandidate(), "png", erasedPath.toFile());
             }
             erasedWordPages.add(erasedPath);
-            mapper.writeValue(erasedDir.resolve(stem + "_regions.json").toFile(), pageEvidence(page, pageOutcome));
+            Path evidencePath = erasedDir.resolve(stem + "_regions.json");
+            mapper.writeValue(evidencePath.toFile(), pageEvidence(page, pageOutcome));
+            if ("manual_review".equals(pageOutcome.getStatus())) {
+                Files.createDirectories(badExamDir);
+                Files.copy(originalPath, badExamDir.resolve(originalPath.getFileName()), StandardCopyOption.REPLACE_EXISTING);
+                Files.copy(erasedPath, badExamDir.resolve(erasedPath.getFileName()), StandardCopyOption.REPLACE_EXISTING);
+                Files.copy(evidencePath, badExamDir.resolve(evidencePath.getFileName()), StandardCopyOption.REPLACE_EXISTING);
+            }
             appendAudit(runDir.resolve("_audit.ndjson"), input, page, pageOutcome);
         }
 
         mapper.writeValue(consensusDir.resolve("exam_consensus.json").toFile(), outcome.getConsensus());
         word.merge(originalWordPages, wordDir.resolve(input.getExamId() + "_原图.docx"));
         word.merge(erasedWordPages, wordDir.resolve(input.getExamId() + "_擦除后.docx"));
+    }
+
+    private static void deleteRecursively(Path path) throws IOException {
+        if (!Files.exists(path)) {
+            return;
+        }
+        if (Files.isDirectory(path)) {
+            try (java.nio.file.DirectoryStream<Path> children = Files.newDirectoryStream(path)) {
+                for (Path child : children) {
+                    deleteRecursively(child);
+                }
+            }
+        }
+        Files.deleteIfExists(path);
     }
 
     public static void writeRunJson(Path runDir, String model, int examCount, int pageCount) throws IOException {
@@ -76,6 +100,34 @@ public class RunWriter {
         run.put("page_count", pageCount);
         run.put("output_schema", "xb-to-sgc-by-paper-erase/exam-page-only/v1");
         new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT).writeValue(runDir.resolve("run.json").toFile(), run);
+    }
+
+    /** 只根据既有 erased 产物重建最终人工页集合；不触发 VLM，也不改变擦除判定。 */
+    public static void rebuildBadFromErased(Path runDir) throws IOException {
+        Path badRoot = runDir.resolve("bad");
+        deleteRecursively(badRoot);
+        Path erasedRoot = runDir.resolve("erased");
+        if (!Files.isDirectory(erasedRoot)) {
+            return;
+        }
+        List<Path> evidenceFiles = new ArrayList<Path>();
+        collectEvidenceFiles(erasedRoot, evidenceFiles);
+        ObjectMapper reader = new ObjectMapper();
+        for (Path evidence : evidenceFiles) {
+            com.fasterxml.jackson.databind.JsonNode node = reader.readTree(evidence.toFile());
+            if (node == null || !"manual_review".equals(node.path("status").asText())) {
+                continue;
+            }
+            Path examDir = evidence.getParent();
+            Path subjectDir = examDir.getParent();
+            String name = evidence.getFileName().toString();
+            String stem = name.substring(0, name.length() - "_regions.json".length());
+            Path destination = badRoot.resolve(subjectDir.getFileName().toString()).resolve(examDir.getFileName().toString());
+            Files.createDirectories(destination);
+            Files.copy(examDir.resolve(stem + "_原图.png"), destination.resolve(stem + "_原图.png"), StandardCopyOption.REPLACE_EXISTING);
+            Files.copy(examDir.resolve(stem + "_擦除后.png"), destination.resolve(stem + "_擦除后.png"), StandardCopyOption.REPLACE_EXISTING);
+            Files.copy(evidence, destination.resolve(evidence.getFileName()), StandardCopyOption.REPLACE_EXISTING);
+        }
     }
 
     private Map<String, Object> pageEvidence(PageInput page, PageOutcome outcome) {
@@ -96,6 +148,18 @@ public class RunWriter {
         transforms.put("reading_rotation", outcome.getTransforms().getReadingRotation());
         json.put("transforms", transforms);
         return json;
+    }
+
+    private static void collectEvidenceFiles(Path directory, List<Path> evidenceFiles) throws IOException {
+        try (java.nio.file.DirectoryStream<Path> files = Files.newDirectoryStream(directory)) {
+            for (Path file : files) {
+                if (Files.isDirectory(file)) {
+                    collectEvidenceFiles(file, evidenceFiles);
+                } else if (file.getFileName().toString().endsWith("_regions.json")) {
+                    evidenceFiles.add(file);
+                }
+            }
+        }
     }
 
     private void appendAudit(Path auditPath, ExamInput input, PageInput page, PageOutcome outcome) throws IOException {

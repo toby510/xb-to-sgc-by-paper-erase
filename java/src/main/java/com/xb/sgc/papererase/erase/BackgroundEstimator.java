@@ -15,6 +15,11 @@ public final class BackgroundEstimator {
     }
 
     public static Estimate estimate(BufferedImage source, RegionValidator.PixelRegion region, boolean[][] mask) {
+        /*
+         * 用批准框内的非目标像素拟合背景平面：跳过掩码目标和过暗像素，分别拟合 RGB 通道
+         * 的局部渐变。彩色非目标、样本不足或拟合残差过大都拒绝，调用方随后可在批准掩码
+         * 内降级纯白；背景估计失败绝不能扩大擦除区域或放宽正文安全门禁。
+         */
         List<Integer> alphas = new ArrayList<Integer>();
         List<Sample> samples = new ArrayList<Sample>();
 
@@ -57,6 +62,13 @@ public final class BackgroundEstimator {
     /**
      * 已通过视觉与像素门禁的页码框需要整框重建，才能清掉灰色抗锯齿残影。背景样本只能
      * 来自框外的空白环，绝不能把框内页码残笔当作纸张颜色；样本不足时由调用方降级纯白。
+     */
+    /**
+     * 使用候选框外侧 3px 环带估计纸张背景，避免把框内页码残墨当成背景样本。
+     *
+     * @param source 原图
+     * @param region 已批准候选框
+     * @return 拟合成功的背景模型；样本不足、彩色非目标或残差过大时返回拒绝结果
      */
     public static Estimate estimateFromOuterRing(BufferedImage source, RegionValidator.PixelRegion region) {
         List<Integer> alphas = new ArrayList<Integer>();

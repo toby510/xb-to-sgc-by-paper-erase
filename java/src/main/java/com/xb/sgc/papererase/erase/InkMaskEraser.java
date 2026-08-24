@@ -26,7 +26,11 @@ public final class InkMaskEraser {
     }
 
     /**
-     * 彩色像素默认视为非目标。只有局部视觉复核已确认候选框仅含页码时，调用方才可传 true。
+     * 在 RegionValidator 已批准的像素框内执行擦除：先提取目标墨迹掩码，再做形状/颜色风险检查，
+     * 然后用外环估计背景重建整框。整框重建是为了清理灰色抗锯齿，但写入范围仍严格等于
+     * approved box；彩色像素默认视为非目标，只有局部视觉复核确认候选框仅含页码时才允许
+     * 传入 coloredTargetVerified=true；最后由 PixelDiffGate 证明框外没有任何变化，
+     * ColorSeamGate 只负责色差告警。
      */
     public static EraseOutcome erase(BufferedImage source, RegionValidator.PixelRegion region, boolean coloredTargetVerified) {
         if (source == null || region == null) {
@@ -137,8 +141,21 @@ public final class InkMaskEraser {
         return false;
     }
 
+    /**
+     * 在已批准候选框内提取待擦除墨迹掩码。
+     *
+     * @param source 旋正后的原图
+     * @param region RegionValidator 已批准的像素区域
+     * @param coloredTargetVerified 是否经过 verify 授权将彩色目标视为页码
+     * @return 与整张 source 同尺寸的掩码，候选框外全部为 {@code false}
+     */
     private static boolean[][] extractMask(BufferedImage source, RegionValidator.PixelRegion region,
                                            boolean coloredTargetVerified) {
+        /*
+         * 只在上游已批准的 region 内提取实际目标墨迹。数组仍按整张图片建立，保证后续
+         * ApprovedMask 与 PixelDiffGate 使用同一坐标系；region 外永远保持 false。默认不
+         * 接纳彩色非目标，只有 verify 明确确认彩色内容属于页码时才允许授权参数为 true。
+         */
         int backgroundLum = BackgroundEstimator.medianLightLuminance(source, region);
         boolean[][] mask = new boolean[source.getHeight()][source.getWidth()];
         for (int y = region.getY(); y < region.getY() + region.getHeight(); y++) {
@@ -151,7 +168,18 @@ public final class InkMaskEraser {
         return mask;
     }
 
+    /**
+     * 检查候选框内是否含未经授权的彩色非目标内容。
+     *
+     * @param source 旋正后的原图
+     * @param region 待擦除候选框
+     * @return {@code null} 表示未发现彩色非目标；否则返回人工审核原因
+     */
     private static String nonTargetReason(BufferedImage source, RegionValidator.PixelRegion region) {
+        /*
+         * 擦除前的彩色非目标拦截。候选框内只要出现未经 verify 授权的彩色像素，就转人工
+         * 审核；这里不靠文字形状或颜色相似度猜测语义，优先避免清掉彩色题干、图表和正文。
+         */
         for (int y = region.getY(); y < region.getY() + region.getHeight(); y++) {
             for (int x = region.getX(); x < region.getX() + region.getWidth(); x++) {
                 BackgroundEstimator.ColorParts c = BackgroundEstimator.parts(source.getRGB(x, y));
@@ -176,6 +204,7 @@ public final class InkMaskEraser {
     }
 
     private static boolean hasApprovedPixel(boolean[][] mask, RegionValidator.PixelRegion region) {
+        /* 只有批准框内确实检测到目标墨迹，后续才允许生成候选图；空掩码不能被“整框涂白”。 */
         for (int y = region.getY(); y < region.getY() + region.getHeight(); y++) {
             for (int x = region.getX(); x < region.getX() + region.getWidth(); x++) {
                 if (mask[y][x]) {
@@ -186,7 +215,22 @@ public final class InkMaskEraser {
         return false;
     }
 
+    /**
+     * 批准框掩码不是“猜测正文范围”，而是上游 RegionValidator 已证明安全的最终写入范围。
+     * 这里把框内全部像素列为可重建，框外保持 false，供 PixelDiffGate 做逐像素兜底。
+     */
+    /**
+     * 创建批准框整框写入掩码，用于重建纸张和清除抗锯齿残边。
+     *
+     * @param source 原图，用于确定掩码尺寸
+     * @param region 已批准的像素候选框
+     * @return 整图尺寸掩码，只有 region 内为 {@code true}
+     */
     private static boolean[][] fullRegionMask(BufferedImage source, RegionValidator.PixelRegion region) {
+        /*
+         * 页码整框重建需要覆盖纸张和灰色抗锯齿残边，因此写入掩码是批准框全覆盖，而不是
+         * 仅覆盖深色墨迹。它绝不向 region 外扩，并由 PixelDiffGate 最终证明框外零变化。
+         */
         boolean[][] approved = new boolean[source.getHeight()][source.getWidth()];
         for (int y = region.getY(); y < region.getY() + region.getHeight(); y++) {
             for (int x = region.getX(); x < region.getX() + region.getWidth(); x++) {
@@ -196,7 +240,18 @@ public final class InkMaskEraser {
         return approved;
     }
 
+    /**
+     * 判断目标掩码是否触碰批准框边界。
+     *
+     * @param mask 整图尺寸的目标墨迹掩码
+     * @param region 批准候选框
+     * @return {@code true} 表示目标可能延伸出候选框，必须拒绝或局部精修
+     */
     private static boolean touchesRegionBoundary(boolean[][] mask, RegionValidator.PixelRegion region) {
+        /*
+         * 掩码贴到批准框边缘，说明模型框可能切穿目标或目标延伸到框外。即使只有一个抗锯
+         * 齿像素也关闭整框重建，交给局部精修重新确定完整页码框，避免邻近正文被带入。
+         */
         int left = region.getX();
         int top = region.getY();
         int right = region.getX() + region.getWidth() - 1;
@@ -214,8 +269,21 @@ public final class InkMaskEraser {
         return false;
     }
 
+    /**
+     * 审计候选框内墨迹的形状风险，拦截答题线、表格线、多行正文和高覆盖率区域。
+     *
+     * @param mask 目标墨迹掩码
+     * @param region 候选框，用于计算相对面积和形状阈值
+     * @param visuallyConfirmedIndependentTarget 是否已经由局部视觉复核确认是独立非正文目标
+     * @return {@code null} 表示几何形状可接受，否则返回稳定失败原因
+     */
     private static String invalidInkGeometryReason(boolean[][] mask, RegionValidator.PixelRegion region,
                                                    boolean visuallyConfirmedIndependentTarget) {
+        /*
+         * 对候选框内墨迹做几何风险审计，而不是判断“它像不像页码”。长横线/竖线、高覆盖率、
+         * 多个文字带和交叉线分别对应答题线、表格、正文块等高风险结构；未经过局部视觉
+         * 确认时全部拒绝，只有已确认的独立非正文目标才可放宽这些形状限制。
+         */
         List<Component> components = components(mask, region);
         if (components.isEmpty()) {
             return "no target ink found";
@@ -256,6 +324,10 @@ public final class InkMaskEraser {
     }
 
     private static boolean hasMultipleTextLineBands(boolean[][] mask, RegionValidator.PixelRegion region) {
+        /*
+         * 用横向投影把掩码分成文字带：一行中至少 2 个墨点才算有效，出现一整行空白即
+         * 结束当前带。两个及以上带意味着候选框可能包含多行正文，而不是单行页码。
+         */
         int bands = 0;
         boolean inBand = false;
         int blankRows = 0;
@@ -287,6 +359,7 @@ public final class InkMaskEraser {
     }
 
     private static boolean hasLongHorizontalRun(boolean[][] mask, RegionValidator.PixelRegion region) {
+        /* 页码通常不是横跨候选框 45% 以上的连续线；命中该阈值时按答题线/表格线阻断。 */
         int threshold = Math.max(16, region.getWidth() * 45 / 100);
         for (int y = region.getY(); y < region.getY() + region.getHeight(); y++) {
             int run = 0;
@@ -301,6 +374,7 @@ public final class InkMaskEraser {
     }
 
     private static boolean hasCrossing(boolean[][] mask, RegionValidator.PixelRegion region) {
+        /* 检查同一行和同一列的连续墨迹交叉，防止把表格交点、图形轴线当作可擦页码。 */
         for (int y = region.getY(); y < region.getY() + region.getHeight(); y++) {
             int run = 0;
             for (int x = region.getX(); x < region.getX() + region.getWidth(); x++) {

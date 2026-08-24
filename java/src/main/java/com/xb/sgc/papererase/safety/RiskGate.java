@@ -6,6 +6,11 @@ public final class RiskGate {
     private RiskGate() {
     }
 
+    /**
+     * 判断是否值得消耗一次局部 VLM 二检。稳定共性、方向、正文空白带和高置信度全部满足时
+     * 走快速路径；旋转、双栏、首尾页、共性混合、缺页或边界风险任一出现就升级局部复核。
+     * 该门禁只会增加检查，不会替代正文像素门禁，也不会把失败页自动放行。
+     */
     public static boolean requiresLocalVerify(PageContext context, RegionValidator.ValidationResult validation) {
         if (context == null || validation == null || !validation.isAccepted() || validation.getRegions().isEmpty()) {
             return true;

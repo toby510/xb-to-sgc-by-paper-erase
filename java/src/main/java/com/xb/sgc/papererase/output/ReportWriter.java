@@ -52,6 +52,7 @@ public class ReportWriter {
     /** 只读取既有 run 目录产物重建报告，不触发 VLM、不改擦除结果。 */
     public void writeFromRunDirectory(Path runDir) throws IOException {
         writeRows(rowsFromRunDirectory(runDir), runDir);
+        RunWriter.rebuildBadFromErased(runDir);
     }
 
     private void writeRows(List<ReportRow> rows, Path runDir) throws IOException {
@@ -92,22 +93,29 @@ public class ReportWriter {
         report.append("- Run目录: ").append(escape(runDir.toAbsolutePath().toString())).append('\n');
 
         report.append("\n## 数据分布\n\n");
-        report.append("| 指标 | 数量 | 占比 |\n");
+        report.append("| 分类 | 数量 | 占比 |\n");
         report.append("| --- | ---: | ---: |\n");
-        report.append("| 擦除正文数量 | ").append(bodyDamaged).append(" | ").append(rate(bodyDamaged, total)).append(" |\n");
-        report.append("| 未发现页码数量 | ").append(noPageNum).append(" | ").append(rate(noPageNum, total)).append(" |\n");
-        report.append("| 异常数量 | ").append(abnormal).append(" | ").append(rate(abnormal, total)).append(" |\n\n");
+        report.append("| 有页码成功擦除 | ").append(erased).append(" | ").append(rate(erased, total)).append(" |\n");
+        report.append("| 正确无页码 | ").append(noPageNum).append(" | ").append(rate(noPageNum, total)).append(" |\n");
+        report.append("| 异常 | ").append(abnormal).append(" | ").append(rate(abnormal, total)).append(" |\n");
+        report.append("| 合计 | ").append(total).append(" | ").append(rate(total, total)).append(" |\n\n");
+        report.append("| 安全指标 | 数量 | 占比 |\n");
+        report.append("| --- | ---: | ---: |\n");
+        report.append("| 擦除正文数量 | ").append(bodyDamaged).append(" | ").append(rate(bodyDamaged, total)).append(" |\n\n");
         report.append("| 准确率 | 通过数量/总数据量 | 结果 |\n");
         report.append("| --- | ---: | ---: |\n");
         report.append("| 成功擦除或正确无页码且未伤正文 | ").append(passed).append('/').append(total)
                 .append(" | ").append(rate(passed, total)).append(" |\n");
+
+        report.append("\n### 异常原因分布\n\n");
+        appendAbnormalReasonDistribution(report, rows, total);
 
         report.append("\n## 异常明细\n\n");
         List<ReportRow> abnormalRows = filter(rows, false);
         if (abnormalRows.isEmpty()) {
             report.append("无异常。\n");
         } else {
-            appendRows(report, abnormalRows, reportDir, true);
+            appendRows(report, abnormalPriority(abnormalRows), reportDir, true);
         }
 
         report.append("\n## 全量明细\n\n");
@@ -117,6 +125,46 @@ public class ReportWriter {
             appendRows(report, abnormalFirst(entry.getValue()), reportDir, false);
         }
         writeReport(runDir, report);
+    }
+
+    private void appendAbnormalReasonDistribution(StringBuilder report, List<ReportRow> rows, int total) {
+        Map<String, Integer> counts = new LinkedHashMap<String, Integer>();
+        for (ReportRow row : rows) {
+            if (row.normal()) {
+                continue;
+            }
+            String key = row.reason.length() == 0 ? "(empty_reason)" : row.reason;
+            Integer count = counts.get(key);
+            counts.put(key, count == null ? 1 : count + 1);
+        }
+        if (counts.isEmpty()) {
+            report.append("无异常。\n");
+            return;
+        }
+        report.append("| Reason | 数量 | 占总量 | 占异常 |\n");
+        report.append("| --- | ---: | ---: | ---: |\n");
+        int abnormalTotal = 0;
+        for (Integer count : counts.values()) {
+            abnormalTotal += count.intValue();
+        }
+        List<Map.Entry<String, Integer>> entries = new ArrayList<Map.Entry<String, Integer>>(counts.entrySet());
+        Collections.sort(entries, new Comparator<Map.Entry<String, Integer>>() {
+            @Override
+            public int compare(Map.Entry<String, Integer> a, Map.Entry<String, Integer> b) {
+                int byCount = b.getValue().intValue() - a.getValue().intValue();
+                if (byCount != 0) {
+                    return byCount;
+                }
+                return a.getKey().compareTo(b.getKey());
+            }
+        });
+        for (Map.Entry<String, Integer> entry : entries) {
+            report.append("| ").append(escape(entry.getKey()))
+                    .append(" | ").append(entry.getValue())
+                    .append(" | ").append(rate(entry.getValue(), total))
+                    .append(" | ").append(rate(entry.getValue(), abnormalTotal))
+                    .append(" |\n");
+        }
     }
 
     private List<ReportRow> rowsFromOutcomes(List<ExamInput> inputs, List<ExamOutcome> outcomes, Path runDir) {
@@ -216,9 +264,9 @@ public class ReportWriter {
                 report.append('\n');
             }
             report.append("<table><tr><th>原图</th><th>擦除后</th></tr><tr><td>")
-                    .append(imageLink(reportDir, row.original, 360))
+                    .append(imageTag(reportDir, row.original))
                     .append("</td><td>")
-                    .append(imageLink(reportDir, row.erased, 360))
+                    .append(imageTag(reportDir, row.erased))
                     .append("</td></tr></table>\n\n");
         }
     }
@@ -251,12 +299,12 @@ public class ReportWriter {
         report.append("\n\n");
     }
 
-    private String imageLink(Path reportDir, Path image, int width) {
+    private String imageTag(Path reportDir, Path image) {
         String href = rel(reportDir, image);
         if (!Files.isRegularFile(image)) {
             return escape("缺少图片: " + image.getFileName());
         }
-        return "<a href=\"" + href + "\"><img src=\"" + href + "\" width=\"" + width + "\"></a>";
+        return "<img src=\"" + href + "\">";
     }
 
     private String reasonSummary(ReportRow row) {
@@ -324,6 +372,28 @@ public class ReportWriter {
             public int compare(ReportRow a, ReportRow b) {
                 if (a.normal() != b.normal()) {
                     return a.normal() ? 1 : -1;
+                }
+                int exam = a.examId.compareTo(b.examId);
+                if (exam != 0) {
+                    return exam;
+                }
+                return a.pageOrder - b.pageOrder;
+            }
+        });
+        return ordered;
+    }
+
+    private List<ReportRow> abnormalPriority(List<ReportRow> rows) {
+        List<ReportRow> ordered = new ArrayList<ReportRow>(rows);
+        Collections.sort(ordered, new Comparator<ReportRow>() {
+            @Override
+            public int compare(ReportRow a, ReportRow b) {
+                if (a.bodyDamaged != b.bodyDamaged) {
+                    return a.bodyDamaged ? -1 : 1;
+                }
+                int subject = a.subject.compareTo(b.subject);
+                if (subject != 0) {
+                    return subject;
                 }
                 int exam = a.examId.compareTo(b.examId);
                 if (exam != 0) {

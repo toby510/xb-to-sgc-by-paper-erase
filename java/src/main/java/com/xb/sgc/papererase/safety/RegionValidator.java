@@ -23,6 +23,19 @@ public final class RegionValidator {
     private RegionValidator() {
     }
 
+    /**
+     * 擦除前的正文保护总门禁，按“协议→几何→正文安全带→候选墨迹”逐层收紧：
+     *
+     * <ol>
+     *   <li>协议层：page_id、safe_to_erase、region_id、坐标和置信度必须完整合法；</li>
+     *   <li>几何层：候选必须位于页边缘带，避免把正文中间的普通文字当页码；</li>
+     *   <li>正文层：根据真实像素扫描正文方向的 8px 连续无墨带，不能只相信 VLM 的归一化边界；</li>
+     *   <li>目标层：候选框内必须有目标墨迹，框边不能贴墨；必要时只沿已证明的同一目标补齐抗锯齿，
+     *       仍将新框重新送回本方法校验。</li>
+     * </ol>
+     *
+     * <p>任一层无法证明安全就返回拒绝，调用方必须保留原图；该方法不执行任何像素写入。</p>
+     */
     public static ValidationResult validate(PageLocateResult locateResult, BufferedImage image) {
         if (locateResult == null) {
             return ValidationResult.rejected("locate result is required");
@@ -86,7 +99,9 @@ public final class RegionValidator {
             }
 
             // 非边缘候选不具备“页码与正文分离”的可证明条件，不能靠置信度放行。
-            Edge edge = edge(region);
+            // 极端横向短条页的底部页码会占据相对高度较大的比例；仅在候选中心已落入
+            // 对应边缘 25%、候选本身仍较窄时，允许后续像素空白带门禁继续判断。
+            Edge edge = edgeForValidation(region, image);
             if (edge == Edge.NONE) {
                 reasons.add("region must be inside an edge band");
                 continue;
@@ -171,10 +186,11 @@ public final class RegionValidator {
      * 将它交回 {@link #validate(PageLocateResult, BufferedImage)} 做完整门禁。
      *
      * <p>它刻意不处理缺失边界、普通候选框或任何含墨的空白带：只要不能同时证明同一边缘、
-     * 基线投影重叠、候选内确有墨迹和朝正文方向连续 10px 无墨，即返回 {@code null}。</p>
+     * 基线投影重叠、候选内确有墨迹和最终 8px 正文安全带，即返回 {@code null}。当正文侧
+     * 墨迹贴住精框、最终校验还会补两行空白边界时，内部才为这两行额外预留像素。</p>
      */
     public static BodyBoundary replaceConflictingBodyBoundary(EraseRegion originalRegion, EraseRegion refinedRegion,
-                                                               BodyBoundary originalBoundary, BufferedImage image) {
+                                                              BodyBoundary originalBoundary, BufferedImage image) {
         if (originalRegion == null || refinedRegion == null || image == null) {
             return null;
         }
@@ -198,30 +214,36 @@ public final class RegionValidator {
         // 若精框恰好少包了正文方向最外侧 1~2px 抗锯齿，先沿连续墨迹走到两条空白线
         // 为止，再从“真实目标最外缘”计算安全带。该扫描遇到两条空白立即停止，不会跨行。
         refined = expandTargetTowardBody(refinedEdge, refined, image);
-        // validate 随后会把候选框向每侧吸附两条空白扫描线。因此要在最终 8px 正文安全
-        // 带外额外保留 2px，合计 10px；不能错误地双倍要求 16px。
-        final int requiredBlankPixels = MIN_BODY_GAP_PIXELS + 2;
+        // 最终硬门禁要求批准框与正文相隔 8px。若正文侧墨迹仍贴框，validate 会先向该侧
+        // 补入两条空白扫描线，替代边界必须为这次确定性扩框预留 2px；若框内已经有空白，
+        // 则不额外预扣，避免把恰好满足 8px 的安全页码误拒。
+        int backgroundLum = BackgroundEstimator.medianLightLuminance(image, refined);
+        boolean bodySideTouches = sideTouchesCandidateBox(
+                image, refined, towardBodySide(refinedEdge), backgroundLum);
+        final int requiredBlankPixels = MIN_BODY_GAP_PIXELS + (bodySideTouches ? 2 : 0);
         int left = refined.getX();
         int top = refined.getY();
         int right = left + refined.getWidth();
         int bottom = top + refined.getHeight();
         BodyBoundary effective = new BodyBoundary();
         if (refinedEdge == Edge.TOP) {
-            if (bandHasSubstantiveInk(image, refined, left, bottom, right, bottom + requiredBlankPixels)) return null;
+            if (bandHasSubstantiveInk(image, refined, left, bottom, right, bottom + requiredBlankPixels, true))
+                return null;
             effective.y = (bottom + requiredBlankPixels) / (double) image.getHeight();
         } else if (refinedEdge == Edge.BOTTOM) {
-            if (bandHasSubstantiveInk(image, refined, left, top - requiredBlankPixels, right, top)) return null;
+            if (bandHasSubstantiveInk(image, refined, left, top - requiredBlankPixels, right, top, true)) return null;
             effective.y = (top - requiredBlankPixels) / (double) image.getHeight();
         } else if (refinedEdge == Edge.LEFT) {
-            if (bandHasSubstantiveInk(image, refined, right, top, right + requiredBlankPixels, bottom)) return null;
+            if (bandHasSubstantiveInk(image, refined, right, top, right + requiredBlankPixels, bottom, true))
+                return null;
             effective.x = (right + requiredBlankPixels) / (double) image.getWidth();
         } else if (refinedEdge == Edge.RIGHT) {
-            if (bandHasSubstantiveInk(image, refined, left - requiredBlankPixels, top, left, bottom)) return null;
+            if (bandHasSubstantiveInk(image, refined, left - requiredBlankPixels, top, left, bottom, true)) return null;
             effective.x = (left - requiredBlankPixels) / (double) image.getWidth();
         } else {
             return null;
         }
-        effective.basis = "java_10px_blank_band_replaced_conflicting_vlm_boundary"
+        effective.basis = "java_8px_blank_band_replaced_conflicting_vlm_boundary"
                 + "; original_basis=" + safeBasis(originalBoundary.basis)
                 + "; original_x=" + originalBoundary.x + "; original_y=" + originalBoundary.y;
         return effective;
@@ -308,13 +330,26 @@ public final class RegionValidator {
             int ink = inkCount(image, left, y, right, y + 1, backgroundLum);
             if (ink == 0) continue;
             if (ink <= 4) {
+                // 分栏细线可能仅以末端 1~2px 伸入模型精框。只在框内向目标方向计算长度，
+                // 会把它误当页码首笔；向正文方向最多回看 32px，证明它是一根持续细线后，
+                // 才允许越过后续完整空白行去找真正的文字带。
+                int lineStart = y;
+                int backwardLimit = forward ? Math.max(0, y - 32) : Math.min(image.getHeight() - 1, y + 32);
+                int previous = lineStart - step;
+                while (previous >= 0 && previous < image.getHeight()
+                        && (forward ? previous >= backwardLimit : previous <= backwardLimit)) {
+                    int previousInk = inkCount(image, left, previous, right, previous + 1, backgroundLum);
+                    if (previousInk == 0 || previousInk > 4) break;
+                    lineStart = previous;
+                    previous -= step;
+                }
                 int lineEnd = y;
                 while (lineEnd + step >= top && lineEnd + step < bottom
                         && inkCount(image, left, lineEnd + step, right, lineEnd + step + 1, backgroundLum) > 0
                         && inkCount(image, left, lineEnd + step, right, lineEnd + step + 1, backgroundLum) <= 4) {
                     lineEnd += step;
                 }
-                int lineLength = Math.abs(lineEnd - y) + 1;
+                int lineLength = Math.abs(lineEnd - lineStart) + 1;
                 int blank = lineEnd + step;
                 int next = blank + step;
                 int searchLimit = forward ? Math.min(bottom - 1, blank + 32) : Math.max(top, blank - 32);
@@ -349,6 +384,10 @@ public final class RegionValidator {
      * 只用于局部 VLM 已确认的候选框与全局正文边界发生冲突时。扫描最多 32px，连续两条
      * 空白线立即停止；它不寻找新目标，也不跨越空白，因此不能把另一行内容并入页码目标。
      */
+    /**
+     * 只处理“页码最外侧抗锯齿少量漏出精框”的情况。扫描遇到两行空白立即停止；若精框正文侧
+     * 已经有两行空白，则直接停止，防止把框外的分栏线/表格边框误认为页码连续笔画。
+     */
     private static PixelRegion expandTargetTowardBody(Edge edge, PixelRegion region, BufferedImage image) {
         int left = region.getX();
         int top = region.getY();
@@ -356,13 +395,30 @@ public final class RegionValidator {
         int bottom = top + region.getHeight();
         int originalLeft = left, originalTop = top, originalRight = right, originalBottom = bottom;
         int backgroundLum = BackgroundEstimator.medianLightLuminance(image, region);
+        // 局部精框在正文侧已经自带两条空白扫描线时，目标墨迹不可能还在框外与其连通。
+        // 继续向外搜索只会吸附紧邻框外的分栏线或表格边框，造成错误扩框。
+        if (hasTwoBodyFacingBlankRowsInside(edge, region, image, backgroundLum)) {
+            return region;
+        }
         int blankLines = 0;
         for (int step = 1; step <= 32; step++) {
             int scanLeft = left, scanTop = top, scanRight = right, scanBottom = bottom;
-            if (edge == Edge.TOP) { scanTop = originalBottom + step - 1; scanBottom = scanTop + 1; }
-            if (edge == Edge.BOTTOM) { scanBottom = originalTop - step + 1; scanTop = scanBottom - 1; }
-            if (edge == Edge.LEFT) { scanLeft = originalRight + step - 1; scanRight = scanLeft + 1; }
-            if (edge == Edge.RIGHT) { scanRight = originalLeft - step + 1; scanLeft = scanRight - 1; }
+            if (edge == Edge.TOP) {
+                scanTop = originalBottom + step - 1;
+                scanBottom = scanTop + 1;
+            }
+            if (edge == Edge.BOTTOM) {
+                scanBottom = originalTop - step + 1;
+                scanTop = scanBottom - 1;
+            }
+            if (edge == Edge.LEFT) {
+                scanLeft = originalRight + step - 1;
+                scanRight = scanLeft + 1;
+            }
+            if (edge == Edge.RIGHT) {
+                scanRight = originalLeft - step + 1;
+                scanLeft = scanRight - 1;
+            }
             if (scanLeft < 0 || scanTop < 0 || scanRight > image.getWidth() || scanBottom > image.getHeight()) {
                 break;
             }
@@ -379,6 +435,21 @@ public final class RegionValidator {
         return new PixelRegion(region.getPageId(), region.getRegionId(), left, top, right - left, bottom - top,
                 region.getX1(), region.getY1(), region.getX2(), region.getY2(), region.getConfidence(),
                 region.isCoordinateRescued());
+    }
+
+    private static boolean hasTwoBodyFacingBlankRowsInside(Edge edge, PixelRegion region, BufferedImage image,
+                                                           int backgroundLum) {
+        int left = region.getX();
+        int top = region.getY();
+        int right = left + region.getWidth();
+        int bottom = top + region.getHeight();
+        if ((edge == Edge.TOP || edge == Edge.BOTTOM) && region.getHeight() < 2) return false;
+        if ((edge == Edge.LEFT || edge == Edge.RIGHT) && region.getWidth() < 2) return false;
+        if (edge == Edge.TOP) return !bandHasErasableInk(image, left, bottom - 2, right, bottom, backgroundLum);
+        if (edge == Edge.BOTTOM) return !bandHasErasableInk(image, left, top, right, top + 2, backgroundLum);
+        if (edge == Edge.LEFT) return !bandHasErasableInk(image, right - 2, top, right, bottom, backgroundLum);
+        if (edge == Edge.RIGHT) return !bandHasErasableInk(image, left, top, left + 2, bottom, backgroundLum);
+        return false;
     }
 
     private static boolean hasDirectionalBoundary(Edge edge, BodyBoundary boundary) {
@@ -405,6 +476,12 @@ public final class RegionValidator {
     }
 
     private static PixelRegion toPixelRegion(String pageId, String regionId, EraseRegion region, BufferedImage image) {
+        /*
+         * VLM 返回的是 0..1 归一化坐标，不能直接用于 BufferedImage。这里统一完成一次
+         * “归一化坐标 → 原图像素坐标”映射：左上角向下取 floor，右下角向上取 ceil，
+         * 形成 [x, x+width) × [y, y+height) 的半开区间，保证抗锯齿边缘不会因取整被漏掉。
+         * 原始 x1..y2 同时保留，便于审计、ROI 映射和报告追溯；后续擦除只使用 x/y/width/height。
+         */
         int left = clamp((int) Math.floor(region.x1 * image.getWidth()), 0, image.getWidth());
         int top = clamp((int) Math.floor(region.y1 * image.getHeight()), 0, image.getHeight());
         int rightExclusive = clamp((int) Math.ceil(region.x2 * image.getWidth()), 0, image.getWidth());
@@ -419,11 +496,17 @@ public final class RegionValidator {
      * 使用同一个动态 erasableInk 契约。朝正文方向绝不跨越整页正文边界前的 8px 安全带。
      */
     private static PixelRegion expandToBlankBoundary(Edge edge, PixelRegion region, BodyBoundary boundary,
-                                                       BufferedImage image) {
+                                                     BufferedImage image) {
         int maxSteps = Math.min(32, Math.max(24, Math.max(1, region.getHeight())));
         int backgroundLum = BackgroundEstimator.medianLightLuminance(image, region);
         PixelRegion expanded = region;
         for (Side side : Side.values()) {
+            // 正文侧本来已有框内空白时不额外扩出 2px，避免无意义侵占 8px 安全带。
+            // 其余三侧保留既有的两条空白边界契约，供擦除器安全覆盖抗锯齿笔画。
+            if (side == towardBodySide(edge)
+                    && !sideTouchesCandidateBox(image, expanded, side, backgroundLum)) {
+                continue;
+            }
             expanded = expandSide(edge, expanded, boundary, image, side, maxSteps, backgroundLum);
             if (expanded == null) {
                 return null;
@@ -432,7 +515,28 @@ public final class RegionValidator {
         return expanded.getWidth() > 0 && expanded.getHeight() > 0 ? expanded : null;
     }
 
-    /** 返回包含两条空白扫描线的候选框；null 表示未能证明该方向安全。 */
+    private static boolean sideTouchesCandidateBox(BufferedImage image, PixelRegion region, Side side,
+                                                   int backgroundLum) {
+        int left = region.getX();
+        int top = region.getY();
+        int right = left + region.getWidth();
+        int bottom = top + region.getHeight();
+        if (side == Side.LEFT) return bandHasErasableInk(image, left, top, left + 1, bottom, backgroundLum);
+        if (side == Side.RIGHT) return bandHasErasableInk(image, right - 1, top, right, bottom, backgroundLum);
+        if (side == Side.TOP) return bandHasErasableInk(image, left, top, right, top + 1, backgroundLum);
+        return bandHasErasableInk(image, left, bottom - 1, right, bottom, backgroundLum);
+    }
+
+    private static Side towardBodySide(Edge edge) {
+        if (edge == Edge.TOP) return Side.BOTTOM;
+        if (edge == Edge.BOTTOM) return Side.TOP;
+        if (edge == Edge.LEFT) return Side.RIGHT;
+        return Side.LEFT;
+    }
+
+    /**
+     * 返回包含两条空白扫描线的候选框；null 表示未能证明该方向安全。
+     */
     private static PixelRegion expandSide(Edge edge, PixelRegion region, BodyBoundary boundary, BufferedImage image,
                                           Side side, int maxSteps, int backgroundLum) {
         int originalLeft = region.getX();
@@ -445,10 +549,22 @@ public final class RegionValidator {
             int top = originalTop;
             int right = originalRight;
             int bottom = originalBottom;
-            if (side == Side.LEFT) { left = originalLeft - step; right = left + 1; }
-            if (side == Side.RIGHT) { left = originalRight + step - 1; right = left + 1; }
-            if (side == Side.TOP) { top = originalTop - step; bottom = top + 1; }
-            if (side == Side.BOTTOM) { top = originalBottom + step - 1; bottom = top + 1; }
+            if (side == Side.LEFT) {
+                left = originalLeft - step;
+                right = left + 1;
+            }
+            if (side == Side.RIGHT) {
+                left = originalRight + step - 1;
+                right = left + 1;
+            }
+            if (side == Side.TOP) {
+                top = originalTop - step;
+                bottom = top + 1;
+            }
+            if (side == Side.BOTTOM) {
+                top = originalBottom + step - 1;
+                bottom = top + 1;
+            }
             // 页码色块可能直接印到物理页边。仅沿“远离正文”的同一页面边缘扩展时，
             // 图像边界可作为最终安全边界；朝正文的一侧仍必须找到两条真实空白扫描线。
             if (left < 0 || top < 0 || right > image.getWidth() || bottom > image.getHeight()) {
@@ -499,9 +615,11 @@ public final class RegionValidator {
                 region.isCoordinateRescued());
     }
 
-    /** 只有朝正文的一侧受正文边界限制；其余三侧仍必须自行找到连续两条空白线。 */
+    /**
+     * 只有朝正文的一侧受正文边界限制；其余三侧仍必须自行找到连续两条空白线。
+     */
     private static boolean crossesBodySafetyBand(Edge edge, Side side, int left, int top, int right, int bottom,
-                                                  BodyBoundary boundary, BufferedImage image) {
+                                                 BodyBoundary boundary, BufferedImage image) {
         int limit = bodyLimit(edge, boundary, image);
         if (limit < 0) return true;
         if (edge == Edge.TOP && side == Side.BOTTOM) return bottom > limit - MIN_BODY_GAP_PIXELS;
@@ -540,6 +658,28 @@ public final class RegionValidator {
         return Edge.NONE;
     }
 
+    /**
+     * 常规页面仍要求候选框完整落入 20% 边缘带。仅对长宽比至少 4:1 的横向短条页，
+     * 放宽上下边缘的几何资格到候选中心位于对应 25%；正文边界和 8px 像素空白带随后
+     * 仍会逐项验证，因此该分支不会按置信度或样本信息放行。
+     */
+    private static Edge edgeForValidation(EraseRegion region, BufferedImage image) {
+        Edge strict = edge(region);
+        if (strict != Edge.NONE || !isExtremeHorizontalStrip(image)
+                || region.y2 - region.y1 > EDGE_BAND) {
+            return strict;
+        }
+        double centerY = (region.y1 + region.y2) / 2.0;
+        if (centerY <= 0.25) return Edge.TOP;
+        if (centerY >= 0.75) return Edge.BOTTOM;
+        return Edge.NONE;
+    }
+
+    private static boolean isExtremeHorizontalStrip(BufferedImage image) {
+        return image != null && image.getHeight() > 0
+                && image.getWidth() >= image.getHeight() * 4;
+    }
+
     private static String invalidBodyBoundaryReason(Edge edge, BodyBoundary boundary) {
         if (boundary == null) {
             return "body blank gap is insufficient";
@@ -572,7 +712,9 @@ public final class RegionValidator {
         return boundary == null || ((edge == Edge.TOP || edge == Edge.BOTTOM) ? boundary.y == null : boundary.x == null);
     }
 
-    /** 仅补全“缺失”边界；畸形、越界等模型协议错误仍由 {@link #invalidBodyBoundaryReason} 拒绝。 */
+    /**
+     * 仅补全“缺失”边界；畸形、越界等模型协议错误仍由 {@link #invalidBodyBoundaryReason} 拒绝。
+     */
     private static BodyBoundary inferBoundaryFromBlankBand(Edge edge, PixelRegion region, BufferedImage image) {
         final int required = 16;
         int right = region.getX() + region.getWidth();
@@ -582,21 +724,51 @@ public final class RegionValidator {
         boundary.basis = "java_16px_continuous_blank_band";
         if (edge == Edge.TOP) {
             blank = !bandHasInk(image, region, region.getX(), bottom, right, bottom + required);
-            if (blank) { boundary.x = null; boundary.y = (bottom + required) / (double) image.getHeight(); return boundary; }
+            if (blank) {
+                boundary.x = null;
+                boundary.y = (bottom + required) / (double) image.getHeight();
+                return boundary;
+            }
         } else if (edge == Edge.BOTTOM) {
             blank = !bandHasInk(image, region, region.getX(), region.getY() - required, right, region.getY());
-            if (blank) { boundary.x = null; boundary.y = (region.getY() - required) / (double) image.getHeight(); return boundary; }
+            if (blank) {
+                boundary.x = null;
+                boundary.y = (region.getY() - required) / (double) image.getHeight();
+                return boundary;
+            }
         } else if (edge == Edge.LEFT) {
             blank = !bandHasInk(image, region, right, region.getY(), right + required, bottom);
-            if (blank) { boundary.x = (right + required) / (double) image.getWidth(); boundary.y = null; return boundary; }
+            if (blank) {
+                boundary.x = (right + required) / (double) image.getWidth();
+                boundary.y = null;
+                return boundary;
+            }
         } else if (edge == Edge.RIGHT) {
             blank = !bandHasInk(image, region, region.getX() - required, region.getY(), region.getX(), bottom);
-            if (blank) { boundary.x = (region.getX() - required) / (double) image.getWidth(); boundary.y = null; return boundary; }
+            if (blank) {
+                boundary.x = (region.getX() - required) / (double) image.getWidth();
+                boundary.y = null;
+                return boundary;
+            }
         }
         return null;
     }
 
+    /**
+     * 检查候选框与正文边界之间的像素安全带。
+     *
+     * @param edge     候选框所在页面边缘，决定正文安全带位于候选框的哪一侧
+     * @param region   已从归一化坐标映射得到的原图像素候选框
+     * @param boundary VLM 返回或 Java 像素证据推导出的最近正文边界
+     * @param image    旋正后的原图，所有像素坐标均相对于该图
+     * @return {@code null} 表示距离和安全带均通过；否则返回稳定的拒绝原因
+     */
     private static String invalidPixelGapReason(Edge edge, PixelRegion region, BodyBoundary boundary, BufferedImage image) {
+        /*
+         * 将归一化正文边界转换为原图像素后，沿页码与正文相邻方向取固定安全带。先检查
+         * 几何距离，再检查安全带内实际墨迹；两者任一不满足就拒绝。这样即使 VLM 的
+         * boundary 坐标有偏移，像素证据仍能阻止候选框贴近正文。
+         */
         int right = region.getX() + region.getWidth();
         int bottom = region.getY() + region.getHeight();
         if (edge == Edge.TOP) {
@@ -640,8 +812,26 @@ public final class RegionValidator {
      * 擦除不会改动它。只有全部墨迹都落在最多 4px 的单一轴向细线内才忽略；文字、题干、
      * 表格行或两个以上分隔对象都会保留为阻断证据。
      */
+    /**
+     * 判断正文安全带中是否存在足以阻断自动擦除的墨迹。
+     *
+     * @param image    旋正后的原图
+     * @param region   当前候选框，用于估计局部背景亮度
+     * @param left     安全带左边界，包含
+     * @param top      安全带上边界，包含
+     * @param right    安全带右边界，不包含
+     * @param bottom   安全带下边界，不包含
+     * @param boundary 正文边界证据，用于判断是否允许局部浅影豁免
+     * @return {@code true} 表示发现正文级墨迹，候选不得自动写图
+     */
     private static boolean bandHasBlockingInk(BufferedImage image, PixelRegion region,
                                               int left, int top, int right, int bottom, BodyBoundary boundary) {
+        /*
+         * 核心正文保护算法：先用 bandHasInk 做“任何墨迹”快速筛查，再测量墨迹包围盒。
+         * 位于批准框外的单根细竖线/横线（轴向厚度不超过 4px）可以视为分栏线、装订线
+         * 或裁切线；除此之外的多点、多行、块状墨迹全部阻断。此方法只检查、不擦除安全带，
+         * 返回 true 的含义是“当前候选不能自动写图”，不是“发现了可擦除目标”。
+         */
         if (!bandHasInk(image, region, left, top, right, bottom)) return false;
         // 这条 boundary 已由上一步同一像素带的“局部精框冲突替换”产生。完整复核必须沿用
         // 同一份孤立噪点判据，否则会出现替换成功、随即又被同一两个灰点否决的自相矛盾。
@@ -655,8 +845,10 @@ public final class RegionValidator {
         for (int y = Math.max(0, top); y < Math.min(image.getHeight(), bottom); y++) {
             for (int x = Math.max(0, left); x < Math.min(image.getWidth(), right); x++) {
                 if (isBlockingGapMark(image.getRGB(x, y), backgroundLum, boundary)) {
-                    minX = Math.min(minX, x); maxX = Math.max(maxX, x);
-                    minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+                    minX = Math.min(minX, x);
+                    maxX = Math.max(maxX, x);
+                    minY = Math.min(minY, y);
+                    maxY = Math.max(maxY, y);
                 }
             }
         }
@@ -669,7 +861,7 @@ public final class RegionValidator {
 
     private static boolean isPixelProvenReplacement(BodyBoundary boundary) {
         return boundary != null && boundary.basis != null
-                && boundary.basis.startsWith("java_10px_blank_band_replaced_conflicting_vlm_boundary");
+                && boundary.basis.startsWith("java_8px_blank_band_replaced_conflicting_vlm_boundary");
     }
 
     /**
@@ -686,7 +878,9 @@ public final class RegionValidator {
         return luminance <= backgroundLum - 55 || BackgroundEstimator.isColoredMark(argb);
     }
 
-    /** 模型明确说明已排除背透时，Java 不得再把浅影向正文方向吸附为“目标”。 */
+    /**
+     * 模型明确说明已排除背透时，Java 不得再把浅影向正文方向吸附为“目标”。
+     */
     private static boolean declaresBleedExcluded(BodyBoundary boundary) {
         String basis = boundary == null ? "" : boundary.basis;
         return basis != null && (basis.contains("背透") || basis.contains("透印") || basis.contains("浅影"));
@@ -697,7 +891,7 @@ public final class RegionValidator {
      * 这能容纳页码中断开的字形/括号抗锯齿，却不会跨越空白去吞并另一行或正文。
      */
     private static PixelRegion expandConnectedTargetInk(Edge edge, PixelRegion region,
-                                                          BodyBoundary boundary, BufferedImage image) {
+                                                        BodyBoundary boundary, BufferedImage image) {
         int bodyLimit = bodyLimit(edge, boundary, image);
         int maxSteps = Math.min(32, Math.max(24, Math.max(1, region.getHeight())));
         int backgroundLum = BackgroundEstimator.medianLightLuminance(image, region);
@@ -715,10 +909,22 @@ public final class RegionValidator {
         int blankLines = 0;
         for (int step = 1; step <= maxSteps; step++) {
             int scanLeft = left, scanTop = top, scanRight = right, scanBottom = bottom;
-            if (edge == Edge.TOP) { scanTop = originalBottom + step - 1; scanBottom = scanTop + 1; }
-            if (edge == Edge.BOTTOM) { scanBottom = originalTop - step + 1; scanTop = scanBottom - 1; }
-            if (edge == Edge.LEFT) { scanLeft = originalRight + step - 1; scanRight = scanLeft + 1; }
-            if (edge == Edge.RIGHT) { scanRight = originalLeft - step + 1; scanLeft = scanRight - 1; }
+            if (edge == Edge.TOP) {
+                scanTop = originalBottom + step - 1;
+                scanBottom = scanTop + 1;
+            }
+            if (edge == Edge.BOTTOM) {
+                scanBottom = originalTop - step + 1;
+                scanTop = scanBottom - 1;
+            }
+            if (edge == Edge.LEFT) {
+                scanLeft = originalRight + step - 1;
+                scanRight = scanLeft + 1;
+            }
+            if (edge == Edge.RIGHT) {
+                scanRight = originalLeft - step + 1;
+                scanLeft = scanRight - 1;
+            }
             if (scanLeft < 0 || scanTop < 0 || scanRight > image.getWidth() || scanBottom > image.getHeight()) break;
             if (bandHasErasableInk(image, scanLeft, scanTop, scanRight, scanBottom, backgroundLum)) {
                 blankLines = 0;
@@ -794,7 +1000,7 @@ public final class RegionValidator {
     }
 
     private static PixelRegion paddedExpandedRegion(Edge edge, PixelRegion region, int minX, int minY, int maxX,
-                                                      int maxY, int bodyLimit, BufferedImage image) {
+                                                    int maxY, int bodyLimit, BufferedImage image) {
         int left = region.getX();
         int top = region.getY();
         int right = region.getX() + region.getWidth();
@@ -815,6 +1021,11 @@ public final class RegionValidator {
     }
 
     private static boolean remainsInEdgeBand(Edge edge, PixelRegion region, BufferedImage image) {
+        if (isExtremeHorizontalStrip(image) && (edge == Edge.TOP || edge == Edge.BOTTOM)
+                && region.getHeight() <= Math.ceil(EDGE_BAND * image.getHeight())) {
+            double centerY = (region.getY() + region.getHeight() / 2.0) / image.getHeight();
+            return edge == Edge.TOP ? centerY <= 0.25 : centerY >= 0.75;
+        }
         if (edge == Edge.TOP) return region.getY() + region.getHeight() <= Math.ceil(EDGE_BAND * image.getHeight());
         if (edge == Edge.BOTTOM) return region.getY() >= Math.floor((1 - EDGE_BAND) * image.getHeight());
         if (edge == Edge.LEFT) return region.getX() + region.getWidth() <= Math.ceil(EDGE_BAND * image.getWidth());
@@ -822,8 +1033,25 @@ public final class RegionValidator {
         return false;
     }
 
+    /**
+     * 对指定像素条带做严格“是否有墨迹”扫描。
+     *
+     * @param image           旋正后的原图
+     * @param reference       用于估计局部背景亮度的候选框；不是本次扫描区域
+     * @param left            条带左边界，包含
+     * @param top             条带上边界，包含
+     * @param rightExclusive  条带右边界，不包含
+     * @param bottomExclusive 条带下边界，不包含
+     * @return {@code true} 表示至少有一个保守墨迹，或输入越界/为空而无法证明安全；否则为 {@code false}
+     */
     private static boolean bandHasInk(BufferedImage image, PixelRegion reference, int left, int top,
                                       int rightExclusive, int bottomExclusive) {
+        /*
+         * 严格正文安全带扫描器：调用方传入候选框朝正文方向的 8/16px 条带，本方法只回答
+         * “条带内是否存在任何保守墨迹”。背景亮度取候选框局部中位数，避免整页阴影拉偏
+         * 阈值；越界、空矩形等异常直接返回 true，按“无法证明为空白”失败关闭。返回 true
+         * 不代表这些像素会被擦除，而是表示候选框与正文之间的安全距离无法被证明。
+         */
         if (left < 0 || top < 0 || rightExclusive > image.getWidth() || bottomExclusive > image.getHeight()
                 || left >= rightExclusive || top >= bottomExclusive) {
             return true;
@@ -844,28 +1072,66 @@ public final class RegionValidator {
      * 1~2 个压缩灰点；把任意单像素都当正文会让正确精框永远无法推翻模型幻觉边界。
      * 连续笔画仍会在某一扫描线形成至少 3 个墨点，或在多行累计至少 6 个墨点，因此继续
      * 失败关闭。普通 locate、缺失边界和最终候选框校验仍使用严格的 bandHasInk。
+     *
+     * @param image 旋正后的原图
+     * @param reference 用于估计背景亮度的候选框
+     * @param left 条带左边界，包含
+     * @param top 条带上边界，包含
+     * @param rightExclusive 条带右边界，不包含
+     * @param bottomExclusive 条带下边界，不包含
+     * @return {@code true} 表示存在实质正文墨迹；孤立灰点不计入
      */
     private static boolean bandHasSubstantiveInk(BufferedImage image, PixelRegion reference, int left, int top,
-                                                   int rightExclusive, int bottomExclusive) {
+                                                 int rightExclusive, int bottomExclusive) {
+        return bandHasSubstantiveInk(image, reference, left, top, rightExclusive, bottomExclusive, false);
+    }
+
+    /**
+     * 仅在“局部精框替换冲突正文边界”的十像素证明带中，单根分栏/装订细线可忽略；
+     * 普通候选框校验仍传 false，继续把任何可疑墨迹作为正文风险拒绝。
+     */
+    private static boolean bandHasSubstantiveInk(BufferedImage image, PixelRegion reference, int left, int top,
+                                                 int rightExclusive, int bottomExclusive, boolean ignoreThinAxisDivider) {
+        /*
+         * 这是仅供“Java 像素证据替换 VLM 正文边界”使用的孤立噪点豁免扫描。统计墨点总数、
+         * 单行峰值和墨点包围盒：连续笔画/文字会形成足够证据，1~2 个压缩灰点不会推翻
+         * 安全带。ignoreThinAxisDivider=true 时，仅单轴细长的分栏/装订线可以豁免；普通
+         * locate 校验仍使用严格模式，防止真实题干或表格边框被当作噪点。
+         */
         if (left < 0 || top < 0 || rightExclusive > image.getWidth() || bottomExclusive > image.getHeight()
                 || left >= rightExclusive || top >= bottomExclusive) {
             return true;
         }
         int backgroundLum = BackgroundEstimator.medianLightLuminance(image, reference);
+        int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE, minY = Integer.MAX_VALUE, maxY = Integer.MIN_VALUE;
         int totalMarks = 0;
+        int maxRowMarks = 0;
         for (int y = top; y < bottomExclusive; y++) {
             int rowMarks = 0;
             for (int x = left; x < rightExclusive; x++) {
                 if (isConservativeMark(image.getRGB(x, y), backgroundLum)) {
                     rowMarks++;
                     totalMarks++;
-                    if (rowMarks >= 3 || totalMarks >= 6) {
-                        return true;
-                    }
+                    minX = Math.min(minX, x);
+                    maxX = Math.max(maxX, x);
+                    minY = Math.min(minY, y);
+                    maxY = Math.max(maxY, y);
+                    if (!ignoreThinAxisDivider && rowMarks >= 3) return true;
                 }
             }
+            maxRowMarks = Math.max(maxRowMarks, rowMarks);
         }
-        return false;
+        if (minX == Integer.MAX_VALUE) return false;
+        if (!ignoreThinAxisDivider) return totalMarks >= 6;
+        int width = maxX - minX + 1;
+        int height = maxY - minY + 1;
+        if (ignoreThinAxisDivider && isSingleAxisThinDivider(width, height)) return false;
+        return totalMarks >= 6 || maxRowMarks >= 3;
+    }
+
+    private static boolean isSingleAxisThinDivider(int width, int height) {
+        return (width <= 4 && height >= Math.max(4, width * 2))
+                || (height <= 4 && width >= Math.max(4, height * 2));
     }
 
     private static boolean hasConservativeInk(BufferedImage image, PixelRegion region) {
@@ -881,6 +1147,10 @@ public final class RegionValidator {
     }
 
     private static boolean maskTouchesCandidateBox(BufferedImage image, PixelRegion region) {
+        /*
+         * 检查候选矩形四条边是否已有墨迹。边缘有墨通常意味着 VLM 框切穿页码笔画或没有
+         * 覆盖完整目标；即使主体在框内，也必须先拒绝/精修，不能直接整框重建。
+         */
         int backgroundLum = BackgroundEstimator.medianLightLuminance(image, region);
         int right = region.getX() + region.getWidth() - 1;
         int bottom = region.getY() + region.getHeight() - 1;
@@ -899,8 +1169,24 @@ public final class RegionValidator {
         return false;
     }
 
+    /**
+     * 扫描候选框朝正文方向的一条窄带，判断目标墨迹是否仍连续存在。
+     *
+     * @param image           旋正后的原图
+     * @param left            扫描带左边界，包含
+     * @param top             扫描带上边界，包含
+     * @param rightExclusive  扫描带右边界，不包含
+     * @param bottomExclusive 扫描带下边界，不包含
+     * @param backgroundLum   候选区域估计的背景亮度
+     * @return {@code true} 表示可继续向正文方向扩展候选框；越界也返回 true 以失败关闭
+     */
     private static boolean bandHasErasableInk(BufferedImage image, int left, int top, int rightExclusive,
-                                               int bottomExclusive, int backgroundLum) {
+                                              int bottomExclusive, int backgroundLum) {
+        /*
+         * 供沿目标朝正文方向逐扫描线扩框使用。返回 true 表示扫描线仍有与目标相连的墨迹，
+         * 可以继续扩展；返回 false 表示遇到空白，外扩应停止。越界按 true 处理，避免坐标
+         * 异常被误当成空白而扩大擦除范围。
+         */
         if (left < 0 || top < 0 || rightExclusive > image.getWidth() || bottomExclusive > image.getHeight()
                 || left >= rightExclusive || top >= bottomExclusive) {
             return true;
@@ -915,8 +1201,15 @@ public final class RegionValidator {
         return false;
     }
 
-    /** 彩色标记同样不能被当作安全空白；这让页码色块可被保守扩框，也阻止跨越彩色正文。 */
+    /**
+     * 彩色标记同样不能被当作安全空白；这让页码色块可被保守扩框，也阻止跨越彩色正文。
+     */
     private static boolean isConservativeMark(int argb, int backgroundLum) {
+        /*
+         * 保守墨迹是正文保护的统一底层判据：深色文字/线条和明显彩色内容都算风险。彩色
+         * 内容是否确属页码由更高层 verify 授权；在安全带和扩框阶段必须先按风险处理，
+         * 防止跨过彩色标题、表格或正文。
+         */
         return BackgroundEstimator.isErasableInk(argb, backgroundLum, false)
                 || BackgroundEstimator.isColoredMark(argb);
     }
@@ -938,8 +1231,14 @@ public final class RegionValidator {
             this.bottom = bottom;
         }
 
-        private int width() { return right - left; }
-        private int height() { return bottom - top; }
+        private int width() {
+            return right - left;
+        }
+
+        private int height() {
+            return bottom - top;
+        }
+
         private boolean isInside(BufferedImage image) {
             return left >= 0 && top >= 0 && right <= image.getWidth() && bottom <= image.getHeight()
                     && left < right && top < bottom;
@@ -1018,17 +1317,53 @@ public final class RegionValidator {
     }
 
     public static final class PixelRegion {
+        /**
+         * 页面稳定标识，不参与像素计算，用于把门禁证据与原始页面对应起来。
+         */
         private final String pageId;
+        /**
+         * 同一页内的候选区域稳定标识，用于局部精修、审计和日志关联。
+         */
         private final String regionId;
+        /**
+         * 原图像素坐标的左上角 X；与 BufferedImage 的列坐标一致，单位为 px。
+         */
         private final int x;
+        /**
+         * 原图像素坐标的左上角 Y；与 BufferedImage 的行坐标一致，单位为 px。
+         */
         private final int y;
+        /**
+         * 像素区域宽度；实际覆盖列为 x <= col < x + width。
+         */
         private final int width;
+        /**
+         * 像素区域高度；实际覆盖行为 y <= row < y + height。
+         */
         private final int height;
+        /**
+         * VLM/业务坐标系中的归一化左边界，范围通常为 0..1，不是像素列号。
+         */
         private final double x1;
+        /**
+         * VLM/业务坐标系中的归一化上边界，范围通常为 0..1，不是像素行号。
+         */
         private final double y1;
+        /**
+         * VLM/业务坐标系中的归一化右边界；映射像素时作为右侧 exclusive 边界。
+         */
         private final double x2;
+        /**
+         * VLM/业务坐标系中的归一化下边界；映射像素时作为下侧 exclusive 边界。
+         */
         private final double y2;
+        /**
+         * 模型对候选语义的置信度；不等同于 Java 像素安全校验结果。
+         */
         private final double confidence;
+        /**
+         * Java 是否曾对模型候选做过像素级坐标救援/扩展；为 true 时会提升 verify 风险。
+         */
         private final boolean coordinateRescued;
 
         private PixelRegion(String pageId, String regionId, int x, int y, int width, int height,
@@ -1038,6 +1373,12 @@ public final class RegionValidator {
 
         private PixelRegion(String pageId, String regionId, int x, int y, int width, int height,
                             double x1, double y1, double x2, double y2, double confidence, boolean coordinateRescued) {
+            /*
+             * 一个 PixelRegion 同时保存两套坐标，是为了把“模型证据”和“工程写图坐标”绑定
+             * 在同一个不可变对象里：x/y/width/height 用于逐像素扫描、掩码和擦除；x1/y1/x2/y2
+             * 保留模型原始归一化框，用于日志、ROI 变换、审计和判断是否发生坐标救援。两套值
+             * 表示同一候选框的不同坐标系，不能混用，也不能用归一化值直接访问 BufferedImage。
+             */
             this.pageId = pageId;
             this.regionId = regionId;
             this.x = x;

@@ -35,7 +35,20 @@ import java.util.Map;
 public interface VlmClient {
     PatternResponse pattern(List<PageImage> pages);
 
+    /**
+     * 仅在严格 JSON 解析失败后重发同一批图片，并明确要求模型修正协议字段；默认实现保留
+     * 既有 fake 的兼容性。网络异常不走此分支，仍由各真实客户端自己的网络重试处理。
+     */
+    default PatternResponse correctPatternAfterProtocolError(List<PageImage> pages, List<String> expectedPageIds, String error) {
+        return pattern(pages);
+    }
+
     LocateResponse locate(PageImage page, PatternGroup group);
+
+    /** 同一页、同一图的 locate 协议纠错重试；不允许脱离图片仅修补 JSON。 */
+    default LocateResponse correctLocateAfterProtocolError(PageImage page, PatternGroup group, String error) {
+        return locate(page, group);
+    }
 
     /**
      * 新主链路仅向 locate 发送 pattern 给出的高清局部图。默认实现保留旧 fake/client 兼容；
@@ -139,6 +152,39 @@ public interface VlmClient {
                 + " (context only; measure final coordinates from visible ROI ink)";
     }
 
+    static String patternProtocolCorrectionInstruction(List<String> expectedPageIds, String error) {
+        return " PROTOCOL_CORRECTION: Previous JSON violated the strict classification contract ("
+                + safePromptText(error) + "). INPUT_PAGE_IDS=" + expectedPageIds
+                + ". Return every input page_id exactly once in page_directions, and exactly once across the union of "
+                + "pattern_groups.page_ids, heterogeneous_page_ids, no_pagenum_page_ids, ungrouped_page_ids. "
+                + "These classifications are mutually exclusive; uncertain pages must be ungrouped only.";
+    }
+
+    static String locateProtocolCorrectionInstruction(String pageId, String error) {
+        return exactProtocolPageIdInstruction(pageId) + " PROTOCOL_CORRECTION: Previous JSON violated the strict locate contract ("
+                + safePromptText(error) + "). For safe_to_erase every region must provide a non-empty page_number_text "
+                + "copied as the visible page-number literal. If it cannot be read, return manual_review with empty regions.";
+    }
+
+    static String exactProtocolPageIdInstruction(String pageId) {
+        return "REQUEST_PAGE_ID='" + safePromptText(pageId) + "'. JSON page_id MUST exactly equal this string. ";
+    }
+
+    /** 审计模型只接收已批准目标的语义锚点，不接收坐标猜测，避免把正文误当作擦除目标。 */
+    static String auditTargetManifest(List<EraseRegion> regions) {
+        StringBuilder manifest = new StringBuilder(" TARGET_MANIFEST:");
+        if (regions == null || regions.isEmpty()) {
+            return manifest.append(" []").toString();
+        }
+        for (EraseRegion region : regions) {
+            if (region == null) continue;
+            manifest.append(" {region_id=").append(safePromptText(region.region_id))
+                    .append(", page_number_text='").append(safePromptText(region.page_number_text))
+                    .append("', same_line_metadata='").append(safePromptText(region.same_line_metadata)).append("'}");
+        }
+        return manifest.toString();
+    }
+
     final class OpenAiCompatible implements VlmClient {
         private final VlmConfig config;
         private final Path skillRoot;
@@ -162,9 +208,23 @@ public interface VlmClient {
                     ids);
         }
 
+        @Override
+        public PatternResponse correctPatternAfterProtocolError(List<PageImage> pages, List<String> expectedPageIds, String error) {
+            return ResponseParser.parsePattern(call("pattern", patternProtocolCorrectionInstruction(expectedPageIds, error), pages,
+                    java.util.Collections.<RoiImage>emptyList()), expectedPageIds);
+        }
+
         public LocateResponse locate(PageImage page, PatternGroup group) {
             return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Locate")
                     + " pattern_group=" + (group == null ? "none" : group.group_id), one(page),
+                    java.util.Collections.<RoiImage>emptyList()), page.getPageId());
+        }
+
+        @Override
+        public LocateResponse correctLocateAfterProtocolError(PageImage page, PatternGroup group, String error) {
+            return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Locate")
+                    + " pattern_group=" + (group == null ? "none" : group.group_id)
+                    + locateProtocolCorrectionInstruction(page.getPageId(), error), one(page),
                     java.util.Collections.<RoiImage>emptyList()), page.getPageId());
         }
 
@@ -202,7 +262,7 @@ public interface VlmClient {
         }
 
         public AuditResponse audit(PageImage original, PageImage erased, List<EraseRegion> regions, List<RoiImage> rois) {
-            return ResponseParser.parseAudit(call("audit", "Audit page_id=" + original.getPageId(),
+            return ResponseParser.parseAudit(call("audit", "Audit page_id=" + original.getPageId() + auditTargetManifest(regions),
                     java.util.Arrays.asList(original.withImageRole("ORIGINAL"), erased.withImageRole("ERASED")),
                     rois == null ? java.util.Collections.<RoiImage>emptyList() : rois),
                     original.getPageId());
@@ -371,9 +431,23 @@ public interface VlmClient {
                     java.util.Collections.<RoiImage>emptyList()), ids);
         }
 
+        @Override
+        public PatternResponse correctPatternAfterProtocolError(List<PageImage> pages, List<String> expectedPageIds, String error) {
+            return ResponseParser.parsePattern(call("pattern", patternProtocolCorrectionInstruction(expectedPageIds, error), pages,
+                    java.util.Collections.<RoiImage>emptyList()), expectedPageIds);
+        }
+
         public LocateResponse locate(PageImage page, PatternGroup group) {
             return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Locate")
                     + " pattern_group=" + (group == null ? "none" : group.group_id), one(page),
+                    java.util.Collections.<RoiImage>emptyList()), page.getPageId());
+        }
+
+        @Override
+        public LocateResponse correctLocateAfterProtocolError(PageImage page, PatternGroup group, String error) {
+            return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Locate")
+                    + " pattern_group=" + (group == null ? "none" : group.group_id)
+                    + locateProtocolCorrectionInstruction(page.getPageId(), error), one(page),
                     java.util.Collections.<RoiImage>emptyList()), page.getPageId());
         }
 
@@ -411,7 +485,7 @@ public interface VlmClient {
         }
 
         public AuditResponse audit(PageImage original, PageImage erased, List<EraseRegion> regions, List<RoiImage> rois) {
-            return ResponseParser.parseAudit(call("audit", "Audit page_id=" + original.getPageId(),
+            return ResponseParser.parseAudit(call("audit", "Audit page_id=" + original.getPageId() + auditTargetManifest(regions),
                     java.util.Arrays.asList(original.withImageRole("ORIGINAL"), erased.withImageRole("ERASED")),
                     rois == null ? java.util.Collections.<RoiImage>emptyList() : rois), original.getPageId());
         }

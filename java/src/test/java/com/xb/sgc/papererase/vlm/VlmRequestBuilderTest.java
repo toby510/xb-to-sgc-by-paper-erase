@@ -30,6 +30,40 @@ public class VlmRequestBuilderTest {
     }
 
     @Test
+    public void protocolCorrectionInstructionIsCarriedInOpenAiRequestBody() throws Exception {
+        String patternCorrection = VlmClient.patternProtocolCorrectionInstruction(Arrays.asList("exam:1", "exam:2"),
+                "page_ids must be classified exactly once");
+        String locateCorrection = VlmClient.locateProtocolCorrectionInstruction("exam:2", "page_number_text is required");
+        String body = VlmClient.OpenAiCompatible.buildRequestBody("qwen", "prompt", patternCorrection + locateCorrection,
+                Arrays.asList(new VlmClient.PageImage("exam:1", image(Color.WHITE)), new VlmClient.PageImage("exam:2", image(Color.WHITE))),
+                java.util.Collections.<VlmClient.RoiImage>emptyList());
+        String instruction = new ObjectMapper().readTree(body).path("messages").path(0).path("content").path(0).path("text").asText();
+
+        assertTrue(instruction.contains("every input page_id exactly once"));
+        assertTrue(instruction.contains("exam:1"));
+        assertTrue(instruction.contains("exam:2"));
+        assertTrue(instruction.contains("non-empty page_number_text"));
+        assertTrue(instruction.contains("manual_review with empty regions"));
+    }
+
+    @Test
+    public void auditManifestCarriesEveryApprovedRegionWithSafelyEscapedSemanticAnchors() throws Exception {
+        EraseRegion first = region("r1", "第5页", "英语'试卷\nA");
+        EraseRegion second = region("r2", "Page 5 of 8", "Booklet B");
+        String manifest = VlmClient.auditTargetManifest(Arrays.asList(first, second));
+        String body = VlmClient.OpenAiCompatible.buildRequestBody("qwen", "prompt", "Audit page_id=p1" + manifest,
+                Arrays.asList(new VlmClient.PageImage("p1", image(Color.WHITE))), java.util.Collections.<VlmClient.RoiImage>emptyList());
+        String instruction = new ObjectMapper().readTree(body).path("messages").path(0).path("content").path(0).path("text").asText();
+
+        assertTrue(instruction.contains("TARGET_MANIFEST"));
+        assertTrue(instruction.contains("region_id=r1"));
+        assertTrue(instruction.contains("page_number_text='第5页'"));
+        assertTrue(instruction.contains("same_line_metadata='英语’试卷 A'"));
+        assertTrue(instruction.contains("region_id=r2"));
+        assertTrue(instruction.contains("page_number_text='Page 5 of 8'"));
+    }
+
+    @Test
     public void openAiCompatibleBodyUsesOrderedTextAndImageUrlPartsForPagesAndRoi() throws Exception {
         VlmClient.PageImage p1 = new VlmClient.PageImage("p1", image(Color.WHITE), "ORIGINAL");
         VlmClient.PageImage p2 = new VlmClient.PageImage("p2", image(Color.LIGHT_GRAY), "ERASED");
@@ -82,5 +116,13 @@ public class VlmRequestBuilderTest {
             }
         }
         return image;
+    }
+
+    private static EraseRegion region(String id, String pageNumber, String metadata) {
+        EraseRegion region = new EraseRegion();
+        region.region_id = id;
+        region.page_number_text = pageNumber;
+        region.same_line_metadata = metadata;
+        return region;
     }
 }

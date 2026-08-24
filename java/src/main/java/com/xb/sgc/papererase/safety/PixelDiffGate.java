@@ -12,6 +12,19 @@ public final class PixelDiffGate {
     private PixelDiffGate() {
     }
 
+    /**
+     * 逐像素比较原图与候选图：批准掩码内允许变化，掩码外任何一个像素变化都立即失败。
+     * 这是防止模型幻觉、坐标映射错误或擦除器越界伤及正文的最后确定性兜底；它不判断目标
+     * 语义，也不因“变化很小”而放宽正文保护。
+     */
+    /**
+     * 证明候选图只在批准掩码内发生变化。
+     *
+     * @param original 擦除前原图
+     * @param candidate 擦除器生成的候选图
+     * @param approvedMask 允许变化的整图尺寸掩码及其批准区域约束
+     * @return 通过结果，或包含首个越界/无变化原因的失败结果
+     */
     public static GateResult check(BufferedImage original, BufferedImage candidate, InkMaskEraser.ApprovedMask approvedMask) {
         if (original == null || candidate == null || approvedMask == null) {
             return GateResult.failed("original, candidate and approved mask are required");

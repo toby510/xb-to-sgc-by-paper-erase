@@ -48,6 +48,11 @@ public class RunWriterTest {
         assertTrue(Files.isRegularFile(runDir.resolve("consensus/语文/1001/exam_consensus.json")));
         assertTrue(Files.isRegularFile(runDir.resolve("word_output/语文/1001/1001_原图.docx")));
         assertTrue(Files.isRegularFile(runDir.resolve("word_output/语文/1001/1001_擦除后.docx")));
+        Path bad = runDir.resolve("bad/语文/1001");
+        assertTrue(Files.isRegularFile(bad.resolve("1001_2_原图.png")));
+        assertTrue(Files.isRegularFile(bad.resolve("1001_2_擦除后.png")));
+        assertTrue(Files.isRegularFile(bad.resolve("1001_2_regions.json")));
+        assertTrue("only final manual-review pages belong in bad", !Files.exists(bad.resolve("1001_1_原图.png")));
         assertTrue(Files.isRegularFile(runDir.resolve("_audit.ndjson")));
         assertTrue(Files.isRegularFile(runDir.resolve("测试报告/测试报告.md")));
         assertTrue(Files.isRegularFile(runDir.resolve("run.json")));
@@ -58,12 +63,18 @@ public class RunWriterTest {
         assertTrue(report.contains("## 全量明细"));
         assertTrue(report.contains("准确率"));
         assertTrue(report.contains("成功擦除或正确无页码且未伤正文"));
+        assertTrue(report.contains("### 异常原因分布"));
+        assertTrue(report.contains("| risk | 1 |"));
         assertTrue(report.contains("1001_2_擦除后.png"));
+        assertTrue(report.contains("<img src=\"../erased/语文/1001/1001_2_擦除后.png\">"));
 
+        deleteRecursively(runDir.resolve("bad"));
         new ReportWriter().writeFromRunDirectory(runDir);
         String regenerated = new String(Files.readAllBytes(runDir.resolve("测试报告/测试报告.md")), "UTF-8");
         assertTrue(regenerated.contains("qwen3.8-max"));
         assertTrue(regenerated.contains("语文/1001 第 2 页"));
+        assertTrue("report-only rebuilds the final manual-review inspection set",
+                Files.isRegularFile(runDir.resolve("bad/语文/1001/1001_2_擦除后.png")));
     }
 
     private static BufferedImage solid(Color color) {
@@ -74,6 +85,16 @@ public class RunWriterTest {
             }
         }
         return image;
+    }
+
+    private static void deleteRecursively(Path path) throws Exception {
+        if (!Files.exists(path)) return;
+        if (Files.isDirectory(path)) {
+            try (java.nio.file.DirectoryStream<Path> files = Files.newDirectoryStream(path)) {
+                for (Path file : files) deleteRecursively(file);
+            }
+        }
+        Files.delete(path);
     }
 
 }

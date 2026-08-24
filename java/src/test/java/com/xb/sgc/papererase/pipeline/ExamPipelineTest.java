@@ -35,6 +35,34 @@ public class ExamPipelineTest {
     @Rule
     public TemporaryFolder tmp = new TemporaryFolder();
     private final Set<Integer> coloredImageOrders = new HashSet<Integer>();
+    private final Set<Integer> blankImageOrders = new HashSet<Integer>();
+    private final Set<Integer> faintMarkImageOrders = new HashSet<Integer>();
+    private final Set<Integer> twoFooterTargetImageOrders = new HashSet<Integer>();
+
+    @Test
+    public void acceptsTrulyBlankPageAsNoPageNumberBeforeLowDirectionGate() throws Exception {
+        blankImageOrders.add(1);
+        FakeVlm fake = FakeVlm.stable();
+        fake.lowDirectionConfidencePages.add("p1");
+
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
+
+        assertEquals("no_pagenum", outcome.page("p1").getStatus());
+        assertTrue("blank pages do not need locate", fake.locatePageIds.isEmpty());
+        assertTrue("blank pages do not need audit", fake.auditPageIds.isEmpty());
+    }
+
+    @Test
+    public void doesNotTreatAVisibleFaintMarkAsBlankPage() throws Exception {
+        faintMarkImageOrders.add(1);
+        FakeVlm fake = FakeVlm.stable();
+        fake.lowDirectionConfidencePages.add("p1");
+
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
+
+        assertEquals("manual_review", outcome.page("p1").getStatus());
+        assertEquals("low_direction_confidence", outcome.page("p1").getReason());
+    }
 
     @Test
     public void fullPageSemanticLocateIsNotOverruledByLocalNoPageNumForSafeColoredTarget() throws Exception {
@@ -131,6 +159,58 @@ public class ExamPipelineTest {
         assertEquals("safe_to_erase", isolated.page("p1").getStatus());
         assertEquals("manual_review", isolated.page("p2").getStatus());
         assertEquals("safe_to_erase", isolated.page("p3").getStatus());
+        assertEquals("transport failures retain the existing same-request retry path", 0, singlePageFailure.locateCorrectionCalls);
+    }
+
+    @Test
+    public void retriesPatternProtocolOnceWithCorrectionAndRecovers() throws Exception {
+        FakeVlm fake = FakeVlm.stable();
+        fake.patternProtocolFailureOnce = true;
+
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(3, false), new ExamPipeline.RunContext());
+
+        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
+        assertEquals(1, fake.patternCorrectionCalls);
+        assertEquals("one first attempt plus one correction request", 2, fake.patternBatches.size());
+    }
+
+    @Test
+    public void fallsBackWholeExamWhenPatternProtocolCorrectionAlsoFails() throws Exception {
+        FakeVlm fake = FakeVlm.stable();
+        fake.patternProtocolFailure = true;
+
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(3, false), new ExamPipeline.RunContext());
+
+        assertEquals("manual_review", outcome.page("p1").getStatus());
+        assertEquals("pattern_protocol_error", outcome.getReason());
+        assertEquals(1, fake.patternCorrectionCalls);
+    }
+
+    @Test
+    public void retriesLocateProtocolOnceWithCorrectionAndRecoversOnlyThatPage() throws Exception {
+        FakeVlm fake = FakeVlm.stable();
+        fake.locateProtocolFailureOncePages.add("p2");
+
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(3, false), new ExamPipeline.RunContext());
+
+        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
+        assertEquals("safe_to_erase", outcome.page("p2").getStatus());
+        assertEquals(1, fake.locateCorrectionCalls);
+        assertEquals("safe_to_erase", outcome.page("p3").getStatus());
+    }
+
+    @Test
+    public void isolatesPageWhenLocateProtocolCorrectionAlsoFails() throws Exception {
+        FakeVlm fake = FakeVlm.stable();
+        fake.locateProtocolFailurePages.add("p2");
+
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(3, false), new ExamPipeline.RunContext());
+
+        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
+        assertEquals("manual_review", outcome.page("p2").getStatus());
+        assertEquals("locate_error", outcome.page("p2").getReason());
+        assertEquals(1, fake.locateCorrectionCalls);
+        assertEquals("safe_to_erase", outcome.page("p3").getStatus());
     }
 
     @Test
@@ -174,9 +254,9 @@ public class ExamPipelineTest {
 
         ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
 
-        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
+        assertEquals(outcome.page("p1").getReason(), "safe_to_erase", outcome.page("p1").getStatus());
         assertTrue(outcome.page("p1").getLocate().nearest_body_boundary.basis
-                .startsWith("java_10px_blank_band_replaced_conflicting_vlm_boundary"));
+                .startsWith("java_8px_blank_band_replaced_conflicting_vlm_boundary"));
         assertEquals(Arrays.asList("p1:r1"), fake.verifyCalls);
     }
 
@@ -189,6 +269,20 @@ public class ExamPipelineTest {
 
         assertEquals("safe_to_erase", outcome.page("p1").getStatus());
         assertTrue(fake.auditPageIds.contains("p1"));
+    }
+
+    @Test
+    public void auditResidualOnTwoFooterRegionsRefinesEachRegionOnceAndReaudits() throws Exception {
+        twoFooterTargetImageOrders.add(1);
+        FakeVlm fake = FakeVlm.stable();
+        fake.twoRegionAuditResidualPages.add("p1");
+
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
+
+        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
+        assertEquals("the first residual audit and the refined result must both be audited",
+                2, Collections.frequency(fake.auditPageIds, "p1"));
+        assertEquals(Arrays.asList("p1:r1", "p1:r2"), fake.coordinateRefineCalls);
     }
 
     private ExamInput exam(int pages, boolean incomplete) throws Exception {
@@ -209,11 +303,25 @@ public class ExamPipelineTest {
                 image.setRGB(x, y, Color.WHITE.getRGB());
             }
         }
+        if (blankImageOrders.contains(pageOrder)) {
+            return image;
+        }
+        if (faintMarkImageOrders.contains(pageOrder)) {
+            image.setRGB(50, 100, new Color(244, 244, 244).getRGB());
+            return image;
+        }
         if (pageOrder == 2) {
             for (int y = 94; y <= 106; y++) {
                 for (int x = 3; x <= 3; x++) {
                     image.setRGB(x, y, Color.BLACK.getRGB());
                 }
+            }
+            return image;
+        }
+        if (twoFooterTargetImageOrders.contains(pageOrder)) {
+            for (int y = 190; y <= 193; y++) {
+                for (int x = 25; x <= 29; x++) image.setRGB(x, y, Color.BLACK.getRGB());
+                for (int x = 70; x <= 74; x++) image.setRGB(x, y, Color.BLACK.getRGB());
             }
             return image;
         }
@@ -243,6 +351,8 @@ public class ExamPipelineTest {
         final List<String> locateManualPages = new ArrayList<String>();
         final List<String> lowDirectionConfidencePages = new ArrayList<String>();
         final List<String> locateThrowsPages = new ArrayList<String>();
+        final List<String> locateProtocolFailurePages = new ArrayList<String>();
+        final List<String> locateProtocolFailureOncePages = new ArrayList<String>();
         final List<String> onLinePages = new ArrayList<String>();
         final List<String> validationRejectedPages = new ArrayList<String>();
         final List<String> verifyThrowsOnceRegionIds = new ArrayList<String>();
@@ -250,7 +360,13 @@ public class ExamPipelineTest {
         final List<String> coordinateRefinePages = new ArrayList<String>();
         final List<String> boundaryConflictPages = new ArrayList<String>();
         final List<String> duplicateRegionPages = new ArrayList<String>();
+        final List<String> twoRegionAuditResidualPages = new ArrayList<String>();
+        final List<String> coordinateRefineCalls = new ArrayList<String>();
+        final java.util.Map<String, Integer> auditCalls = new java.util.HashMap<String, Integer>();
         boolean patternProtocolFailure;
+        boolean patternProtocolFailureOnce;
+        int patternCorrectionCalls;
+        int locateCorrectionCalls;
 
         static FakeVlm stable() {
             return new FakeVlm();
@@ -260,6 +376,10 @@ public class ExamPipelineTest {
             patternBatches.add(joinPageIds(pages));
             if (patternProtocolFailure) {
                 throw new ResponseParser.ParseException("batch page ids mismatch", "{}");
+            }
+            if (patternProtocolFailureOnce) {
+                patternProtocolFailureOnce = false;
+                throw new ResponseParser.ParseException("page_ids must be classified exactly once", "{}");
             }
             PatternResponse response = new PatternResponse();
             PatternGroup group = new PatternGroup();
@@ -292,6 +412,12 @@ public class ExamPipelineTest {
 
         public LocateResponse locate(VlmClient.PageImage page, PatternGroup group) {
             locatePageIds.add(page.getPageId());
+            if (locateProtocolFailurePages.contains(page.getPageId())) {
+                throw new ResponseParser.ParseException("page_number_text is required", "{}");
+            }
+            if (locateProtocolFailureOncePages.remove(page.getPageId())) {
+                throw new ResponseParser.ParseException("page_number_text is required", "{}");
+            }
             if (locateThrowsPages.contains(page.getPageId())) {
                 throw new RuntimeException("locate failed");
             }
@@ -333,6 +459,22 @@ public class ExamPipelineTest {
             region.confidence = lowConfidencePages.contains(page.getPageId()) ? 0.80 : 0.99;
             region.safety_margin = "blank";
             response.regions.add(region);
+            if (twoRegionAuditResidualPages.contains(page.getPageId())) {
+                region.x1 = 0.20;
+                region.x2 = 0.35;
+                EraseRegion second = new EraseRegion();
+                second.region_id = "r2";
+                second.x1 = 0.65;
+                second.y1 = region.y1;
+                second.x2 = 0.80;
+                second.y2 = region.y2;
+                second.page_number_text = "2";
+                second.same_line_metadata = "";
+                second.on_line = false;
+                second.confidence = region.confidence;
+                second.safety_margin = "blank";
+                response.regions.add(second);
+            }
             if (duplicateRegionPages.contains(page.getPageId())) {
                 EraseRegion duplicate = new EraseRegion();
                 duplicate.region_id = "r2";
@@ -348,6 +490,42 @@ public class ExamPipelineTest {
                 response.regions.add(duplicate);
             }
             return response;
+        }
+
+        @Override
+        public LocateResponse relocateCoordinateRefinement(VlmClient.PageImage page, PatternGroup group,
+                                                            EraseRegion semanticAnchor, VlmClient.RoiImage roi) {
+            if (!twoRegionAuditResidualPages.contains(page.getPageId())) {
+                return VlmClient.super.relocateCoordinateRefinement(page, group, semanticAnchor, roi);
+            }
+            coordinateRefineCalls.add(page.getPageId() + ":" + semanticAnchor.region_id);
+            LocateResponse response = new LocateResponse();
+            response.page_id = page.getPageId();
+            response.status = "safe_to_erase";
+            response.evidence = "two-region coordinate refinement";
+            EraseRegion local = new EraseRegion();
+            local.region_id = semanticAnchor.region_id;
+            local.x1 = "r1".equals(semanticAnchor.region_id) ? 0.22 : 0.70;
+            local.x2 = "r1".equals(semanticAnchor.region_id) ? 0.30 : 0.78;
+            local.y1 = 0.80;
+            local.y2 = 0.94;
+            local.page_number_text = semanticAnchor.page_number_text;
+            local.same_line_metadata = semanticAnchor.same_line_metadata;
+            local.confidence = semanticAnchor.confidence;
+            local.safety_margin = semanticAnchor.safety_margin;
+            response.regions.add(local);
+            return response;
+        }
+
+        public PatternResponse correctPatternAfterProtocolError(List<VlmClient.PageImage> pages,
+                                                                 List<String> expectedPageIds, String error) {
+            patternCorrectionCalls++;
+            return pattern(pages);
+        }
+
+        public LocateResponse correctLocateAfterProtocolError(VlmClient.PageImage page, PatternGroup group, String error) {
+            locateCorrectionCalls++;
+            return locate(page, group);
         }
 
         public VerifyResponse verify(VlmClient.PageImage page, EraseRegion region, VlmClient.RoiImage roi) {
@@ -385,6 +563,8 @@ public class ExamPipelineTest {
         public AuditResponse audit(VlmClient.PageImage original, VlmClient.PageImage erased, List<EraseRegion> regions,
                                    List<VlmClient.RoiImage> rois) {
             auditPageIds.add(original.getPageId());
+            int call = auditCalls.containsKey(original.getPageId()) ? auditCalls.get(original.getPageId()) + 1 : 1;
+            auditCalls.put(original.getPageId(), call);
             AuditResponse response = new AuditResponse();
             response.page_id = original.getPageId();
             response.decision = auditFailPages.contains(original.getPageId()) || auditColorWarningPages.contains(original.getPageId())
@@ -394,6 +574,13 @@ public class ExamPipelineTest {
             response.background_acceptable = !auditFailPages.contains(original.getPageId())
                     && !auditColorWarningPages.contains(original.getPageId());
             response.evidence = "fake";
+            if (twoRegionAuditResidualPages.contains(original.getPageId()) && call == 1) {
+                response.decision = "manual_review";
+                response.body_unchanged = true;
+                response.target_removed = false;
+                response.background_acceptable = false;
+                response.evidence = "both footer targets retain readable glyphs";
+            }
             return response;
         }
 
