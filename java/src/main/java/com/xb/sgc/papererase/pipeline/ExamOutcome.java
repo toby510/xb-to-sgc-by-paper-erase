@@ -10,6 +10,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+/**
+ * 试卷处理结果对象：汇总整卷状态、pattern 共性、逐页结果、擦除图和审计证据。
+ * status/reason 是报告与人工审核入口，PageOutcome 内的原图永远是失败关闭时的回退基准。
+ */
 public final class ExamOutcome {
     private final String examId;
     private final String status;
@@ -61,6 +65,7 @@ public final class ExamOutcome {
         throw new IllegalArgumentException("unknown page: " + pageId);
     }
 
+    /** 单页终态：原图、候选/擦除图、门禁状态、定位和审计证据。 */
     public static final class PageOutcome {
         private final String pageId;
         private final String status;
@@ -145,6 +150,7 @@ public final class ExamOutcome {
         }
     }
 
+    /** 原图与旋正图之间的尺寸和阅读方向元数据，用于输出坐标还原。 */
     public static final class PageTransforms {
         private final int originalWidth;
         private final int originalHeight;

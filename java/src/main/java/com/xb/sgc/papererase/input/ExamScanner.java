@@ -19,6 +19,10 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
+/**
+ * 输入扫描器：按“学科/试卷ID/图片序号”读取目录，校验命名、顺序和缺页，并聚合为 ExamInput。
+ * 结构性错误在进入 VLM 前拒绝，避免页面错配后产生不可追溯坐标。
+ */
 public class ExamScanner {
     public List<ExamInput> scan(Path root) throws IOException {
         ScanResult result = scanWithRejections(root);

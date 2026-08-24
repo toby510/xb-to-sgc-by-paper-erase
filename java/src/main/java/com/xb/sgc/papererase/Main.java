@@ -19,6 +19,10 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
+/**
+ * 运行入口：负责把 TEST/GATE/REPORT 命令连接到扫描、试卷流水线、产物写入和报告生成。
+ * 业务擦除规则不放在这里；这里的职责是参数路由和一次运行的生命周期编排。
+ */
 public final class Main {
     private Main() {
     }

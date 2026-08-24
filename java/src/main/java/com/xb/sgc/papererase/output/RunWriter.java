@@ -19,6 +19,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * 运行产物写入器：保存原图、擦除图、JSON 证据、Word 和运行元数据，保持页面可追溯。
+ * 写入层不重新判断像素安全，只忠实落盘 ExamOutcome。
+ */
 public class RunWriter {
     private final ObjectMapper mapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
     private final WordMergeComponent word = new WordMergeComponent();

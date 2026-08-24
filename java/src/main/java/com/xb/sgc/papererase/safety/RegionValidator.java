@@ -1379,6 +1379,7 @@ public final class RegionValidator {
         }
     }
 
+    /** RegionValidator 的输入适配对象：把 locate 结果和正文边界绑定到同一页面。 */
     public static final class PageLocateResult {
         private final String pageId;
         private final String status;
@@ -1414,6 +1415,7 @@ public final class RegionValidator {
         }
     }
 
+    /** 正文保护门禁结果：通过时携带可擦除像素框，失败时携带全部拒绝原因。 */
     public static final class ValidationResult {
         private final boolean accepted;
         private final List<PixelRegion> regions;
@@ -1458,6 +1460,7 @@ public final class RegionValidator {
         }
     }
 
+    /** 像素候选框：x/y/width/height 是整图像素矩形，x1..y2 是来源归一化坐标。 */
     public static final class PixelRegion {
         /**
          * 页面稳定标识，不参与像素计算，用于把门禁证据与原始页面对应起来。

@@ -24,6 +24,10 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+/**
+ * VLM 协议解析器：把四个角色的原始 JSON 转换为强约束业务对象，并校验 page_id、状态和字段。
+ * 解析失败必须失败关闭，禁止调用方拿不完整坐标继续擦除。
+ */
 public final class ResponseParser {
     private static final ObjectMapper MAPPER = new ObjectMapper(
             JsonFactory.builder().enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION).build())

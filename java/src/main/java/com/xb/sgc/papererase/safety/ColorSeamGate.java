@@ -6,6 +6,10 @@ import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * 背景色接缝检测器：评估擦除区域与邻域的色差和接缝质量。
+ * 本类只产生 color_warning，不得把色差问题升级为正文安全放行或扩大擦除区域。
+ */
 public final class ColorSeamGate {
     private static final double MAX_NEIGHBOR_STDDEV = 12.0;
     private static final int MAX_SEAM_DISTANCE = 32;
@@ -140,6 +144,7 @@ public final class ColorSeamGate {
         }
     }
 
+    /** 色差检测结果；失败只作为 color_warning，不覆盖正文安全结论。 */
     public static final class GateResult {
         private final boolean passed;
         private final String reason;

@@ -7,6 +7,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+/**
+ * 擦除区域背景估计器：在已批准候选框内拟合纸张背景，供整框重建使用。
+ * 估计失败只允许在批准掩码内降级纯白，不能扩大擦除范围或改变正文门禁。
+ */
 public final class BackgroundEstimator {
     private static final int MIN_SAMPLES = 40;
     private static final double MAX_FIT_RESIDUAL = 7.0;

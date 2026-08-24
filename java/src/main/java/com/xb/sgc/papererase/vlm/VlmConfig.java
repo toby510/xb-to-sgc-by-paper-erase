@@ -9,6 +9,10 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
+/**
+ * VLM 配置中心：读取 provider、四角色提示词/参数、预览尺寸和 pattern 采样数量。
+ * active provider 决定请求通道，角色配置决定同一通道下各阶段的提示词与推理参数。
+ */
 public final class VlmConfig {
     private static final String[] ROLES = {"pattern", "locate", "verify", "audit"};
     private final Map<String, RoleConfig> roles;
@@ -176,6 +180,7 @@ public final class VlmConfig {
         return providerKind;
     }
 
+    /** 单个 VLM 角色配置：提示词、模型参数和请求级开关。 */
     public static final class RoleConfig {
         private final String role;
         private final String promptPath;

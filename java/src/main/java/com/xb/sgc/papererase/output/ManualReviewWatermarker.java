@@ -15,6 +15,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
+/**
+ * 人工审核预览生成器：仅给不可交付的擦除结果叠加提示水印，原图始终保持无水印。
+ * 水印属于输出展示层，不参与正文安全判断。
+ */
 public final class ManualReviewWatermarker {
     private ManualReviewWatermarker() {
     }

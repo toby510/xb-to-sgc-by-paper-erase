@@ -2,6 +2,10 @@ package com.xb.sgc.papererase.image;
 
 import java.awt.image.BufferedImage;
 
+/**
+ * 阅读方向归一化器：把 pattern 返回的 0/90/180/270 度阅读方向转换为正常阅读坐标系。
+ * 后续 locate、RegionValidator、ROI 和擦除均依赖同一旋正后的像素坐标。
+ */
 public final class OrientationNormalizer {
     private OrientationNormalizer() {
     }

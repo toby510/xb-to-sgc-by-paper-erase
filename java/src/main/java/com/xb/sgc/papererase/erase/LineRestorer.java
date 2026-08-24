@@ -7,6 +7,10 @@ import java.awt.image.BufferedImage;
 import java.awt.image.ColorModel;
 import java.awt.image.WritableRaster;
 
+/**
+ * 细线恢复辅助器：处理候选区域内被擦除器覆盖的独立横线，并用 PixelDiffGate 验证越界安全。
+ * 它不是语义识别器，只有上游已批准的像素区域才能进入本类。
+ */
 public final class LineRestorer {
     private LineRestorer() {
     }

@@ -24,6 +24,10 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * 测试报告生成器：从运行元数据、页面结果和图片产物生成固定格式 Markdown 报告。
+ * 报告统计展示状态，不反向影响擦除门禁或页面结果。
+ */
 public class ReportWriter {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final DecimalFormat PERCENT = new DecimalFormat("0.00%");

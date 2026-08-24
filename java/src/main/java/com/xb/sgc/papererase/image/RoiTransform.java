@@ -5,6 +5,10 @@ import com.xb.sgc.papererase.model.ExamModels.EraseRegion;
 import com.xb.sgc.papererase.model.ExamModels.LocateWindow;
 import com.xb.sgc.papererase.safety.RegionValidator;
 
+/**
+ * ROI 坐标变换器：在整图像素坐标、ROI 局部归一化坐标和放大图像素坐标之间双向转换。
+ * 局部放大只改变送检分辨率，不改变最终擦除必须使用的整图坐标。
+ */
 public final class RoiTransform {
     private final int x;
     private final int y;

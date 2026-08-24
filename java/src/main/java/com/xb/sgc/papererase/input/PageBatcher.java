@@ -5,6 +5,10 @@ import com.xb.sgc.papererase.model.ExamModels.PageInput;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * pattern 批次策略：按原始页序生成相邻重叠批次，保证跨批边界仍能共享页码共性。
+ * 采样数量由 VlmConfig 控制，批次器本身不判断页码语义。
+ */
 public final class PageBatcher {
     private PageBatcher() {
     }

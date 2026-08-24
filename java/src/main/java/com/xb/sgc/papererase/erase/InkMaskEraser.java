@@ -448,6 +448,7 @@ public final class InkMaskEraser {
         SAFE_TO_ERASE, MANUAL_REVIEW
     }
 
+    /** 擦除器结果：候选图、批准掩码和失败/色差原因。 */
     public static final class EraseOutcome {
         private final Status status;
         private final String reason;
@@ -482,6 +483,7 @@ public final class InkMaskEraser {
         }
     }
 
+    /** 整图尺寸的允许变更掩码；PixelDiffGate 用它证明正文区域零变化。 */
     public static final class ApprovedMask {
         private final boolean[][] mask;
         private final int imageWidth;

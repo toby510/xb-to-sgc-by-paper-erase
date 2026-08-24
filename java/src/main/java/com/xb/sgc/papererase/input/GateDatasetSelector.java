@@ -15,6 +15,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+/**
+ * 门禁数据选择器：从 bad 目录提取试卷 ID，再到完整原始数据集中选择对应整卷。
+ * 只负责数据集裁剪，不改变 ExamPipeline 的处理规则。
+ */
 public class GateDatasetSelector {
     public List<ExamInput> select(Path badRoot, Path fullRoot) throws IOException {
         Set<String> badExamIds = collectExamIds(badRoot);
