@@ -13,6 +13,17 @@ public final class RoiTransform {
     private final int fullWidth;
     private final int fullHeight;
 
+    /**
+     * 创建整图中的 ROI。ROI 使用原图像素坐标，左上角为 {@code (x,y)}，覆盖半开矩形
+     * {@code [x,x+width) × [y,y+height)}。
+     *
+     * @param x ROI 左上角像素 X
+     * @param y ROI 左上角像素 Y
+     * @param width ROI 像素宽度
+     * @param height ROI 像素高度
+     * @param fullWidth 整图宽度
+     * @param fullHeight 整图高度
+     */
     public RoiTransform(int x, int y, int width, int height, int fullWidth, int fullHeight) {
         if (fullWidth <= 0 || fullHeight <= 0) {
             throw new IllegalArgumentException("full image dimensions must be positive");
@@ -32,6 +43,17 @@ public final class RoiTransform {
         this.height = height;
     }
 
+    /**
+     * 以已映射的像素候选框为中心生成 ROI，并向四周增加像素边距；正文边界所在方向会被
+     * 纳入 ROI，供局部模型同时看到候选与安全带，但该窗口不拥有擦除权限。
+     *
+     * @param fullWidth 整图宽度
+     * @param fullHeight 整图高度
+     * @param candidate 原图像素候选框
+     * @param bodyBoundary 最近正文边界，可为空
+     * @param marginPixels 四周扩展像素数
+     * @return 被整图边界裁剪后的 ROI 变换
+     */
     public static RoiTransform fromCandidate(int fullWidth, int fullHeight, RegionValidator.PixelRegion candidate,
                                              BodyBoundary bodyBoundary, int marginPixels) {
         if (candidate == null) {
@@ -73,7 +95,17 @@ public final class RoiTransform {
                 clampedBottom - clampedTop, fullWidth, fullHeight);
     }
 
-    /** Builds an ROI directly from a VLM normalized candidate without bypassing coordinate validation. */
+    /**
+     * 将 VLM 归一化候选框映射为整图像素 ROI，不绕过归一化坐标合法性校验。
+     * 左上角采用 floor、右下角采用 ceil，避免缩放取整漏掉抗锯齿边缘。
+     *
+     * @param fullWidth 整图宽度
+     * @param fullHeight 整图高度
+     * @param candidate VLM 返回的 0..1 候选框
+     * @param bodyBoundary 最近正文边界，可为空
+     * @param marginPixels ROI 额外扩展像素数
+     * @return 整图像素 ROI
+     */
     public static RoiTransform fromNormalizedCandidate(int fullWidth, int fullHeight, EraseRegion candidate,
                                                        BodyBoundary bodyBoundary, int marginPixels) {
         if (fullWidth <= 0 || fullHeight <= 0) {
@@ -88,6 +120,7 @@ public final class RoiTransform {
         validateOptionalBodyBoundary(bodyBoundary);
         validateLocalRect(candidate.x1, candidate.y1, candidate.x2, candidate.y2);
 
+        // VLM 的 (x1,y1)-(x2,y2) 是整图归一化矩形；转换后仍保持左上 floor、右下 ceil。
         long candidateLeft = (long) Math.floor(candidate.x1 * fullWidth);
         long candidateTop = (long) Math.floor(candidate.y1 * fullHeight);
         long candidateRight = (long) Math.ceil(candidate.x2 * fullWidth);
@@ -131,6 +164,17 @@ public final class RoiTransform {
      * 整页正文边界仅属于最终安全门禁，不能反向把已给出窗口的局部图拉回整页中部，否则
      * 放大精定位会被正文/分栏线干扰而失去意义。
      */
+    /**
+     * 合并 VLM 候选框与 pattern 粗窗口后生成 ROI。合并只扩大模型可见范围，不改变最终擦除框。
+     *
+     * @param fullWidth 整图宽度
+     * @param fullHeight 整图高度
+     * @param candidate 本页 locate 候选框
+     * @param window pattern 给出的归一化粗窗口，可为空
+     * @param bodyBoundary 正文边界，可为空
+     * @param marginPixels 额外像素边距
+     * @return 覆盖候选和粗窗口的整图像素 ROI
+     */
     public static RoiTransform fromNormalizedCandidateAndWindow(int fullWidth, int fullHeight, EraseRegion candidate,
                                                                  LocateWindow window, BodyBoundary bodyBoundary,
                                                                  int marginPixels) {
@@ -146,6 +190,16 @@ public final class RoiTransform {
         return fromNormalizedCandidate(fullWidth, fullHeight, combined, null, marginPixels);
     }
 
+    /**
+     * 创建覆盖页面指定边缘的 ROI，主要用于“locate 无候选”时的边缘复核。
+     *
+     * @param fullWidth 整图宽度
+     * @param fullHeight 整图高度
+     * @param edge 要检查的页面边缘
+     * @param bodyBoundary 正文边界，可用于收紧 ROI
+     * @param marginPixels 正文边界外扩像素数
+     * @return 边缘 ROI
+     */
     public static RoiTransform fromEdge(int fullWidth, int fullHeight, PageEdge edge, BodyBoundary bodyBoundary,
                                         int marginPixels) {
         if (edge == null) {
@@ -184,8 +238,18 @@ public final class RoiTransform {
         throw new IllegalArgumentException("edge is required");
     }
 
+    /**
+     * 将 ROI 内的归一化矩形映射回整图像素矩形。
+     *
+     * @param x1 ROI 相对左上角 X，范围 0..1
+     * @param y1 ROI 相对左上角 Y，范围 0..1
+     * @param x2 ROI 相对右下角 X，范围 0..1
+     * @param y2 ROI 相对右下角 Y，范围 0..1
+     * @return 整图像素矩形，右下边界为 exclusive
+     */
     public PixelRect localRectToFullPixels(double x1, double y1, double x2, double y2) {
         validateLocalRect(x1, y1, x2, y2);
+        // 局部模型返回 ROI 相对坐标：先乘 ROI 尺寸得到局部像素，再加 ROI 左上角偏移回整图。
         int left = x + (int) Math.floor(x1 * width);
         int top = y + (int) Math.floor(y1 * height);
         int right = x + (int) Math.ceil(x2 * width);
@@ -193,6 +257,15 @@ public final class RoiTransform {
         return new PixelRect(left, top, right - left, bottom - top);
     }
 
+    /**
+     * 将 ROI 内归一化矩形映射为整图归一化矩形，内部先经过像素坐标以保持取整规则一致。
+     *
+     * @param x1 ROI 相对左上角 X
+     * @param y1 ROI 相对左上角 Y
+     * @param x2 ROI 相对右下角 X
+     * @param y2 ROI 相对右下角 Y
+     * @return 整图 0..1 归一化矩形
+     */
     public NormalizedRect localRectToFullNormalized(double x1, double y1, double x2, double y2) {
         PixelRect rect = localRectToFullPixels(x1, y1, x2, y2);
         return new NormalizedRect(rect.getX() / (double) fullWidth,
@@ -201,6 +274,13 @@ public final class RoiTransform {
                 (rect.getY() + rect.getHeight()) / (double) fullHeight);
     }
 
+    /**
+     * 将整图归一化点反算为 ROI 内归一化点，用于把正文边界或审计点投影回局部图。
+     *
+     * @param fullX 整图归一化 X
+     * @param fullY 整图归一化 Y
+     * @return ROI 内归一化点
+     */
     public LocalPoint fullNormalizedToLocalPoint(double fullX, double fullY) {
         validateFullNormalizedPoint(fullX, fullY);
         double pixelX = fullX * fullWidth;

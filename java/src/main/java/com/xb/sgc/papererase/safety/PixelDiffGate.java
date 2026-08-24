@@ -26,6 +26,7 @@ public final class PixelDiffGate {
      * @return 通过结果，或包含首个越界/无变化原因的失败结果
      */
     public static GateResult check(BufferedImage original, BufferedImage candidate, InkMaskEraser.ApprovedMask approvedMask) {
+        // 6.2 输入约束：比较前确认两张图和批准掩码使用同一尺寸、类型与坐标系。
         if (original == null || candidate == null || approvedMask == null) {
             return GateResult.failed("original, candidate and approved mask are required");
         }
@@ -38,6 +39,7 @@ public final class PixelDiffGate {
         if (approvedMask.getImageWidth() != original.getWidth() || approvedMask.getImageHeight() != original.getHeight()) {
             return GateResult.failed("approved mask dimensions differ");
         }
+        // 6.3 全图扫描：掩码内允许变化，掩码外任何一个像素变化都视为正文风险。
         boolean[][] mask = approvedMask.toArray();
         boolean anyApprovedChange = false;
         for (int y = 0; y < original.getHeight(); y++) {
@@ -54,6 +56,7 @@ public final class PixelDiffGate {
                 }
             }
         }
+        // 6.4 有效变更：批准框也必须确实发生了擦除，否则不能伪装成成功。
         if (!anyApprovedChange) {
             return GateResult.failed("no approved pixel changed");
         }

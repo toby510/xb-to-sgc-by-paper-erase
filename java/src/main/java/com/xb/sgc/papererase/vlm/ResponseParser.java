@@ -86,6 +86,13 @@ public final class ResponseParser {
         return response;
     }
 
+    /**
+     * 解析 pattern 的归一化粗窗口。这里只做协议和正面积校验，不把粗窗口当成擦除坐标。
+     *
+     * @param node JSON locate_window 节点
+     * @param raw 原始响应，用于构造可追溯错误
+     * @return 合法的 0..1 归一化矩形
+     */
     private static LocateWindow parseLocateWindow(JsonNode node, String raw) {
         requireFields(node, "x1", "y1", "x2", "y2");
         rejectUnknown(node, "x1", "y1", "x2", "y2");
@@ -196,6 +203,13 @@ public final class ResponseParser {
         return response;
     }
 
+    /**
+     * 解析局部 ROI 返回的归一化矩形。该坐标系只属于当前 ROI，不能直接当作整图坐标。
+     *
+     * @param node refined_region JSON 节点
+     * @param raw 原始响应
+     * @return ROI 相对 0..1 矩形
+     */
     private static com.xb.sgc.papererase.model.ExamModels.LocalRegion parseLocalRegion(JsonNode node, String raw) {
         requireFields(node, "x1", "y1", "x2", "y2");
         rejectUnknown(node, "x1", "y1", "x2", "y2");
@@ -419,6 +433,14 @@ public final class ResponseParser {
         return node.path(field).asBoolean();
     }
 
+    /**
+     * 读取必须存在、有限且位于 0..1 的归一化坐标/置信度字段。
+     *
+     * @param node JSON 节点
+     * @param field 字段名
+     * @param raw 原始响应
+     * @return 合法 double
+     */
     private static double requiredFiniteUnit(JsonNode node, String field, String raw) {
         JsonNode value = node.path(field);
         if (!value.isNumber()) {

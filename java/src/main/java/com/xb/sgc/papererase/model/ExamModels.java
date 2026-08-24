@@ -172,12 +172,16 @@ public final class ExamModels {
     /** pattern 给 locate 的宽松工作窗口；坐标属于 Java 旋正后的页面，不可直接擦除。 */
     @JsonIgnoreProperties(ignoreUnknown = false)
     public static final class LocateWindow {
+        /** 归一化粗窗口左上角 X；仅用于裁 ROI，不是擦除框。 */
         @JsonProperty(required = true)
         public double x1;
+        /** 归一化粗窗口左上角 Y；仅用于裁 ROI，不是擦除框。 */
         @JsonProperty(required = true)
         public double y1;
+        /** 归一化粗窗口右下角 X；右边界按 exclusive 语义使用。 */
         @JsonProperty(required = true)
         public double x2;
+        /** 归一化粗窗口右下角 Y；下边界按 exclusive 语义使用。 */
         @JsonProperty(required = true)
         public double y2;
     }
@@ -201,12 +205,16 @@ public final class ExamModels {
         @JsonProperty(required = true)
         public String region_id;
         @JsonProperty(required = true)
+        /** VLM 整页归一化候选框左上角 X。 */
         public double x1;
         @JsonProperty(required = true)
+        /** VLM 整页归一化候选框左上角 Y。 */
         public double y1;
         @JsonProperty(required = true)
+        /** VLM 整页归一化候选框右下角 X，映射像素时为 exclusive 边界。 */
         public double x2;
         @JsonProperty(required = true)
+        /** VLM 整页归一化候选框右下角 Y，映射像素时为 exclusive 边界。 */
         public double y2;
         @JsonProperty(required = true)
         public String page_number_text;
@@ -254,12 +262,16 @@ public final class ExamModels {
     @JsonIgnoreProperties(ignoreUnknown = false)
     public static final class LocalRegion {
         @JsonProperty(required = true)
+        /** 局部 ROI 归一化矩形左上角 X，不是整图坐标。 */
         public double x1;
         @JsonProperty(required = true)
+        /** 局部 ROI 归一化矩形左上角 Y，不是整图坐标。 */
         public double y1;
         @JsonProperty(required = true)
+        /** 局部 ROI 归一化矩形右下角 X，不是整图坐标。 */
         public double x2;
         @JsonProperty(required = true)
+        /** 局部 ROI 归一化矩形右下角 Y，不是整图坐标。 */
         public double y2;
     }
 

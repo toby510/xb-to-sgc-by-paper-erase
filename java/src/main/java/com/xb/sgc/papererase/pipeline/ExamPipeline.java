@@ -79,6 +79,7 @@ public final class ExamPipeline {
      * @see #processPage(ExamInput, PageInput, BufferedImage, PatternBundle, RunContext)
      */
     public ExamOutcome process(ExamInput exam, RunContext context) {
+        // 0. 输入与原图装载：所有后续坐标、像素门禁和产物都以这份原图为唯一基准。
         context = context == null ? new RunContext() : context;
         long examStartedAt = System.currentTimeMillis();
         context.event("exam", exam.getExamId(), null, "started", "page_count=" + exam.getPages().size(), 0);
@@ -86,6 +87,7 @@ public final class ExamPipeline {
         context.event("image_load", exam.getExamId(), null, "completed", "page_count=" + originals.size(), 0);
         PatternBundle bundle;
         try {
+            // 1. pattern 共性分析：先建立整卷页码边、阅读方向和分组先验；这里只产生粗窗口。
             bundle = buildPattern(exam, originals, context);
         } catch (ResponseParser.ParseException e) {
             ExamOutcome outcome = wholeExamFallback(exam, originals, "pattern_protocol_error", e.getMessage());
@@ -99,6 +101,7 @@ public final class ExamPipeline {
 
         List<PageOutcome> outcomes = new ArrayList<PageOutcome>();
         for (PageInput page : exam.getPages()) {
+            // 2. locate 及单页安全流水线：每页独立处理，任何一页失败关闭都不影响其他页。
             BufferedImage original = originals.get(page.getPageId());
             long pageStartedAt = System.currentTimeMillis();
             context.event("page", exam.getExamId(), page.getPageId(), "started", null, 0);
@@ -151,9 +154,11 @@ public final class ExamPipeline {
      * 用于减少模型漂移，同时仍要求每页 locate 自己证明页码存在和正文安全距离。
      */
     private PatternBundle buildPattern(ExamInput exam, Map<String, BufferedImage> originals, RunContext context) {
+        // 1.1 代表页采样：先用少量页面判断整卷是否足够同质，控制调用成本。
         PatternBundle bundle = new PatternBundle();
         List<PageInput> representative = PageBatcher.representative(exam.getPages(), patternSampleMaxPages);
         if (representative.size() < exam.getPages().size()) {
+            // 1.2 代表页共性继承：只有方向、分组、页码存在性和置信度全部稳定才可扩散到全卷。
             PatternResponse sampled = analyzePatternBatch(exam, representative, originals, context, "representative");
             if (canInheritRepresentativePattern(sampled, representative)) {
                 PatternGroup inherited = copyPatternGroup(sampled.pattern_groups.get(0));
@@ -175,11 +180,13 @@ public final class ExamPipeline {
                 return bundle;
             }
             // 代表页不能证明整卷同质时，成本让位于安全：保留原有全页分析，而不猜测未采样页。
+            // 1.3 采样不稳定回退：改为相邻重叠批次，确保每页都有真实 pattern 结果。
             context.event("pattern", exam.getExamId(), null, "fallback_full", "representative_not_stable", 0);
         }
         int batchIndex = 0;
         int fullPatternBatchSize = patternSampleMaxPages == 0 ? 8 : 6;
         for (List<PageInput> batch : PageBatcher.overlapping(exam.getPages(), fullPatternBatchSize, 1)) {
+            // 1.4 批次合并：按 page_id 建立方向和 group_id 映射；冲突只记录 mixed，不猜测。
             batchIndex++;
             PatternResponse response = analyzePatternBatch(exam, batch, originals, context, "batch=" + batchIndex);
             for (PageDirection direction : response.page_directions) {
@@ -210,6 +217,7 @@ public final class ExamPipeline {
         long startedAt = System.currentTimeMillis();
         List<VlmClient.PageImage> images = new ArrayList<VlmClient.PageImage>();
         List<String> expected = new ArrayList<String>();
+        // 1.5 请求协议：每张图片显式绑定 page_id，禁止用数组下标推断页面归属。
         for (PageInput page : pages) {
             images.add(new VlmClient.PageImage(page.getPageId(), originals.get(page.getPageId())));
             expected.add(page.getPageId());
@@ -217,11 +225,13 @@ public final class ExamPipeline {
         context.event("pattern", exam.getExamId(), null, "started", label + " page_count=" + images.size(), 0);
         PatternResponse response;
         try {
+            // 1.6 调用 pattern：模型负责跨页语义共性，Java 负责返回页面集合完整性校验。
             response = vlm.pattern(images);
             validatePatternPageIds(response, expected);
             context.event("pattern", exam.getExamId(), null, "completed", label + " page_count=" + images.size(),
                     System.currentTimeMillis() - startedAt);
         } catch (ResponseParser.ParseException firstFailure) {
+            // 1.7 协议纠错：仅对同一批图片重发一次，仍失败则整卷失败关闭。
             // 严格 parser 明确指出协议违例时，带相同图片和精确 page_id 只纠错重发一次；
             // 不把网络波动误当 JSON 问题，也不放宽解析契约。
             context.event("pattern", exam.getExamId(), null, "protocol_correction_retry", shortError(firstFailure), 0);
@@ -294,6 +304,7 @@ public final class ExamPipeline {
      * InkMaskEraser 写图；任何证明链断裂都返回 manual_review 并保留原图。
      */
     private PageOutcome processPage(ExamInput exam, PageInput page, BufferedImage original, PatternBundle bundle, RunContext context) {
+        // 2.1 空白页短路：没有任何可见墨迹时直接判定无页码，不调用后续定位和擦除。
         // 纯白占位页没有可擦页码，也没有正文；在方向门禁前用保守像素证据直接归类，
         // 避免模型对无内容页面的方向置信度不足造成无意义的人工审核。
         if (isVisiblyBlankPage(original)) {
@@ -302,6 +313,7 @@ public final class ExamPipeline {
                     Collections.<EraseRegion>emptyList(), null, null);
         }
         PageDirection direction = bundle.directions.get(page.getPageId());
+        // 2.2 方向置信度门禁：方向不可靠时不进入坐标换算，避免旋转坐标伤正文。
         if (direction == null || direction.confidence < MIN_DIRECTION_CONFIDENCE) {
             return manual(page, original, original, transform(original, original, direction == null ? 0 : direction.reading_rotation),
                     "low_direction_confidence", bundle.groupByPage.get(page.getPageId()), null);
@@ -309,6 +321,7 @@ public final class ExamPipeline {
 
         // 坐标、边缘带和正文间隔均在统一阅读方向中判定，避免横竖页混用坐标系。
         OrientationNormalizer.NormalizedImage normalized = OrientationNormalizer.normalize(original, direction.reading_rotation);
+        // 2.3 坐标统一：后续 VLM 坐标、像素扫描和擦除全部使用旋正后的同一坐标系。
         BufferedImage normalizedImage = normalized.getImage();
         context.event("normalize", exam.getExamId(), page.getPageId(), "completed", "rotation=" + direction.reading_rotation, 0);
         PageTransforms transforms = new PageTransforms(normalized.getOriginalWidth(), normalized.getOriginalHeight(),
@@ -319,6 +332,7 @@ public final class ExamPipeline {
         long startedAt = System.currentTimeMillis();
         context.event("locate", exam.getExamId(), page.getPageId(), "started", null, 0);
         try {
+            // 2.4 locate 整页语义定位：判断页码及同行元数据是否独立于正文，并给出粗候选框。
             // 首轮必须保留整页版式：页码与正文、页眉元数据的语义关系只能在整页中稳定判断。
             // pattern 仍提供同卷先验，但它的粗窗口不得替代 V6 风格的整页 locate。
             locate = vlm.locate(pageImage, group);
@@ -357,12 +371,13 @@ public final class ExamPipeline {
             return handleNoCandidate(exam, page, original, normalizedImage, transforms, bundle, group, locate, pageImage, context);
         }
 
-        // VLM 的坐标只是候选；通过 Java 的确定性硬门禁前绝不触发像素写入。
+        // 3. Java 正文保护门禁：VLM 坐标只是候选，通过确定性像素证据前绝不写图。
         RegionValidator.ValidationResult validation = RegionValidator.validate(
                 new RegionValidator.PageLocateResult(locate.page_id, locate.status, locate.regions, locate.nearest_body_boundary),
                 normalizedImage);
         boolean refinedByVlm = false;
         if (!validation.isAccepted()) {
+            // 3.1 首次校验失败：只允许在原候选框内裁掉已证明为空白的 padding。
             context.event("validation", exam.getExamId(), page.getPageId(), "rejected", validation.getReasons().toString(), 0);
             // 模型已完成“这是哪一条非正文页码行”的语义判断。若它只是把候选框朝正文侧
             // 多含了一段空白/背透，先在原框内裁掉经像素证明为空白的 padding；不找新文字、
@@ -375,6 +390,7 @@ public final class ExamPipeline {
             }
         }
         if (!validation.isAccepted()) {
+            // 3.2 局部坐标精修：仅对可由高清 ROI 重新定位的轻微几何风险发起二检。
             // 模型已给出明确页码语义但像素框/正文边界未过门禁时，先让模型在完整边缘高清图
             // 中重测；绝不由 Java 放宽规则或自行移动候选框。
             Refinement refinement = shouldRefineRejected(validation) ?
@@ -393,6 +409,7 @@ public final class ExamPipeline {
         // 测页码。改由模型查看同一边缘带的高清图，重新给出局部坐标和正文边界；没有明确
         // 坐标就关闭失败。这针对的是“语义识别对、归一化坐标偏移”的模型已知失效模式。
         if (hasEmptyTargetBox(normalizedImage, validation.getRegions())) {
+            // 3.3 空框救援：整页语义正确但框内无墨时，按同一边缘逐框局部重定位。
             /*
              * 局部模型把“空框”校回真实页码后，整页模型的全局正文边界可能恰好落在别的栏位，
              * 进而与精框产生表面冲突。这里允许 refineAtRoi 内既有的 16px 投影空白带规则
@@ -417,6 +434,7 @@ public final class ExamPipeline {
         // 触发一个会把局部 no_pagenum 当作语义否决的 verify：局部 ROI 不含完整版式，确实会
         // 漏看这类目标。局部 verify 只保留给真实风险（低置信度、同正文行、坐标救回等）。
         boolean hasCoordinateRescue = hasCoordinateRescue(validation.getRegions(), normalizedImage);
+        // 4. 风险复核：稳定低风险页走快速路径；旋转、冲突、救回坐标等风险进入 verify。
         boolean requiresVerify = !refinedByVlm && (RiskGate.requiresLocalVerify(riskContext, validation) || hasOnLineRegion(locate.regions)
                 || hasCoordinateRescue);
         if (requiresVerify) {
@@ -697,6 +715,18 @@ public final class ExamPipeline {
      * 首轮整页 locate 已解决“这是什么”的问题；这里只解决“像素框到哪里”。
      * ROI 在候选周围保留约两倍字高，并优先包含模型报告的正文方向安全带，随后三倍放大。
      */
+    /**
+     * 以 locate 候选框为中心生成局部精修 ROI，并合并 pattern 粗窗口与正文边界证据。
+     * 所有输入 region/window 均为整图归一化坐标，RoiTransform 负责转换为整图像素裁剪框；
+     * 放大只改变送检图像，不改变坐标系，模型返回的 ROI 坐标必须随后映射回原图再校验。
+     *
+     * @param pageId 页面稳定标识
+     * @param region 首次 locate 的整图归一化候选框
+     * @param group 当前页面对应的 pattern 分组，可为空
+     * @param boundary 最近正文边界
+     * @param image 旋正后的原图
+     * @return 包含 ROI 变换和放大图的局部请求；候选不在边缘时由调用方处理为空
+     */
     private EdgeRoi candidateCenteredRoi(String pageId, EraseRegion region, PatternGroup group,
                                          BodyBoundary boundary, BufferedImage image) {
         int candidateHeight = Math.max(1, (int) Math.ceil((region.y2 - region.y1) * image.getHeight()));
@@ -711,7 +741,17 @@ public final class ExamPipeline {
         return new EdgeRoi(transform, new VlmClient.RoiImage(pageId, region.region_id, enlarged));
     }
 
+    /**
+     * 将局部 ROI 内的正文边界归一化坐标映射回整图归一化坐标。
+     *
+     * @param local ROI 相对正文边界
+     * @param transform ROI 在整图中的像素位置和尺寸
+     * @param fullWidth 整图宽度
+     * @param fullHeight 整图高度
+     * @return 整图归一化正文边界
+     */
     private BodyBoundary mapBoundary(BodyBoundary local, RoiTransform transform, int fullWidth, int fullHeight) {
+        // full = (ROI左上角像素 + local比例 × ROI尺寸) / 整图尺寸。
         BodyBoundary mapped = new BodyBoundary();
         mapped.x = local.x == null ? null : (transform.getX() + local.x * transform.getWidth()) / fullWidth;
         mapped.y = local.y == null ? null : (transform.getY() + local.y * transform.getHeight()) / fullHeight;
@@ -823,9 +863,11 @@ public final class ExamPipeline {
                                       PatternGroup group, LocateResponse locate, VlmClient.PageImage pageImage,
                                       List<RegionValidator.PixelRegion> pixelRegions, boolean coloredTargetVerified,
                                       boolean auditRetried, RunContext context) {
+        // 5. 擦除执行：只接收 RegionValidator 已批准的像素框。
         BufferedImage candidate = normalized;
         List<RegionValidator.PixelRegion> erasedRegions = new ArrayList<RegionValidator.PixelRegion>();
         for (RegionValidator.PixelRegion pixelRegion : pixelRegions) {
+            // 5.1 掩码擦除：InkMaskEraser 只在批准框内重建背景，不扩大目标区域。
             // 擦除器执行掩码级修改，并由像素差分门禁保证候选框外零改动。
             InkMaskEraser.EraseOutcome erase = InkMaskEraser.erase(candidate, pixelRegion, coloredTargetVerified);
             if (erase.getStatus() != InkMaskEraser.Status.SAFE_TO_ERASE) {
@@ -845,18 +887,22 @@ public final class ExamPipeline {
             erasedRegions.add(pixelRegion);
         }
         context.event("erase", exam.getExamId(), page.getPageId(), "completed", "region_count=" + pixelRegions.size(), 0);
+        // 6. 像素完整性：擦除器内部已执行 PixelDiffGate，任何批准掩码外变化都会回退原图。
         long auditStartedAt = System.currentTimeMillis();
         context.event("audit", exam.getExamId(), page.getPageId(), "started", null, 0);
+        // 7. audit 视觉审计：对原图、擦除图和局部 ROI 同时复核正文与目标。
         AuditResponse audit = vlm.audit(pageImage, new VlmClient.PageImage(page.getPageId(), candidate),
                 locate.regions, auditRois(page.getPageId(), locate.regions, locate.nearest_body_boundary, normalized, candidate));
         context.event("audit", exam.getExamId(), page.getPageId(), "completed", audit.decision,
                 System.currentTimeMillis() - auditStartedAt);
         // 正文不变、目标确实消失是交付的双硬条件；背景色仅是质量告警，不扩大擦除范围。
         if (!audit.body_unchanged) {
+            // 7.1 正文变化是绝对失败，不允许通过重试或色差降级放行。
             return new PageOutcome(page.getPageId(), "manual_review", "audit_failed", original, normalized,
                     candidate, transforms, group, locate.regions, locate, audit);
         }
         if (!audit.target_removed) {
+            // 7.2 仅目标残留可做一次局部坐标精修；正文变化不进入该分支。
             if (!auditRetried) {
                 Refinement refinement = refineAfterAudit(exam, page, normalized, group, locate, pageImage, context);
                 if (refinement != null) {
@@ -869,10 +915,12 @@ public final class ExamPipeline {
                     candidate, transforms, group, locate.regions, locate, audit);
         }
         if (!audit.background_acceptable) {
+            // 7.3 背景色只记录告警，正文安全已满足即可交付擦除图。
             return new PageOutcome(page.getPageId(), "safe_to_erase", "audit_pass_with_color_warning", original, normalized,
                     candidate, transforms, group, locate.regions, locate, audit);
         }
         if (!"pass".equals(audit.decision)) {
+            // 8. 失败关闭：审计未明确通过时保留擦除效果供人工核对，但状态不可交付。
             return new PageOutcome(page.getPageId(), "manual_review", "audit_failed", original, normalized,
                     candidate, transforms, group, locate.regions, locate, audit);
         }
@@ -956,7 +1004,16 @@ public final class ExamPipeline {
         return full;
     }
 
-    /** 所有 ROI 相对坐标回到整页时使用同一抗锯齿保护边，避免主定位与二检行为不一致。 */
+    /**
+     * 将 ROI 局部像素矩形转换成整图归一化候选框，并统一增加抗锯齿保护边。
+     * 保护边只用于坐标量化补偿，之后仍必须重新经过 RegionValidator 和 PixelDiffGate；
+     * 朝正文方向的保护边会被刻意禁止扩张。
+     *
+     * @param region 要被写回的整图归一化候选框
+     * @param rect ROI 模型坐标映射得到的整图像素矩形
+     * @param width 整图宽度
+     * @param height 整图高度
+     */
     private void applyRoiMappingGuard(EraseRegion region, RoiTransform.PixelRect rect, int width, int height) {
         int left = Math.max(0, rect.getX() - ROI_MAPPING_GUARD_PIXELS);
         int top = Math.max(0, rect.getY() - ROI_MAPPING_GUARD_PIXELS);
@@ -1033,6 +1090,14 @@ public final class ExamPipeline {
         return source;
     }
 
+    /**
+     * 按 RoiTransform 的整图像素矩形裁剪局部图；该裁剪不改变原图坐标，变换对象负责之后
+     * 将模型返回的 ROI 相对坐标还原回整图。
+     *
+     * @param image 原图
+     * @param transform ROI 像素范围
+     * @return ROI 图像副本
+     */
     private BufferedImage crop(BufferedImage image, RoiTransform transform) {
         return image.getSubimage(transform.getX(), transform.getY(), transform.getWidth(), transform.getHeight());
     }

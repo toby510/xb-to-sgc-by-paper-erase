@@ -6,6 +6,14 @@ public final class OrientationNormalizer {
     private OrientationNormalizer() {
     }
 
+    /**
+     * 按 pattern 识别的阅读方向旋正图片，使后续所有边缘、正文和坐标规则统一在正常阅读方向。
+     * 旋转 90/270 度时输出宽高互换；像素坐标通过下方映射公式逐点搬运，不做缩放。
+     *
+     * @param source 原始扫描图
+     * @param readingRotation 顺时针阅读旋转角度，仅支持 0/90/180/270
+     * @return 旋正图及原始/旋正尺寸、旋转角度元数据
+     */
     public static NormalizedImage normalize(BufferedImage source, int readingRotation) {
         if (source == null) {
             throw new IllegalArgumentException("source image is required");
@@ -29,12 +37,15 @@ public final class OrientationNormalizer {
                     targetX = x;
                     targetY = y;
                 } else if (readingRotation == 90) {
+                    // 原图 (x,y) → 旋正图 (y, width-1-x)，宽高互换。
                     targetX = y;
                     targetY = width - 1 - x;
                 } else if (readingRotation == 180) {
+                    // 原图 (x,y) → 旋正图 (width-1-x, height-1-y)。
                     targetX = width - 1 - x;
                     targetY = height - 1 - y;
                 } else {
+                    // 原图 (x,y) → 旋正图 (height-1-y, x)，宽高互换。
                     targetX = height - 1 - y;
                     targetY = x;
                 }

@@ -50,6 +50,14 @@ public final class ManualReviewWatermarker {
      * 仅用于解释模型坐标为何未通过门禁：按 VLM 原始框做白底模拟擦除，再明确标注不可交付。
      * 它绝不参与 Word 合并，也不替代经过像素门禁的正式擦除结果。
      */
+    /**
+     * 按 VLM 原始归一化坐标生成仅供人工核对的模拟擦除图。
+     *
+     * @param source 原图
+     * @param regions VLM 返回的整图 0..1 候选框列表
+     * @param output 输出文件
+     * @throws IOException 输出文件无法写入
+     */
     public static void writeCoordinateErasePreview(BufferedImage source, List<EraseRegion> regions, Path output) throws IOException {
         if (source == null || regions == null || regions.isEmpty() || output == null) {
             throw new IllegalArgumentException("source, regions and output are required");
@@ -61,6 +69,7 @@ public final class ManualReviewWatermarker {
             g.drawImage(source, 0, 0, null);
             g.setColor(Color.WHITE);
             for (EraseRegion region : regions) {
+                // VLM (x1,y1)-(x2,y2) → 原图像素左上角/右下角；floor/ceil 防止漏掉边缘笔画。
                 int x1 = Math.max(0, Math.min(source.getWidth(), (int) Math.floor(region.x1 * source.getWidth())));
                 int y1 = Math.max(0, Math.min(source.getHeight(), (int) Math.floor(region.y1 * source.getHeight())));
                 int x2 = Math.max(x1, Math.min(source.getWidth(), (int) Math.ceil(region.x2 * source.getWidth())));

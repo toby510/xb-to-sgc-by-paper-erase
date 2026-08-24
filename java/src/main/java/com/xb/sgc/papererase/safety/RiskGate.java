@@ -12,6 +12,7 @@ public final class RiskGate {
      * 该门禁只会增加检查，不会替代正文像素门禁，也不会把失败页自动放行。
      */
     public static boolean requiresLocalVerify(PageContext context, RegionValidator.ValidationResult validation) {
+        // 4.1 风险复核入口：默认倾向二检；只有全部稳定条件满足才允许快速路径。
         if (context == null || validation == null || !validation.isAccepted() || validation.getRegions().isEmpty()) {
             return true;
         }
@@ -29,6 +30,7 @@ public final class RiskGate {
                 || context.isPageSequenceIncomplete() || context.isMissingPageRisk()) {
             return true;
         }
+        // 4.2 逐框风险：页面上下文稳定仍不代表每个坐标都可靠，逐框检查 page_id 和置信度。
         for (RegionValidator.PixelRegion region : validation.getRegions()) {
             if (!context.getPageId().equals(region.getPageId())) {
                 return true;

@@ -33,6 +33,7 @@ import java.util.Map;
  * {@link ResponseParser}，避免调用方在“坐标不可信”时仍继续擦除。
  */
 public interface VlmClient {
+    /** 1-pattern：跨页识别阅读方向、页码共性和粗略边缘窗口。 */
     PatternResponse pattern(List<PageImage> pages);
 
     /**
@@ -43,6 +44,7 @@ public interface VlmClient {
         return pattern(pages);
     }
 
+    /** 2-locate：在整页版式中确认页码语义，并输出整图归一化候选框。 */
     LocateResponse locate(PageImage page, PatternGroup group);
 
     /** 同一页、同一图的 locate 协议纠错重试；不允许脱离图片仅修补 JSON。 */
@@ -86,6 +88,7 @@ public interface VlmClient {
         return relocated;
     }
 
+    /** 4-verify：仅对风险候选或坐标精修 ROI 做局部安全复核。 */
     VerifyResponse verify(PageImage page, EraseRegion region, RoiImage roi);
 
     /**
@@ -96,6 +99,7 @@ public interface VlmClient {
         return verify(page, region, roi);
     }
 
+    /** 7-audit：对原图、擦除图和局部 ROI 复核正文未变及目标已移除。 */
     AuditResponse audit(PageImage original, PageImage erased, List<EraseRegion> regions, List<RoiImage> rois);
 
     /**

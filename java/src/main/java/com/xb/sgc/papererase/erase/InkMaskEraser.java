@@ -33,6 +33,7 @@ public final class InkMaskEraser {
      * ColorSeamGate 只负责色差告警。
      */
     public static EraseOutcome erase(BufferedImage source, RegionValidator.PixelRegion region, boolean coloredTargetVerified) {
+        // 5.2.1 输入与批准框：只接受上游已通过正文门禁的原图坐标矩形。
         if (source == null || region == null) {
             return EraseOutcome.manual(null, new ApprovedMask(0, 0), "source and region are required");
         }
@@ -44,7 +45,7 @@ public final class InkMaskEraser {
         if (nonTargetReason != null) {
             return EraseOutcome.manual(copy(source), new ApprovedMask(source.getWidth(), source.getHeight()), nonTargetReason);
         }
-        // 抗锯齿灰色也应进入目标掩码，否则会留下页码边缘；但掩码绝不能越过批准区域。
+        // 5.2.2 目标掩码：把页码深色和抗锯齿灰色纳入候选，掩码数组仍与整图同坐标系。
         boolean[][] mask = extractMask(source, region, coloredTargetVerified);
         if (!hasApprovedPixel(mask, region)) {
             return EraseOutcome.manual(copy(source), new ApprovedMask(mask), "no target ink found");
@@ -57,6 +58,7 @@ public final class InkMaskEraser {
             return EraseOutcome.manual(copy(source), new ApprovedMask(mask), geometryReason);
         }
 
+        // 5.3 几何风险后进入整框重建：区域已经过语义、空白带、边界墨迹和文字几何门禁。
         // 此时区域已经过“页码语义 + 空白带 + 边界墨迹 + 文字几何”全部批准。整框重建比
         // 仅擦深色掩码更能去掉扫描页码的灰色抗锯齿残影；批准框外不改一像素。
         boolean[][] approvedPixels = fullRegionMask(source, region);
@@ -73,12 +75,12 @@ public final class InkMaskEraser {
             }
         }
         ApprovedMask approvedMask = ApprovedMask.fromApprovedBox(region, source.getWidth(), source.getHeight(), approvedPixels);
-        // 写回后逐像素复核，防止算法、颜色模型或未来改动造成掩码外的意外变化。
+        // 6.1 PixelDiffGate：写回后逐像素复核，防止算法或颜色模型改动越界伤正文。
         PixelDiffGate.GateResult diff = PixelDiffGate.check(source, candidate, approvedMask);
         if (!diff.isPassed()) {
             return EraseOutcome.manual(copy(source), approvedMask, diff.getReason());
         }
-        // 色差仅告警不阻断；用户优先级是“正文绝不伤害”，不是背景绝对无色差。
+        // 8.1 色差收口：背景色只产生告警，不扩大掩码，也不改变正文安全门禁结论。
         ColorSeamGate.GateResult seam = ColorSeamGate.check(source, candidate, approvedMask);
         if (!seam.isPassed()) {
             return new EraseOutcome(Status.SAFE_TO_ERASE, colorReason(whiteFallback, seam.getReason()), candidate, approvedMask);
