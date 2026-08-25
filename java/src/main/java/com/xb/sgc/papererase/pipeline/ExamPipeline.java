@@ -467,12 +467,29 @@ public final class ExamPipeline {
         return true;
     }
 
+    /**
+     * 判断候选区域中是否存在“页码与正文/答题线同一行”的区域。
+     *
+     * <p>{@code on_line} 不是网络在线状态，而是 VLM 对版式关系的判断：
+     * 页码或同行非正文元数据与正文文字、答题横线、表格线等处在同一条视觉基线/行带内。
+     * 这种情况下，矩形擦除框更容易沿同一行侵入正文，即使首次像素校验通过，也应追加局部
+     * {@code verify} 对坐标和正文边界进行高清复核。</p>
+     *
+     * <p>方法只要发现一个区域为 {@code on_line=true} 就返回 true；空列表或所有区域均为
+     * false 时返回 false。它只负责触发风险复核，不直接判定擦除是否安全。</p>
+     *
+     * @param regions locate 返回并通过初步校验的候选擦除区域
+     * @return 是否存在与正文或版式线条同一行的候选区域
+     */
     private boolean hasOnLineRegion(List<EraseRegion> regions) {
+        // 逐个检查候选框，因为同一页面可能同时存在多个页码/同行元数据区域。
         for (EraseRegion region : regions) {
+            // on_line=true 表示该区域与正文或答题线共用同一视觉行带，属于坐标贴近正文风险。
             if (region.on_line) {
                 return true;
             }
         }
+        // 所有候选框都不与正文/答题线同一行，可以不因该项单独触发 verify。
         return false;
     }
 

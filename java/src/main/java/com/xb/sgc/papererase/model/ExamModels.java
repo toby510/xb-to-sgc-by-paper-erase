@@ -234,6 +234,10 @@ public final class ExamModels {
         @JsonProperty(required = true)
         public String same_line_metadata;
         @JsonProperty(required = true)
+        /**
+         * 页码目标是否与正文、答题横线或表格线处于同一条视觉行带。
+         * true 只表示“需要更谨慎地做局部 verify”，不表示该区域一定不允许擦除。
+         */
         public boolean on_line;
         @JsonProperty(required = true)
         public double confidence;
