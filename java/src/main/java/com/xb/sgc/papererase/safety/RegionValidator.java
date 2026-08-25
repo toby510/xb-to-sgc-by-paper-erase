@@ -895,7 +895,7 @@ public final class RegionValidator {
     private static boolean bandHasBlockingInk(BufferedImage image, PixelRegion region,
                                               int left, int top, int right, int bottom, BodyBoundary boundary) {
         /*
-         * 核心正文保护算法：先用 bandHasInk 做“任何墨迹”快速筛查，再测量墨迹包围盒。
+     * 核心正文保护算法：先用 bandHasInk 做“任何墨迹”快速筛查，再测量墨迹包围盒。
          * 位于批准框外的单根细竖线/横线（轴向厚度不超过 4px）可以视为分栏线、装订线
          * 或裁切线；除此之外的多点、多行、块状墨迹全部阻断。此方法只检查、不擦除安全带，
          * 返回 true 的含义是“当前候选不能自动写图”，不是“发现了可擦除目标”。
@@ -927,7 +927,20 @@ public final class RegionValidator {
         return !(thinVertical || thinHorizontal);
     }
 
-    /** 判断正文边界是否来自 Java 8px 像素空白证据替换，而非直接来自 VLM。 */
+    /**
+     * 判断正文边界是否来自 Java 的像素证据替换，而不是直接来自 VLM。
+     *
+     * <p>正常情况下，正文边界只是模型对“正文最靠近页码的位置”的估计；当首次 locate
+     * 的边界与局部精修框冲突时，{@link #replaceConflictingBodyBoundary} 会重新检查候选框
+     * 朝正文方向的 8px 空白带，并把通过像素证明的新边界写入 {@code basis}。本方法只检查
+     * 这段来源标记，不读取图片、不计算坐标，也不代表最终擦除已经安全通过。</p>
+     *
+     * <p>返回 {@code true} 后，调用方可以在同一安全带上使用
+     * {@link #bandHasSubstantiveInk(BufferedImage, PixelRegion, int, int, int, int)}：少量孤立
+     * 灰点可视为扫描噪声，但真正的文字块、横线或多行墨迹仍然会阻断。</p>
+     * 如果正文边界带有 Java 像素替换标记，则会进一步调用 bandHasSubstantiveInk，允许少量
+     * 孤立灰点通过；普通 VLM 边界不享受这个豁免。此方法只返回“是否阻断”，不表示发现了可擦目标。
+     */
     private static boolean isPixelProvenReplacement(BodyBoundary boundary) {
         return boundary != null && boundary.basis != null
                 && boundary.basis.startsWith("java_8px_blank_band_replaced_conflicting_vlm_boundary");
@@ -1135,7 +1148,38 @@ public final class RegionValidator {
         return bandHasSubstantiveInk(image, reference, left, top, rightExclusive, bottomExclusive, false);
     }
 
-    /** 统计安全带墨迹；可选地忽略单根细轴向分隔线，但不忽略文字或块状正文。 */
+    /**
+     * 判断一个像素安全带里是否存在“足够实质”的墨迹。
+     *
+     * <p>扫描范围是半开矩形
+     * {@code [left, rightExclusive) × [top, bottomExclusive)}：左上角包含，右边界和下边界不包含。
+     * 方法只检查安全带，不会擦除任何像素；坐标越界或矩形无面积时返回 {@code true}，因为此时
+     * 无法证明安全，必须失败关闭。</p>
+     *
+     * <p>算法先用候选框附近背景估计识别保守墨迹（深色或明显彩色像素），再逐行统计：</p>
+     * <ul>
+     *   <li>{@code totalMarks}：整个安全带的墨点总数；</li>
+     *   <li>{@code maxRowMarks}：单行最多墨点数；</li>
+     *   <li>{@code minX/maxX/minY/maxY}：所有墨点的包围盒，用来识别细长分隔线。</li>
+     * </ul>
+     *
+     * <p>严格模式（{@code ignoreThinAxisDivider=false}）下，同一行达到 3 个墨点，或总数达到
+     * 6 个墨点，就认为不是一两个孤立灰点，返回 {@code true} 阻断自动擦除；没有墨迹或只有少量
+     * 分散噪点时返回 {@code false}。</p>
+     *
+     * <p>局部精框已经用 Java 像素证据替换 VLM 正文边界时，可传入 {@code true}。此时先完整扫描，
+     * 若墨迹包围盒宽度不超过 4px 且高度至少是宽度 2 倍，或高度不超过 4px 且宽度至少是高度 2 倍，
+     * 将其视为单根装订线、分栏线等细轴向分隔线并忽略；其他文字、多行墨迹、粗线和块状内容仍按
+     * “单行至少 3 个或总数至少 6 个”阻断。</p>
+     *
+     * @param image 旋正后的原图
+     * @param reference 已批准候选框，用于估计局部背景亮度，不等于本次扫描矩形
+     * @param left 扫描矩形左边界，包含
+     * @param top 扫描矩形上边界，包含
+     * @param rightExclusive 扫描矩形右边界，不包含
+     * @param bottomExclusive 扫描矩形下边界，不包含
+     * @return {@code true} 表示发现足以阻断自动擦除的实质墨迹或输入无法证明安全；否则为 {@code false}
+     */
     private static boolean bandHasSubstantiveInk(BufferedImage image, PixelRegion reference, int left, int top,
                                                    int rightExclusive, int bottomExclusive, boolean ignoreThinAxisDivider) {
         /*
@@ -1175,7 +1219,10 @@ public final class RegionValidator {
         return totalMarks >= 6 || maxRowMarks >= 3;
     }
 
-    /** 判断墨迹包围盒是否为可豁免的单轴细分隔线。 */
+    /**
+     * 判断墨迹包围盒是否为可豁免的单轴细分隔线：一条很窄且明显偏向单一方向的线，
+     * 可能是装订线或分栏线；它只能在像素证据替换正文边界的特殊路径中被忽略。
+     */
     private static boolean isSingleAxisThinDivider(int width, int height) {
         return (width <= 4 && height >= Math.max(4, width * 2))
                 || (height <= 4 && width >= Math.max(4, height * 2));
