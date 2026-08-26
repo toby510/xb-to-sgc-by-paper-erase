@@ -128,7 +128,8 @@ public final class RegionValidator {
                 reasons.add(boundaryReason);
                 continue;
             }
-            // 3.6 正文安全带：从候选框朝正文方向扫描至少 8px 连续无实质墨迹，抵抗边界幻觉。
+            // 3.6 正文安全带：从候选框朝正文方向扫描至少 8px 连续无实质墨迹，抵抗边界幻觉
+            //todo me：目标是判断空白带：1）是否<=8px，小于则返回“body blank gap is insufficient”；2）否则看安全的空白带是否有墨迹，没有返回null表示安全，有则返回"body blank gap contains ink"
             String gapReason = invalidPixelGapReason(edge, pixelRegion, boundary, image);
             if ("body blank gap contains ink".equals(gapReason)) {
                 /*
@@ -137,8 +138,12 @@ public final class RegionValidator {
                  * 连通分量向正文方向扩一像素白边，再重新验证 8px 的真实无墨安全带。
                  */
                 pixelRegion = hasConservativeInk(image, pixelRegion)
+                        //todo me:【页码框有墨迹-扩连通域】页码框四条线内框住墨迹了，要向四周扩一个像素白边
                         ? expandConnectedTargetInk(edge, pixelRegion, boundary, image)
+                        //todo me:【页码框无墨迹-安全空白带8px内寻找页码框】
                         : rescueEmptyModelBox(edge, pixelRegion, bodyLimit(edge, boundary, image), image);
+
+                //todo me:修复页码框后再次验证空白带是否满足
                 gapReason = invalidPixelGapReason(edge, pixelRegion, boundary, image);
             }
             if (gapReason != null) {
