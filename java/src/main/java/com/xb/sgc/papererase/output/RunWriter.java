@@ -14,6 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -79,8 +80,65 @@ public class RunWriter {
         }
 
         mapper.writeValue(consensusDir.resolve("exam_consensus.json").toFile(), outcome.getConsensus());
-        word.merge(originalWordPages, wordDir.resolve(input.getExamId() + "_原图.docx"));
-        word.merge(erasedWordPages, wordDir.resolve(input.getExamId() + "_擦除后.docx"));
+        Path originalWord = wordDir.resolve(input.getExamId() + "_原图.docx");
+        boolean hasManualReview = hasManualReview(outcome);
+        Path erasedWord = wordDir.resolve(input.getExamId() + (hasManualReview
+                ? "_擦除后_待人工审核.docx" : "_擦除后.docx"));
+        word.merge(originalWordPages, originalWord);
+        word.merge(erasedWordPages, erasedWord);
+        copySourceDocuments(input, wordDir, originalWord.getFileName().toString(), erasedWord.getFileName().toString());
+    }
+
+    private static boolean hasManualReview(ExamOutcome outcome) {
+        for (PageOutcome page : outcome.getPages()) {
+            if ("manual_review".equals(page.getStatus())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 将试卷输入目录直系的原始文档随 Word 产物交付。图片页目录是 ExamInput 的唯一来源，
+     * 所以从任意一页反推父目录即可；只复制 docx/pdf，且绝不让源文件覆盖本次生成的 Word。
+     */
+    private static void copySourceDocuments(ExamInput input, Path wordDir, String originalWordName, String erasedWordName)
+            throws IOException {
+        if (input.getPages().isEmpty()) {
+            return;
+        }
+        Path sourceDir = input.getPages().get(0).getImagePath().getParent();
+        if (sourceDir == null || !Files.isDirectory(sourceDir)) {
+            return;
+        }
+        try (java.nio.file.DirectoryStream<Path> files = Files.newDirectoryStream(sourceDir)) {
+            for (Path source : files) {
+                if (!Files.isRegularFile(source) || !isSourceDocument(source)) {
+                    continue;
+                }
+                String sourceName = source.getFileName().toString();
+                String destinationName = isGeneratedWord(sourceName, originalWordName, erasedWordName)
+                        ? sourceFileName(sourceName) : sourceName;
+                Files.copy(source, wordDir.resolve(destinationName), StandardCopyOption.REPLACE_EXISTING);
+            }
+        }
+    }
+
+    private static boolean isSourceDocument(Path source) {
+        String name = source.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
+        return name.endsWith(".docx") || name.endsWith(".pdf");
+    }
+
+    private static boolean isGeneratedWord(String sourceName, String originalWordName, String erasedWordName) {
+        return sourceName.equalsIgnoreCase(originalWordName)
+                || sourceName.equalsIgnoreCase(erasedWordName)
+                || sourceName.matches("(?i).*_原图\\.docx")
+                || sourceName.matches("(?i).*_擦除后.*\\.docx");
+    }
+
+    private static String sourceFileName(String filename) {
+        int dot = filename.lastIndexOf('.');
+        return dot < 0 ? filename + "_源文件" : filename.substring(0, dot) + "_源文件" + filename.substring(dot);
     }
 
     private static void deleteRecursively(Path path) throws IOException {
@@ -104,6 +162,90 @@ public class RunWriter {
         run.put("page_count", pageCount);
         run.put("output_schema", "xb-to-sgc-by-paper-erase/exam-page-only/v1");
         new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT).writeValue(runDir.resolve("run.json").toFile(), run);
+    }
+
+    /** 运行开始即记录可复现实验元数据；提示词快照避免同一 run 被中途改文件污染。 */
+    public static void writeRunningRunJson(Path runDir, Map<String, Path> datasetRoots, String mode,
+                                           com.xb.sgc.papererase.vlm.VlmConfig config,
+                                           int plannedExamCount, int plannedPageCount, Path skillRoot,
+                                           Map<String, String> frozenPrompts) throws IOException {
+        Map<String, Object> run = new LinkedHashMap<String, Object>();
+        run.put("status", "running");
+        run.put("started_at", new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ").format(new java.util.Date()));
+        Map<String, String> roots = new LinkedHashMap<String, String>();
+        for (Map.Entry<String, Path> entry : datasetRoots.entrySet()) roots.put(entry.getKey(), entry.getValue().toAbsolutePath().toString());
+        run.put("dataset_roots", roots);
+        run.put("mode", mode);
+        run.put("provider_kind", config.getProviderKind());
+        run.put("model", config.role("locate").getModel());
+        run.put("planned_exam_count", plannedExamCount);
+        run.put("planned_page_count", plannedPageCount);
+        run.put("code", gitMetadata(skillRoot));
+        Map<String, Object> prompts = new LinkedHashMap<String, Object>();
+        for (String role : new String[]{"pattern", "locate", "verify", "audit"}) {
+            com.xb.sgc.papererase.vlm.VlmConfig.RoleConfig roleConfig = config.role(role);
+            byte[] content = frozenPrompts.get(role).getBytes(StandardCharsets.UTF_8);
+            Path source = skillRoot.resolve(roleConfig.getPromptPath());
+            Path snapshot = runDir.resolve("metadata").resolve("prompts").resolve(role)
+                    .resolve(source.getFileName().toString());
+            Files.createDirectories(snapshot.getParent());
+            Files.write(snapshot, content);
+            Map<String, Object> item = new LinkedHashMap<String, Object>();
+            item.put("configured_path", roleConfig.getPromptPath());
+            item.put("sha256", sha256(content));
+            item.put("snapshot_path", runDir.relativize(snapshot).toString());
+            prompts.put(role, item);
+        }
+        run.put("prompts", prompts);
+        run.put("output_schema", "xb-to-sgc-by-paper-erase/exam-page-only/v1");
+        new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT).writeValue(runDir.resolve("run.json").toFile(), run);
+    }
+
+    /** 仅补充终态字段，保留启动阶段已冻结的环境与提示词证据。 */
+    public static void completeRunJson(Path runDir, int actualExamCount, int actualPageCount) throws IOException {
+        ObjectMapper mapper = new ObjectMapper();
+        Map<String, Object> run = mapper.readValue(runDir.resolve("run.json").toFile(), LinkedHashMap.class);
+        run.put("status", "completed");
+        run.put("completed_at", new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ").format(new java.util.Date()));
+        run.put("actual_exam_count", actualExamCount);
+        run.put("actual_page_count", actualPageCount);
+        mapper.enable(SerializationFeature.INDENT_OUTPUT).writeValue(runDir.resolve("run.json").toFile(), run);
+    }
+
+    private static String sha256(byte[] value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(value);
+            StringBuilder hex = new StringBuilder();
+            for (byte b : digest) hex.append(String.format("%02x", b & 0xff));
+            return hex.toString();
+        } catch (Exception e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
+    }
+
+    private static Map<String, Object> gitMetadata(Path root) {
+        Map<String, Object> code = new LinkedHashMap<String, Object>();
+        code.put("branch", git(root, "rev-parse", "--abbrev-ref", "HEAD"));
+        code.put("commit", git(root, "rev-parse", "HEAD"));
+        code.put("dirty", !git(root, "status", "--porcelain").isEmpty());
+        return code;
+    }
+
+    private static String git(Path root, String... args) {
+        try {
+            java.util.List<String> command = new ArrayList<String>();
+            command.add("git");
+            java.util.Collections.addAll(command, args);
+            Process process = new ProcessBuilder(command).directory(root.toFile()).start();
+            java.io.InputStream input = process.getInputStream();
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            byte[] buffer = new byte[256];
+            for (int read; (read = input.read(buffer)) >= 0;) out.write(buffer, 0, read);
+            process.waitFor();
+            return new String(out.toByteArray(), StandardCharsets.UTF_8).trim();
+        } catch (Exception e) {
+            return "unknown";
+        }
     }
 
     /** 只根据既有 erased 产物重建最终人工页集合；不触发 VLM，也不改变擦除判定。 */
@@ -142,6 +284,7 @@ public class RunWriter {
         json.put("status", outcome.getStatus());
         json.put("reason", outcome.getReason());
         json.put("regions", outcome.getRegions());
+        json.put("approved_regions", outcome.getApprovedRegions());
         json.put("locate", outcome.getLocate());
         json.put("audit", outcome.getAudit());
         Map<String, Object> transforms = new LinkedHashMap<String, Object>();

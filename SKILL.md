@@ -34,14 +34,14 @@ description: 当用户要按“整份试卷”而不是单张图片去除页码�
 ## 执行流程
 
 1. 用 `ExamScanner.scanWithRejections(Path)` 扫描并按试卷聚合；有结构性拒绝时，先写入报告，不进入自动擦除。
-2. 对同一试卷按 8 张、相邻 1 张重叠的方式分批，调用 `pattern` 角色分析阅读方向、页码是否存在、所在边和跨页共性。
+2. 对同一试卷按配置采样上限（当前 6 张）分批，调用 `pattern` 角色分析阅读方向、页码是否存在、所在边和跨页共性。
 3. Java 校验每批返回的页面 ID：必须与请求页面集合完全一致且无重复；不满足则整卷 `manual_review`。
-4. 对每页按识别出的阅读方向标准化图像，再调用 `locate` 返回候选区域、置信度和最近正文边界。
+4. 对每页按识别出的阅读方向标准化图像，再调用 `locate` 只基于当前整页返回候选区域、置信度和最近正文边界；pattern 仅在 Java 内部用于方向、分组、ROI 和风险控制。
 5. `RegionValidator` 先做硬校验：边缘带、坐标、正文间隔、空白安全带、候选框边界墨迹。任一失败不得擦除。
 6. 高风险页面（低置信度、旋转、首尾页差异、同线候选、共性不稳定、缺页等）只对局部 ROI 调用 `verify`；二检非 `safe_to_erase` 时不擦除。
 7. `InkMaskEraser` 仅修改候选框内识别出的目标墨迹；背景估计失败时可仅在已批准掩码内降级为白色。
 8. `PixelDiffGate` 必须证明候选掩码以外的所有像素未变；该门禁失败立即丢弃候选图。
-9. 每张修改过的图都调用 `audit` 对原图、擦除图和局部 ROI 进行视觉复核。`body_unchanged=false` 或 `target_removed=false` 一律人工审核；仅背景色问题可作为色差警告交付。
+9. 每张修改过的图都调用 `audit` 对原图、擦除图和局部 ROI 进行视觉复核。`original_target_is_non_body=false`、`body_unchanged=false` 或 `target_removed=false` 一律人工审核；`body_unchanged` 覆盖 ROI 内外整页正文；仅背景色问题可作为色差警告交付。
 
 ## VLM 请求与协议
 

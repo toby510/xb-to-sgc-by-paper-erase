@@ -376,12 +376,66 @@ public final class ExamPipeline {
                 return manual(page, original, normalizedImage, transforms, "locate_error", group, null);
             }
         }
+        if ("manual_review".equals(locate.status) && locate.regions != null && locate.regions.isEmpty()) {
+            /*
+             * 空框 manual_review 有时只是模型没有把已得出的“非页码”结论写进 status。Java
+             * 绝不读取 evidence 的自然语言来改状态；只用同图、同角色的一次协议状态纠正
+             * 让模型重新返回完整 JSON。纠正后 no_pagenum 走无页码链路，带完整候选的 safe
+             * 进入下面全部像素门禁和 audit；仍 manual 时才交给既有高置信 pattern ROI 兜底。
+             */
+            context.event("locate_status_correction", exam.getExamId(), page.getPageId(), "started", "manual_review_empty_regions", 0);
+            try {
+                LocateResponse corrected = vlm.correctLocateStatusAfterManualReview(pageImage, group);
+                if ("no_pagenum".equals(corrected.status)
+                        || ("safe_to_erase".equals(corrected.status)
+                        && corrected.regions != null && !corrected.regions.isEmpty())) {
+                    locate = corrected;
+                    context.event("locate_status_correction", exam.getExamId(), page.getPageId(), "completed", locate.status, 0);
+                } else {
+                    context.event("locate_status_correction", exam.getExamId(), page.getPageId(), "not_accepted",
+                            corrected.status == null ? "empty_status" : corrected.status, 0);
+                    // 状态纠正仍无法判断时，保留原有高置信 pattern ROI 兜底；该 ROI 结果
+                    // 仍必须是 safe_to_erase+非空框才会继续主链路，不能直接放行。
+                    locate = corrected;
+                }
+            } catch (RuntimeException correctionFailure) {
+                context.event("locate_status_correction", exam.getExamId(), page.getPageId(), "failed", shortError(correctionFailure), 0);
+                return manual(page, original, normalizedImage, transforms, "locate_manual_review", group, locate);
+            }
+        }
         if ("manual_review".equals(locate.status)) {
-            return manual(page, original, normalizedImage, transforms, "locate_manual_review", group, locate);
+            /*
+             * 整页 locate 的 manual_review 只是“整页证据不足”，不等同于“该页没有页码”。
+             * 仅当 pattern 已以高置信度给出有效的同页边缘粗窗口时，允许模型再看该窗口的
+             * 局部图；pattern 只决定 Java 如何裁 ROI，绝不作为文字提示传给模型。局部结果
+             * 必须重新成为 safe_to_erase 且有候选框，随后仍完整经过既有像素门禁、风险复核、
+             * 擦除和整页 audit。任何其它局部结论均不能推翻首次保守人工审核。
+             */
+            LocateRoi patternRoi = canRelocateManualLocate(group) ? locateRoi(page.getPageId(), group, normalizedImage) : null;
+            if (patternRoi == null) {
+                return manual(page, original, normalizedImage, transforms, "locate_manual_review", group, locate);
+            }
+            context.event("pattern_roi_relocate", exam.getExamId(), page.getPageId(), "started", "full_locate_manual_review", 0);
+            try {
+                LocateResponse local = vlm.locate(pageImage, group, patternRoi.image);
+                if ("safe_to_erase".equals(local.status) && local.regions != null && !local.regions.isEmpty()) {
+                    locate = mapLocateToFull(local, patternRoi.transform, normalizedImage.getWidth(), normalizedImage.getHeight());
+                    context.event("pattern_roi_relocate", exam.getExamId(), page.getPageId(), "completed", "safe_to_erase", 0);
+                } else {
+                    context.event("pattern_roi_relocate", exam.getExamId(), page.getPageId(), "not_accepted",
+                            local.status == null ? "empty_status" : local.status, 0);
+                    return manual(page, original, normalizedImage, transforms, "locate_manual_review", group, locate);
+                }
+            } catch (RuntimeException relocationFailure) {
+                context.event("pattern_roi_relocate", exam.getExamId(), page.getPageId(), "failed", shortError(relocationFailure), 0);
+                return manual(page, original, normalizedImage, transforms, "locate_manual_review", group, locate);
+            }
         }
         if ("no_pagenum".equals(locate.status) || locate.regions.isEmpty()) {
             return handleNoCandidate(exam, page, original, normalizedImage, transforms, bundle, group, locate, pageImage, context);
         }
+        // 首次整页 locate 的原始语义框是证据基线；trim/refine 后不得覆盖它。
+        List<EraseRegion> initialLocateRegions = copyRegions(locate.regions);
 
         // 3. Java 正文保护门禁：VLM 坐标只是候选，通过确定性像素证据前绝不写图。
         RegionValidator.ValidationResult validation = RegionValidator.validate(
@@ -407,7 +461,7 @@ public final class ExamPipeline {
             // 中重测；绝不由 Java 放宽规则或自行移动候选框。
             Refinement refinement = shouldRefineRejected(validation) ?
                     refineEmptyTargetBox(exam, page, normalizedImage, group, locate, pageImage, context,
-                            isOnlyBodyGapConflict(validation)) : null;
+                            allowsConflictingBoundaryReplacementAfterRefine(validation)) : null;
             if (refinement == null) {
                 return manual(page, original, normalizedImage, transforms, "validation_rejected", group, locate);
             }
@@ -439,6 +493,7 @@ public final class ExamPipeline {
         RiskGate.PageContext riskContext = RiskGate.PageContext.stable(page.getPageId())
                 .withPatternGroupId(group == null ? null : group.group_id)
                 .withConsensusState(bundle.consensusState)
+                .withStablePattern(group != null && group.confidence >= 0.97D)
                 .withReadingRotation(direction.reading_rotation)
                 .withPageSequenceIncomplete(exam.isPageSequenceIncomplete());
         // locate 已在整页上完成“这是不是独立非正文页码行”的语义判定，且上面的
@@ -460,7 +515,8 @@ public final class ExamPipeline {
         // 只会进一步提高坐标精度，不能成为彩色/图形目标的唯一语义授权。
         boolean visuallyConfirmedIndependentTarget = true;
         return eraseAndAudit(exam, page, original, normalizedImage, transforms, group, locate, pageImage,
-                validation.getRegions(), visuallyConfirmedIndependentTarget, false, context);
+                validation.getRegions(), visuallyConfirmedIndependentTarget, false, initialLocateRegions,
+                requiresVerify, refinedByVlm, context);
     }
 
     /** 只接受真正无可见墨迹的页面；任何 RGB 通道低于 245 的像素都会保持原有人工门禁。 */
@@ -528,13 +584,37 @@ public final class ExamPipeline {
         return false;
     }
 
-    private boolean isOnlyBodyGapConflict(RegionValidator.ValidationResult validation) {
-        if (validation.getReasons().size() != 1) {
+    /** 多区域全部仅正文空白带冲突时，允许沿用原有像素替换路径；任何其他原因仍失败关闭。 */
+    boolean isOnlyBodyGapConflict(RegionValidator.ValidationResult validation) {
+        if (validation == null || validation.getReasons().isEmpty()) {
             return false;
         }
-        String reason = validation.getReasons().get(0);
-        return "body blank gap is insufficient".equals(reason)
-                || "body blank gap contains ink".equals(reason);
+        for (String reason : validation.getReasons()) {
+            if (!"body blank gap is insufficient".equals(reason)
+                    && !"body blank gap contains ink".equals(reason)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 局部精修后的正文边界替换资格：初始框可因笔画贴边而触发 mask-touch，但不能夹带
+     * 坐标非法、非边缘或其它正文风险。实际替换仍要求精修后只剩正文空白带冲突，并由
+     * RegionValidator 继续证明同边、文字锚点、候选墨迹和 8px 安全带。
+     */
+    boolean allowsConflictingBoundaryReplacementAfterRefine(RegionValidator.ValidationResult validation) {
+        if (validation == null || validation.getReasons().isEmpty()) {
+            return false;
+        }
+        for (String reason : validation.getReasons()) {
+            if (!"body blank gap is insufficient".equals(reason)
+                    && !"body blank gap contains ink".equals(reason)
+                    && !"ink mask touches candidate box".equals(reason)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private boolean hasEmptyTargetBox(BufferedImage image, List<RegionValidator.PixelRegion> regions) {
@@ -591,7 +671,7 @@ public final class ExamPipeline {
             }
             Refinement refined = refineAtRoi(exam, page, image, group, single, pageImage, originalRegion, edgeRoi, context,
                     "coordinate_refine", emptyTargetBox ? allowConflictingBoundaryReplacement
-                            : isOnlyBodyGapConflict(singleValidation));
+                            : allowsConflictingBoundaryReplacementAfterRefine(singleValidation));
             if (refined == null) {
                 return null;
             }
@@ -885,6 +965,12 @@ public final class ExamPipeline {
         return copy;
     }
 
+    private List<EraseRegion> copyRegions(List<EraseRegion> sources) {
+        List<EraseRegion> copies = new ArrayList<EraseRegion>();
+        for (EraseRegion source : sources) copies.add(copyRegion(source));
+        return copies;
+    }
+
     /**
      * Java 曾为补齐模型过紧/偏移坐标而扩展候选框时，必须增加一次局部视觉复核。坐标救援
      * 只解决“页码笔画没有完全落入模型框”的几何问题，不能替代对该墨迹语义的独立确认。
@@ -943,7 +1029,16 @@ public final class ExamPipeline {
             context.event("verify", exam.getExamId(), page.getPageId(), "completed", verify.decision,
                     System.currentTimeMillis() - startedAt);
             if (!"safe_to_erase".equals(verify.decision)) {
-                if ("no_pagenum".equals(verify.decision)) {
+                if ("no_pagenum".equals(verify.decision) || "manual_review".equals(verify.decision)) {
+                    // ROI 只看到局部，可能因缩放、颜色或装饰漏读已经由整页 locate 识别的页码。
+                    // 对完整高置信 locate 且已通过 Java 像素门禁的候选，no_pagenum 仅表示局部未观察到，
+                    // 不能单独推翻整页语义；后续 PixelDiffGate 与 audit 三硬条件仍会失败关闭。
+                    if (hasHighConfidenceLocateEvidence(locate)) {
+                        context.event("verify", exam.getExamId(), page.getPageId(),
+                                "no_pagenum".equals(verify.decision) ? "no_pagenum_ignored" : "manual_review_ignored",
+                                "full_page_high_confidence_semantic_evidence:" + region.region_id, 0);
+                        continue;
+                    }
                     return manual(page, original, normalized, transforms, "verify_target_not_found", group, locate);
                 }
                 return manual(page, original, normalized, transforms, deniedReason, group, locate);
@@ -951,6 +1046,16 @@ public final class ExamPipeline {
         }
         return new PageOutcome(page.getPageId(), "needs_recheck", "verify_safe", original, normalized, normalized,
                 transforms, group, locate.regions, locate, null);
+    }
+
+    /** 只用于解释局部 no_pagenum 的范围：该方法不替代已在调用前完成的 RegionValidator 像素门禁。 */
+    private boolean hasHighConfidenceLocateEvidence(LocateResponse locate) {
+        if (locate == null || !"safe_to_erase".equals(locate.status) || locate.regions.isEmpty()) return false;
+        for (EraseRegion candidate : locate.regions) {
+            if (candidate.confidence < 0.97D || Double.isNaN(candidate.confidence)
+                    || Double.isInfinite(candidate.confidence)) return false;
+        }
+        return true;
     }
 
     /**
@@ -1010,7 +1115,8 @@ public final class ExamPipeline {
     private PageOutcome eraseAndAudit(ExamInput exam, PageInput page, BufferedImage original, BufferedImage normalized, PageTransforms transforms,
                                       PatternGroup group, LocateResponse locate, VlmClient.PageImage pageImage,
                                       List<RegionValidator.PixelRegion> pixelRegions, boolean coloredTargetVerified,
-                                      boolean auditRetried, RunContext context) {
+                                      boolean auditRetried, List<EraseRegion> initialLocateRegions,
+                                      boolean localVerifyConfirmed, boolean vlmCoordinateRefined, RunContext context) {
         // 5. 擦除执行：只接收 RegionValidator 已批准的像素框。
         BufferedImage candidate = normalized;
         List<RegionValidator.PixelRegion> erasedRegions = new ArrayList<RegionValidator.PixelRegion>();
@@ -1041,13 +1147,20 @@ public final class ExamPipeline {
         // 7. audit 视觉审计：对原图、擦除图和局部 ROI 同时复核正文与目标。
         AuditResponse audit = vlm.audit(pageImage, new VlmClient.PageImage(page.getPageId(), candidate),
                 locate.regions, auditRois(page.getPageId(), locate.regions, locate.nearest_body_boundary, normalized, candidate));
+        List<ExamOutcome.ApprovedRegion> approvedEvidence = approvedRegions(initialLocateRegions, locate, pixelRegions,
+                normalized, localVerifyConfirmed, vlmCoordinateRefined);
         context.event("audit", exam.getExamId(), page.getPageId(), "completed", audit.decision,
                 System.currentTimeMillis() - auditStartedAt);
-        // 正文不变、目标确实消失是交付的双硬条件；背景色仅是质量告警，不扩大擦除范围。
+        // 原始目标确认非正文、正文不变、目标确实消失是三项交付硬条件；背景色仅是质量告警。
+        if (!audit.original_target_is_non_body) {
+            // 语义判定为正文/不确定时不得以“坐标精修”尝试挽救，避免把正文当残留页码继续擦除。
+            return new PageOutcome(page.getPageId(), "manual_review", "audit_original_target_is_body", original, normalized,
+                    candidate, transforms, group, locate.regions, locate, audit, approvedEvidence);
+        }
         if (!audit.body_unchanged) {
             // 7.1 正文变化是绝对失败，不允许通过重试或色差降级放行。
             return new PageOutcome(page.getPageId(), "manual_review", "audit_failed", original, normalized,
-                    candidate, transforms, group, locate.regions, locate, audit);
+                    candidate, transforms, group, locate.regions, locate, audit, approvedEvidence);
         }
         if (!audit.target_removed) {
             // 7.2 仅目标残留可做一次局部坐标精修；正文变化不进入该分支。
@@ -1056,24 +1169,25 @@ public final class ExamPipeline {
                 if (refinement != null) {
                     context.event("audit_coordinate_refine", exam.getExamId(), page.getPageId(), "accepted", "target_residual", 0);
                     return eraseAndAudit(exam, page, original, normalized, transforms, group, refinement.locate, pageImage,
-                            refinement.validation.getRegions(), true, true, context);
+                            refinement.validation.getRegions(), true, true, initialLocateRegions,
+                            localVerifyConfirmed, true, context);
                 }
             }
             return new PageOutcome(page.getPageId(), "manual_review", "audit_target_not_removed", original, normalized,
-                    candidate, transforms, group, locate.regions, locate, audit);
+                    candidate, transforms, group, locate.regions, locate, audit, approvedEvidence);
         }
         if (!audit.background_acceptable) {
             // 7.3 背景色只记录告警，正文安全已满足即可交付擦除图。
             return new PageOutcome(page.getPageId(), "safe_to_erase", "audit_pass_with_color_warning", original, normalized,
-                    candidate, transforms, group, locate.regions, locate, audit);
+                    candidate, transforms, group, locate.regions, locate, audit, approvedEvidence);
         }
         if (!"pass".equals(audit.decision)) {
             // 8. 失败关闭：审计未明确通过时保留擦除效果供人工核对，但状态不可交付。
             return new PageOutcome(page.getPageId(), "manual_review", "audit_failed", original, normalized,
-                    candidate, transforms, group, locate.regions, locate, audit);
+                    candidate, transforms, group, locate.regions, locate, audit, approvedEvidence);
         }
         return new PageOutcome(page.getPageId(), "safe_to_erase", "audit_pass", original, normalized,
-                candidate, transforms, group, locate.regions, locate, audit);
+                candidate, transforms, group, locate.regions, locate, audit, approvedEvidence);
     }
 
     private static boolean isContainedByAny(RegionValidator.PixelRegion candidate,
@@ -1090,10 +1204,58 @@ public final class ExamPipeline {
         return false;
     }
 
+    /** 仅用于输出证据：由已经批准的像素框生成审计记录，不参与任何门禁或擦除判断。 */
+    private List<ExamOutcome.ApprovedRegion> approvedRegions(List<EraseRegion> initialLocateRegions, LocateResponse finalLocate,
+                                                               List<RegionValidator.PixelRegion> pixels, BufferedImage image,
+                                                               boolean localVerifyConfirmed, boolean vlmCoordinateRefined) {
+        List<ExamOutcome.ApprovedRegion> result = new ArrayList<ExamOutcome.ApprovedRegion>();
+        for (RegionValidator.PixelRegion pixel : pixels) {
+            EraseRegion source = null;
+            for (EraseRegion region : initialLocateRegions) {
+                if (pixel.getRegionId().equals(region.region_id)) { source = region; break; }
+            }
+            EraseRegion finalVlm = null;
+            for (EraseRegion region : finalLocate.regions) {
+                if (pixel.getRegionId().equals(region.region_id)) { finalVlm = region; break; }
+            }
+            EraseRegion originalBox = source == null ? null : copyRegion(source);
+            EraseRegion finalBox = new EraseRegion();
+            finalBox.region_id = pixel.getRegionId();
+            finalBox.x1 = pixel.getX() / (double) image.getWidth();
+            finalBox.y1 = pixel.getY() / (double) image.getHeight();
+            finalBox.x2 = (pixel.getX() + pixel.getWidth()) / (double) image.getWidth();
+            finalBox.y2 = (pixel.getY() + pixel.getHeight()) / (double) image.getHeight();
+            boolean expanded = finalVlm != null && (Math.abs(finalBox.x1 - finalVlm.x1) > 0.000001
+                    || Math.abs(finalBox.y1 - finalVlm.y1) > 0.000001 || Math.abs(finalBox.x2 - finalVlm.x2) > 0.000001
+                    || Math.abs(finalBox.y2 - finalVlm.y2) > 0.000001);
+            result.add(new ExamOutcome.ApprovedRegion(pixel.getRegionId(), originalBox, pixel.getX(), pixel.getY(),
+                    pixel.getWidth(), pixel.getHeight(), finalBox, expanded, pixel.isCoordinateRescued(), vlmCoordinateRefined,
+                    localVerifyConfirmed ? "verify_semantic_confirmed" : "locate_semantic_confirmed"));
+        }
+        return result;
+    }
+
     private VlmClient.RoiImage roi(String pageId, EraseRegion region, BodyBoundary boundary, BufferedImage image) {
         RoiTransform transform = RoiTransform.fromNormalizedCandidate(
                 image.getWidth(), image.getHeight(), region, boundary, 24);
         return new VlmClient.RoiImage(pageId, region.region_id, crop(image, transform));
+    }
+
+    /**
+     * 仅允许可信 pattern 的有效粗窗口补救整页 locate 的不确定结论。该条件不能替代
+     * RegionValidator：它只是决定是否值得额外请求一次局部视觉证据。
+     */
+    private boolean canRelocateManualLocate(PatternGroup group) {
+        if (group == null || group.confidence < 0.97D || group.locate_window == null) {
+            return false;
+        }
+        double x1 = group.locate_window.x1;
+        double y1 = group.locate_window.y1;
+        double x2 = group.locate_window.x2;
+        double y2 = group.locate_window.y2;
+        return !Double.isNaN(x1) && !Double.isNaN(y1) && !Double.isNaN(x2) && !Double.isNaN(y2)
+                && !Double.isInfinite(x1) && !Double.isInfinite(y1) && !Double.isInfinite(x2) && !Double.isInfinite(y2)
+                && x1 >= 0D && y1 >= 0D && x2 <= 1D && y2 <= 1D && x1 < x2 && y1 < y2;
     }
 
     private LocateRoi locateRoi(String pageId, PatternGroup group, BufferedImage image) {

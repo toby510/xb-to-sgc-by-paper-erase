@@ -44,6 +44,7 @@ public final class Main {
         VlmClient vlm = VlmClient.create(config, skillRoot);
         List<ExamInput> exams;
         Path outputRoot;
+        java.util.Map<String, Path> datasetRoots = new java.util.LinkedHashMap<String, Path>();
         if ("run".equals(args[0])) {
             Path testRoot = Paths.get(args[1]);
             ScanResult scan = new ExamScanner().scanWithRejections(testRoot);
@@ -57,6 +58,7 @@ public final class Main {
             }
             exams = scan.getExams();
             outputRoot = testRoot;
+            datasetRoots.put("test_root", testRoot);
         } else {
             if (args.length != 3) {
                 System.err.println("Usage: Main gate <bad-root> <full-root>");
@@ -67,9 +69,15 @@ public final class Main {
             Path fullRoot = Paths.get(args[2]);
             exams = new GateDatasetSelector().select(badRoot, fullRoot);
             outputRoot = fullRoot;
+            datasetRoots.put("bad_root", badRoot);
+            datasetRoots.put("full_root", fullRoot);
         }
         Path runDir = RunWriter.createRunDir(outputRoot, config.role("locate").getModel(),
                 new SimpleDateFormat("yyyyMMdd'T'HHmmss").format(new Date()));
+        int plannedPages = 0;
+        for (ExamInput exam : exams) plannedPages += exam.getPages().size();
+        RunWriter.writeRunningRunJson(runDir, datasetRoots, args[0], config, exams.size(), plannedPages, skillRoot,
+                vlm.frozenPrompts());
         System.err.println("run_dir=" + runDir.toAbsolutePath());
         System.err.println("progress_file=" + runDir.resolve("_progress.ndjson").toAbsolutePath());
         List<ExamOutcome> outcomes = new ArrayList<ExamOutcome>();
@@ -88,7 +96,7 @@ public final class Main {
             pages += exam.getPages().size();
         }
         new ReportWriter().write(exams, outcomes, runDir);
-        RunWriter.writeRunJson(runDir, config.role("locate").getModel(), exams.size(), pages);
+        RunWriter.completeRunJson(runDir, exams.size(), pages);
         System.out.println(runDir.toAbsolutePath().toString());
     }
 

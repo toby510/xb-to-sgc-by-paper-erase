@@ -21,6 +21,11 @@ public class RunWriterTest {
     @Test
     public void writesStrictOutputTreeWithEvidenceAuditReportAndRunJson() throws Exception {
         Path root = Files.createTempDirectory("run-writer-");
+        Files.write(root.resolve("原始材料.DOCX"), "docx-source".getBytes("UTF-8"));
+        Files.write(root.resolve("说明.PdF"), "pdf-source".getBytes("UTF-8"));
+        Files.write(root.resolve("不复制.txt"), "text-source".getBytes("UTF-8"));
+        // 与生成的原图 Word 同名时必须改名，不能覆盖交付物。
+        Files.write(root.resolve("1001_原图.docx"), "conflicting-source".getBytes("UTF-8"));
         ExamInput input = new ExamInput("语文", "1001", "15065", Arrays.asList(
                 new PageInput("1001:1", "1001", 1, root.resolve("15065_1001_1.png")),
                 new PageInput("1001:2", "1001", 2, root.resolve("15065_1001_2.png"))),
@@ -47,7 +52,13 @@ public class RunWriterTest {
         assertTrue(Files.isRegularFile(base.resolve("1001_2_regions.json")));
         assertTrue(Files.isRegularFile(runDir.resolve("consensus/语文/1001/exam_consensus.json")));
         assertTrue(Files.isRegularFile(runDir.resolve("word_output/语文/1001/1001_原图.docx")));
-        assertTrue(Files.isRegularFile(runDir.resolve("word_output/语文/1001/1001_擦除后.docx")));
+        assertTrue(Files.isRegularFile(runDir.resolve("word_output/语文/1001/1001_擦除后_待人工审核.docx")));
+        Path wordDir = runDir.resolve("word_output/语文/1001");
+        assertTrue(Files.isRegularFile(wordDir.resolve("原始材料.DOCX")));
+        assertTrue(Files.isRegularFile(wordDir.resolve("说明.PdF")));
+        assertTrue(Files.isRegularFile(wordDir.resolve("1001_原图_源文件.docx")));
+        assertEquals("conflicting-source", new String(Files.readAllBytes(wordDir.resolve("1001_原图_源文件.docx")), "UTF-8"));
+        assertTrue("non-documents must not be copied", !Files.exists(wordDir.resolve("不复制.txt")));
         Path bad = runDir.resolve("bad/语文/1001");
         assertTrue(Files.isRegularFile(bad.resolve("1001_2_原图.png")));
         assertTrue(Files.isRegularFile(bad.resolve("1001_2_擦除后.png")));
@@ -75,6 +86,26 @@ public class RunWriterTest {
         assertTrue(regenerated.contains("语文/1001 第 2 页"));
         assertTrue("report-only rebuilds the final manual-review inspection set",
                 Files.isRegularFile(runDir.resolve("bad/语文/1001/1001_2_擦除后.png")));
+    }
+
+    @Test
+    public void keepsNormalErasedWordNameWhenEveryPageIsDeliverable() throws Exception {
+        Path root = Files.createTempDirectory("run-writer-safe-");
+        ExamInput input = new ExamInput("数学", "2002", "15065", Collections.singletonList(
+                new PageInput("2002:1", "2002", 1, root.resolve("15065_2002_1.png"))),
+                false, Collections.<String>emptyList());
+        BufferedImage white = solid(Color.WHITE);
+        PageTransforms tx = new PageTransforms(12, 12, 12, 12, 0);
+        ExamOutcome outcome = new ExamOutcome("2002", "processed", "ok", Collections.singletonList(
+                new PageOutcome("2002:1", "safe_to_erase", "audit_pass", white, white, white, tx,
+                        null, Collections.emptyList(), null, null)), Collections.emptyList());
+
+        Path runDir = RunWriter.createRunDir(root, "qwen3.8-max", "20260821T120001");
+        new RunWriter().writeExam(input, outcome, runDir);
+
+        Path wordDir = runDir.resolve("word_output/数学/2002");
+        assertTrue(Files.isRegularFile(wordDir.resolve("2002_擦除后.docx")));
+        assertTrue(!Files.exists(wordDir.resolve("2002_擦除后_待人工审核.docx")));
     }
 
     private static BufferedImage solid(Color color) {

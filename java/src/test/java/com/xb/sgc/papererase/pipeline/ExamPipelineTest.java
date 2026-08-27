@@ -12,6 +12,7 @@ import com.xb.sgc.papererase.model.ExamModels.PatternResponse;
 import com.xb.sgc.papererase.model.ExamModels.VerifyResponse;
 import com.xb.sgc.papererase.vlm.VlmClient;
 import com.xb.sgc.papererase.vlm.ResponseParser;
+import com.xb.sgc.papererase.safety.RegionValidator;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -284,6 +285,119 @@ public class ExamPipelineTest {
     }
 
     @Test
+    public void doesNotLetLocalNoPageNumberOverrideHighConfidenceValidatedFullPageLocate() throws Exception {
+        twoFooterTargetImageOrders.add(1);
+        FakeVlm fake = FakeVlm.stable();
+        fake.twoRegionLocatePages.add("p1");
+        fake.verifyNoPageNumRegionIds.add("p1:r2");
+
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, true), new ExamPipeline.RunContext());
+
+        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
+        assertTrue(fake.auditPageIds.contains("p1"));
+        assertEquals(Arrays.asList("p1:r1", "p1:r2"), fake.verifyCalls);
+    }
+
+    @Test
+    public void doesNotLetLocalManualReviewOverrideHighConfidenceValidatedFullPageLocate() throws Exception {
+        twoFooterTargetImageOrders.add(1);
+        FakeVlm fake = FakeVlm.stable();
+        fake.twoRegionLocatePages.add("p1");
+        fake.verifyManualRegionIds.add("p1:r2");
+
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, true), new ExamPipeline.RunContext());
+
+        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
+        assertTrue(fake.auditPageIds.contains("p1"));
+    }
+
+    @Test
+    public void patternRoiRelocateMayRecoverWhenStatusCorrectionRemainsManualReview() throws Exception {
+        FakeVlm fake = FakeVlm.stable();
+        fake.locateManualPages.add("p1");
+        fake.patternRoiSafeLocatePages.add("p1");
+
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
+
+        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
+        assertEquals(Collections.singletonList("p1"), fake.locateStatusCorrectionPageIds);
+        assertEquals(Collections.singletonList("p1"), fake.patternRoiLocatePageIds);
+        assertTrue("the ROI result must still reach the existing audit gate", fake.auditPageIds.contains("p1"));
+    }
+
+    @Test
+    public void patternRoiRelocateDoesNotOverrideManualReviewWhenStatusCorrectionAndRoiRemainManual() throws Exception {
+        FakeVlm fake = FakeVlm.stable();
+        fake.locateManualPages.add("p1");
+
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
+
+        assertEquals("manual_review", outcome.page("p1").getStatus());
+        assertEquals("locate_manual_review", outcome.page("p1").getReason());
+        assertEquals(Collections.singletonList("p1"), fake.locateStatusCorrectionPageIds);
+        assertEquals(Collections.singletonList("p1"), fake.patternRoiLocatePageIds);
+        assertTrue("a non-safe ROI response cannot erase or audit", fake.auditPageIds.isEmpty());
+    }
+
+    @Test
+    public void correctsEmptyLocateManualReviewToNoPageNumberOnlyThroughTheVlmProtocol() throws Exception {
+        FakeVlm fake = FakeVlm.stable();
+        fake.locateManualPages.add("p1");
+        fake.locateStatusCorrectionNoPageNumPages.add("p1");
+        fake.verifyNoPageNumRegionIds.add("p1:edge");
+
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
+
+        assertEquals("no_pagenum", outcome.page("p1").getStatus());
+        assertEquals(Collections.singletonList("p1"), fake.locateStatusCorrectionPageIds);
+        assertTrue("status correction must not erase or audit", fake.auditPageIds.isEmpty());
+    }
+
+    @Test
+    public void recognizesMultipleBodyGapOnlyConflictsForExistingPixelReplacementPath() {
+        BufferedImage image = pageImage(1);
+        LocateResponse locate = new LocateResponse();
+        locate.page_id = "p1";
+        locate.status = "safe_to_erase";
+        locate.regions.add(region("r1", 0.20, 0.94, 0.30, 0.98));
+        locate.regions.add(region("r2", 0.70, 0.94, 0.80, 0.98));
+        BodyBoundary boundary = new BodyBoundary();
+        boundary.y = 0.95;
+        boundary.basis = "body";
+        locate.nearest_body_boundary = boundary;
+        RegionValidator.ValidationResult validation = RegionValidator.validate(
+                new RegionValidator.PageLocateResult("p1", "safe_to_erase", locate.regions, boundary), image);
+
+        assertFalse(validation.isAccepted());
+        assertTrue(new ExamPipeline(FakeVlm.stable()).isOnlyBodyGapConflict(validation));
+    }
+
+    @Test
+    public void permitsMaskTouchAsInitialEligibilityButKeepsOtherValidationRisksClosed() {
+        ExamPipeline pipeline = new ExamPipeline(FakeVlm.stable());
+
+        assertTrue(pipeline.allowsConflictingBoundaryReplacementAfterRefine(
+                RegionValidator.ValidationResult.rejectedResult("ink mask touches candidate box")));
+        assertTrue(pipeline.allowsConflictingBoundaryReplacementAfterRefine(
+                RegionValidator.ValidationResult.rejectedResult("body blank gap is insufficient")));
+        assertFalse(pipeline.allowsConflictingBoundaryReplacementAfterRefine(
+                RegionValidator.ValidationResult.rejectedResult("coordinates must satisfy x1 < x2 and y1 < y2")));
+        assertFalse("mask-touch is only an initial eligibility; it is not a final gap replacement condition",
+                pipeline.isOnlyBodyGapConflict(RegionValidator.ValidationResult.rejectedResult("ink mask touches candidate box")));
+    }
+
+    private EraseRegion region(String id, double x1, double y1, double x2, double y2) {
+        EraseRegion region = new EraseRegion();
+        region.region_id = id;
+        region.x1 = x1; region.y1 = y1; region.x2 = x2; region.y2 = y2;
+        region.page_number_text = id;
+        region.same_line_metadata = "";
+        region.confidence = 0.99;
+        region.safety_margin = "blank";
+        return region;
+    }
+
+    @Test
     public void refinesAnEmptyRegionEvenWhenAnotherFooterRegionPassesGeometryValidation() throws Exception {
         twoFooterTargetImageOrders.add(1);
         FakeVlm fake = FakeVlm.stable();
@@ -371,6 +485,10 @@ public class ExamPipelineTest {
         final List<String> auditFailPages = new ArrayList<String>();
         final List<String> auditColorWarningPages = new ArrayList<String>();
         final List<String> locateManualPages = new ArrayList<String>();
+        final List<String> patternRoiSafeLocatePages = new ArrayList<String>();
+        final List<String> patternRoiLocatePageIds = new ArrayList<String>();
+        final List<String> locateStatusCorrectionNoPageNumPages = new ArrayList<String>();
+        final List<String> locateStatusCorrectionPageIds = new ArrayList<String>();
         final List<String> lowDirectionConfidencePages = new ArrayList<String>();
         final List<String> locateThrowsPages = new ArrayList<String>();
         final List<String> locateProtocolFailurePages = new ArrayList<String>();
@@ -383,6 +501,7 @@ public class ExamPipelineTest {
         final List<String> boundaryConflictPages = new ArrayList<String>();
         final List<String> duplicateRegionPages = new ArrayList<String>();
         final List<String> twoRegionAuditResidualPages = new ArrayList<String>();
+        final List<String> twoRegionLocatePages = new ArrayList<String>();
         final List<String> emptyMultiRegionPages = new ArrayList<String>();
         final List<String> coordinateRefineCalls = new ArrayList<String>();
         final java.util.Map<String, Integer> auditCalls = new java.util.HashMap<String, Integer>();
@@ -486,7 +605,7 @@ public class ExamPipelineTest {
             region.confidence = lowConfidencePages.contains(page.getPageId()) ? 0.80 : 0.99;
             region.safety_margin = "blank";
             response.regions.add(region);
-            if (twoRegionAuditResidualPages.contains(page.getPageId())) {
+            if (twoRegionAuditResidualPages.contains(page.getPageId()) || twoRegionLocatePages.contains(page.getPageId())) {
                 region.x1 = 0.20;
                 region.x2 = 0.35;
                 EraseRegion second = new EraseRegion();
@@ -531,6 +650,39 @@ public class ExamPipelineTest {
                 response.regions.add(duplicate);
             }
             return response;
+        }
+
+        @Override
+        public LocateResponse locate(VlmClient.PageImage page, PatternGroup group, VlmClient.RoiImage roi) {
+            patternRoiLocatePageIds.add(page.getPageId());
+            if (!patternRoiSafeLocatePages.contains(page.getPageId())) {
+                LocateResponse manual = new LocateResponse();
+                manual.page_id = page.getPageId();
+                manual.status = "manual_review";
+                manual.evidence = "fake ROI remains uncertain";
+                return manual;
+            }
+            LocateResponse safe = new LocateResponse();
+            safe.page_id = page.getPageId();
+            safe.status = "safe_to_erase";
+            safe.evidence = "fake pattern ROI locate";
+            BodyBoundary boundary = new BodyBoundary();
+            boundary.y = 0.50;
+            boundary.basis = "ROI body boundary";
+            safe.nearest_body_boundary = boundary;
+            EraseRegion region = new EraseRegion();
+            region.region_id = "r1";
+            // Fake pattern ROI is x=0..1, y=0.63..1.00; this maps back to the footer target.
+            region.x1 = 0.45;
+            region.y1 = 0.83;
+            region.x2 = 0.55;
+            region.y2 = 0.91;
+            region.page_number_text = "1";
+            region.same_line_metadata = "page only";
+            region.confidence = 0.99;
+            region.safety_margin = "blank";
+            safe.regions.add(region);
+            return safe;
         }
 
         @Override
@@ -601,6 +753,20 @@ public class ExamPipelineTest {
             return locate(page, group);
         }
 
+        @Override
+        public LocateResponse correctLocateStatusAfterManualReview(VlmClient.PageImage page, PatternGroup group) {
+            locateStatusCorrectionPageIds.add(page.getPageId());
+            LocateResponse response = new LocateResponse();
+            response.page_id = page.getPageId();
+            response.status = locateStatusCorrectionNoPageNumPages.contains(page.getPageId()) ? "no_pagenum" : "manual_review";
+            response.evidence = "fake status correction";
+            BodyBoundary boundary = new BodyBoundary();
+            boundary.y = 0.90;
+            boundary.basis = "java";
+            response.nearest_body_boundary = boundary;
+            return response;
+        }
+
         public VerifyResponse verify(VlmClient.PageImage page, EraseRegion region, VlmClient.RoiImage roi) {
             String regionId = region == null ? "edge" : region.region_id;
             verifyCalls.add(page.getPageId() + ":" + regionId);
@@ -640,6 +806,7 @@ public class ExamPipelineTest {
             auditCalls.put(original.getPageId(), call);
             AuditResponse response = new AuditResponse();
             response.page_id = original.getPageId();
+            response.original_target_is_non_body = true;
             response.decision = auditFailPages.contains(original.getPageId()) || auditColorWarningPages.contains(original.getPageId())
                     ? "manual_review" : "pass";
             response.body_unchanged = !auditFailPages.contains(original.getPageId());

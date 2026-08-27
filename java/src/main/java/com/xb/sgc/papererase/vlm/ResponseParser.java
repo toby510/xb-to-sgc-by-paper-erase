@@ -230,19 +230,20 @@ public final class ResponseParser {
 
     public static AuditResponse parseAudit(String raw, String expectedPageId) {
         JsonNode root = root(raw);
-        requireFields(root, "page_id", "decision", "body_unchanged", "target_removed", "background_acceptable", "evidence");
-        rejectUnknown(root, "page_id", "decision", "body_unchanged", "target_removed", "background_acceptable", "evidence");
+        requireFields(root, "page_id", "decision", "original_target_is_non_body", "body_unchanged", "target_removed", "background_acceptable", "evidence");
+        rejectUnknown(root, "page_id", "decision", "original_target_is_non_body", "body_unchanged", "target_removed", "background_acceptable", "evidence");
         AuditResponse response = new AuditResponse();
         response.page_id = requiredText(root, "page_id");
         requireEqual(response.page_id, expectedPageId, "page_id", raw);
         response.decision = enumText(root, "decision", "pass", "manual_review");
+        response.original_target_is_non_body = requiredBoolean(root, "original_target_is_non_body");
         response.body_unchanged = requiredBoolean(root, "body_unchanged");
         response.target_removed = requiredBoolean(root, "target_removed");
         response.background_acceptable = requiredBoolean(root, "background_acceptable");
         response.evidence = requiredText(root, "evidence");
         if ("pass".equals(response.decision)
-                && (!response.body_unchanged || !response.target_removed)) {
-            throw bad("audit pass requires body_unchanged and target_removed", raw);
+                && (!response.original_target_is_non_body || !response.body_unchanged || !response.target_removed)) {
+            throw bad("audit pass requires original_target_is_non_body, body_unchanged and target_removed", raw);
         }
         return response;
     }
@@ -252,11 +253,18 @@ public final class ResponseParser {
     }
 
     private static BodyBoundary parseBoundary(JsonNode node, String raw) {
-        requireFields(node, "x", "y", "basis");
+        // 轴向坐标允许缺失或 null（见 locate-prompt-v20：底部/顶部目标只填 y，左侧/右侧只填 x，
+        // ROI 无清晰正文时两轴皆 null）。缺失字段等价于 null，只要求 basis 必填；否则 qwen 等
+        // 模型省略 null 轴字段会被误判为协议错误而整页误走 manual_review。
         rejectUnknown(node, "x", "y", "basis");
+        requireFields(node, "basis");
         BodyBoundary boundary = new BodyBoundary();
-        boundary.x = nullableFiniteUnit(node, "x", raw);
-        boundary.y = nullableFiniteUnit(node, "y", raw);
+        if (node.has("x")) {
+            boundary.x = nullableFiniteUnit(node, "x", raw);
+        }
+        if (node.has("y")) {
+            boundary.y = nullableFiniteUnit(node, "y", raw);
+        }
         boundary.basis = requiredText(node, "basis");
         return boundary;
     }

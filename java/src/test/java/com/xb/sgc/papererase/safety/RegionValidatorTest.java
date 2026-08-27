@@ -109,6 +109,47 @@ public class RegionValidatorTest {
     }
 
     @Test
+    public void expandsWideIndependentFooterBandBeyondThirtyTwoPixelsToBlankBoundary() {
+        BufferedImage image = blankPage(300, 200);
+        // 候选框已落在独立页脚带中部；同一连续徽标/色块向左右各延伸 60px，超过旧 32px
+        // 上限，但在新的有界自适应预算内。正文方向仍保留 40px 的真实空白带。
+        drawText(image, 60, 180, 240, 190);
+
+        RegionValidator.ValidationResult result = RegionValidator.validate(
+                locate("page-1", region("r1", 0.40, 0.90, 0.60, 0.955), boundary(null, 0.70)), image);
+
+        assertTrue(result.getReasons().toString(), result.isAccepted());
+        RegionValidator.PixelRegion expanded = result.getRegions().get(0);
+        assertTrue("left outer contour must be covered", expanded.getX() <= 60);
+        assertTrue("right outer contour must be covered", expanded.getX() + expanded.getWidth() > 240);
+    }
+
+    @Test
+    public void refusesWideFooterExpansionWhenItWouldCrossTheBodySafetyBand() {
+        BufferedImage image = blankPage(300, 200);
+        // 连续墨迹一直向正文方向延伸；即使扫描预算变大，也必须在 8px 正文安全带前失败。
+        drawText(image, 60, 145, 240, 190);
+
+        RegionValidator.ValidationResult result = RegionValidator.validate(
+                locate("page-1", region("r1", 0.40, 0.90, 0.60, 0.955), boundary(null, 0.70)), image);
+
+        assertFalse(result.isAccepted());
+    }
+
+    @Test
+    public void refusesWideFooterExpansionWhenNoBlankBoundaryExistsWithinTheHardCap() {
+        BufferedImage image = blankPage(300, 200);
+        // 左右两端的空白分别距离候选框超过 96px，不能因“可能仍是同一行”无限扩张。
+        drawText(image, 10, 180, 290, 190);
+
+        RegionValidator.ValidationResult result = RegionValidator.validate(
+                locate("page-1", region("r1", 0.40, 0.90, 0.60, 0.955), boundary(null, 0.70)), image);
+
+        assertFalse(result.isAccepted());
+        assertTrue(result.getReasons().toString(), result.getReasons().contains("ink mask touches candidate box"));
+    }
+
+    @Test
     public void validateKeepsNormalPageAndNonBottomStripCandidatesOutOfRelaxedEdgeBand() {
         BufferedImage normalPage = blankPage();
         drawText(normalPage, 45, 146, 54, 159);
@@ -248,6 +289,37 @@ public class RegionValidatorTest {
         assertTrue(effective.basis.contains("original_y=0.07"));
         RegionValidator.ValidationResult validation = RegionValidator.validate(locate("page-1", refined, effective), image);
         assertTrue(validation.getReasons().toString(), validation.isAccepted());
+    }
+
+    @Test
+    public void replacesConflictingBoundaryForSameLiteralWithPlausibleRoiProjectionShift() {
+        BufferedImage image = blankPage();
+        drawText(image, 58, 184, 62, 190);
+        EraseRegion original = region("r1", 0.65, 0.90, 0.76, 0.98);
+        EraseRegion refined = region("r1", 0.565, 0.90, 0.654, 0.98);
+        original.page_number_text = "第6页(共8页)";
+        refined.page_number_text = "第6页(共8页)";
+
+        EraseRegion trimmed = RegionValidator.trimBodyFacingBlankPadding(refined, image);
+        BodyBoundary effective = RegionValidator.replaceConflictingBodyBoundary(
+                original, trimmed, boundary(null, 0.95), image);
+
+        assertTrue("same literal plus bounded center shift must retain pixel-proven replacement", effective != null);
+        RegionValidator.ValidationResult validation = RegionValidator.validate(locate("page-1", trimmed, effective), image);
+        assertTrue(validation.getReasons().toString(), validation.isAccepted());
+    }
+
+    @Test
+    public void refusesConflictingBoundaryForSameLiteralInDistantUnrelatedProjection() {
+        BufferedImage image = blankPage();
+        drawText(image, 72, 184, 78, 190);
+        EraseRegion original = region("r1", 0.10, 0.90, 0.20, 0.98);
+        EraseRegion refined = region("r1", 0.70, 0.90, 0.80, 0.98);
+        original.page_number_text = "第6页(共8页)";
+        refined.page_number_text = "第6页(共8页)";
+
+        assertNull(RegionValidator.replaceConflictingBodyBoundary(
+                original, refined, boundary(null, 0.95), image));
     }
 
     @Test

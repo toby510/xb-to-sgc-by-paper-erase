@@ -165,7 +165,7 @@ public final class RegionValidator {
             // 3.8 框边墨迹门禁：定位坐标落在字形抗锯齿边缘时，先尝试向空白侧扩到安全边界。
             // 定位坐标落在字形抗锯齿边缘时，擦除器会因“掩码贴框”拒绝。这里与擦除器
             // 使用同一类墨迹判定，并把每一边扩到两条连续空白扫描线为止。这样批准框本身
-            // 带有可验证的空白边界；无法在最多半个字高/16px 内找到空白，宁可拒绝也不
+            // 带有可验证的空白边界；无法在有硬上限的自适应扫描内找到空白，宁可拒绝也不
             // 把相邻文字或正文吞进擦除范围。
             if (maskTouchesCandidateBox(image, pixelRegion)) {
                 PixelRegion expanded = expandToBlankBoundary(edge, pixelRegion, boundary, image);
@@ -206,7 +206,7 @@ public final class RegionValidator {
         Edge refinedEdge = edge(refinedRegion);
         if (originalEdge == Edge.NONE || originalEdge != refinedEdge
                 || !hasDirectionalBoundary(originalEdge, originalBoundary)
-                || !baselineProjectionOverlaps(originalRegion, refinedRegion, originalEdge)) {
+                || !baselineProjectionContinuous(originalRegion, refinedRegion, originalEdge)) {
             return null;
         }
         PixelRegion refined = toPixelRegion("boundary-conflict", "refined", refinedRegion, image);
@@ -477,14 +477,26 @@ public final class RegionValidator {
         return coordinate != null && finite(coordinate) && coordinate >= 0 && coordinate <= 1;
     }
 
-    /** 判断原始框与局部精修框在页面边缘基线方向的投影重叠是否至少达到 50%。 */
-    private static boolean baselineProjectionOverlaps(EraseRegion original, EraseRegion refined, Edge edge) {
+    /**
+     * 原始框与 ROI 精修框必须仍指向同一条目标行。优先接受至少 50% 的基线投影重叠；若 ROI
+     * 坐标发生显著但合理的横向/纵向漂移，仅在可见页码字面量完全相同且中心距离不超过两框中
+     * 较大的投影跨度时接受。这样允许局部图测量偏移，仍拒绝无关远处区域。
+     */
+    private static boolean baselineProjectionContinuous(EraseRegion original, EraseRegion refined, Edge edge) {
         double originalStart = (edge == Edge.TOP || edge == Edge.BOTTOM) ? original.x1 : original.y1;
         double originalEnd = (edge == Edge.TOP || edge == Edge.BOTTOM) ? original.x2 : original.y2;
         double refinedStart = (edge == Edge.TOP || edge == Edge.BOTTOM) ? refined.x1 : refined.y1;
         double refinedEnd = (edge == Edge.TOP || edge == Edge.BOTTOM) ? refined.x2 : refined.y2;
         double overlap = Math.max(0D, Math.min(originalEnd, refinedEnd) - Math.max(originalStart, refinedStart));
-        return overlap / Math.min(originalEnd - originalStart, refinedEnd - refinedStart) >= 0.5D;
+        double originalSpan = originalEnd - originalStart;
+        double refinedSpan = refinedEnd - refinedStart;
+        if (overlap / Math.min(originalSpan, refinedSpan) >= 0.5D) return true;
+        if (original.page_number_text == null || original.page_number_text.trim().isEmpty()
+                || !original.page_number_text.trim().equals(refined.page_number_text == null ? "" : refined.page_number_text.trim())) {
+            return false;
+        }
+        double centerDistance = Math.abs((originalStart + originalEnd - refinedStart - refinedEnd) / 2D);
+        return centerDistance <= Math.max(originalSpan, refinedSpan);
     }
 
     /** 清理正文边界证据文本中的分号，避免写入审计 basis 时破坏内部字段格式。 */
@@ -524,7 +536,10 @@ public final class RegionValidator {
      */
     private static PixelRegion expandToBlankBoundary(Edge edge, PixelRegion region, BodyBoundary boundary,
                                                      BufferedImage image) {
-        int maxSteps = Math.min(32, Math.max(24, Math.max(1, region.getHeight())));
+        // 宽页脚徽标/色块的完整外轮廓可能明显大于普通数字高度。扫描预算以候选最大边的
+        // 两倍自适应增长，同时由 96px 硬上限约束；它只决定何时停止寻找两条空白线，四向
+        // 墨迹判定、正文方向 8px 安全带和物理页边规则均不变。
+        int maxSteps = Math.min(96, Math.max(32, 2 * Math.max(region.getWidth(), region.getHeight())));
         int backgroundLum = BackgroundEstimator.medianLightLuminance(image, region);
         PixelRegion expanded = region;
         for (Side side : Side.values()) {

@@ -71,7 +71,7 @@ public class ResponseParserTest {
         assertEquals("safe_to_erase", verify.decision);
 
         AuditResponse audit = ResponseParser.parseAudit("{\"page_id\":\"p1\",\"decision\":\"pass\","
-                + "\"body_unchanged\":true,\"target_removed\":true,\"background_acceptable\":true,"
+                + "\"original_target_is_non_body\":true,\"body_unchanged\":true,\"target_removed\":true,\"background_acceptable\":true,"
                 + "\"evidence\":\"ok\"}", "p1");
         assertTrue(audit.body_unchanged);
     }
@@ -84,6 +84,34 @@ public class ResponseParserTest {
                 + "\"refined_nearest_body_boundary\":{\"x\":null,\"y\":0.10,\"basis\":\"body\"}}", "p1", "r1");
         assertEquals(0.30, verify.refined_region.y1, 0.0);
         assertEquals(0.10, verify.refined_nearest_body_boundary.y, 0.0);
+    }
+
+    @Test
+    public void parsesLocateWhenBoundaryOmitsTheNullAxis() {
+        // 底部/顶部目标：模型省略 x:null 只返回 y 轴（locate-prompt-v20 允许 null 轴，模型常省略该字段）
+        LocateResponse footer = ResponseParser.parseLocate("{\"page_id\":\"p1\",\"status\":\"safe_to_erase\","
+                + "\"regions\":[{\"region_id\":\"r1\",\"x1\":0.45,\"y1\":0.94,\"x2\":0.55,\"y2\":0.98,"
+                + "\"page_number_text\":\"1\",\"same_line_metadata\":\"\",\"on_line\":false,"
+                + "\"confidence\":0.99,\"safety_margin\":\"blank\"}],"
+                + "\"nearest_body_boundary\":{\"y\":0.88,\"basis\":\"java\"},\"evidence\":\"ok\"}", "p1");
+        assertTrue(footer.nearest_body_boundary.x == null);
+        assertEquals(0.88, footer.nearest_body_boundary.y, 0.0);
+
+        // 左侧/右侧目标：模型省略 y:null 只返回 x 轴
+        LocateResponse side = ResponseParser.parseLocate("{\"page_id\":\"p1\",\"status\":\"safe_to_erase\","
+                + "\"regions\":[{\"region_id\":\"r1\",\"x1\":0.02,\"y1\":0.45,\"x2\":0.04,\"y2\":0.55,"
+                + "\"page_number_text\":\"2\",\"same_line_metadata\":\"\",\"on_line\":false,"
+                + "\"confidence\":0.96,\"safety_margin\":\"blank\"}],"
+                + "\"nearest_body_boundary\":{\"x\":0.06,\"basis\":\"page left edge\"},\"evidence\":\"ok\"}", "p1");
+        assertEquals(0.06, side.nearest_body_boundary.x, 0.0);
+        assertTrue(side.nearest_body_boundary.y == null);
+
+        // 边界必须至少保留 basis：只有坐标、无 basis 仍拒绝，避免放空协议。
+        assertBadLocate("{\"page_id\":\"p1\",\"status\":\"safe_to_erase\","
+                + "\"regions\":[{\"region_id\":\"r1\",\"x1\":0.45,\"y1\":0.94,\"x2\":0.55,\"y2\":0.98,"
+                + "\"page_number_text\":\"1\",\"same_line_metadata\":\"\",\"on_line\":false,"
+                + "\"confidence\":0.99,\"safety_margin\":\"blank\"}],"
+                + "\"nearest_body_boundary\":{\"y\":0.88},\"evidence\":\"ok\"}", "missing field");
     }
 
     @Test
@@ -124,7 +152,7 @@ public class ResponseParserTest {
         assertBadVerify("{\"page_id\":\"p1\",\"region_id\":\"r1\",\"decision\":\"erase\","
                 + "\"allowed_scope\":\"x\",\"evidence\":\"x\",\"refined_region\":null,"
                 + "\"refined_nearest_body_boundary\":null}", "decision");
-        assertBadAudit("{\"page_id\":\"p1\",\"decision\":\"pass\",\"body_unchanged\":true,"
+        assertBadAudit("{\"page_id\":\"p1\",\"decision\":\"pass\",\"original_target_is_non_body\":true,\"body_unchanged\":true,"
                 + "\"target_removed\":false,\"background_acceptable\":true,\"evidence\":\"x\"}", "audit pass");
 
         ResponseParser.ParseException ex = ResponseParser.parseFailure("token=secret-1234567890 " + repeat("x", 500));
@@ -135,9 +163,19 @@ public class ResponseParserTest {
     @Test
     public void acceptsAuditPassWithOnlyBackgroundWarning() {
         AuditResponse audit = ResponseParser.parseAudit("{\"page_id\":\"p1\",\"decision\":\"pass\","
-                + "\"body_unchanged\":true,\"target_removed\":true,\"background_acceptable\":false,"
+                + "\"original_target_is_non_body\":true,\"body_unchanged\":true,\"target_removed\":true,\"background_acceptable\":false,"
                 + "\"evidence\":\"only background tone differs\"}", "p1");
         assertFalse(audit.background_acceptable);
+    }
+
+    @Test
+    public void rejectsAuditPassWhenOriginalTargetIsBodyOrFieldIsMissing() {
+        assertBadAudit("{\"page_id\":\"p1\",\"decision\":\"pass\",\"body_unchanged\":true,"
+                + "\"target_removed\":true,\"background_acceptable\":true,\"evidence\":\"x\"}",
+                "original_target_is_non_body");
+        assertBadAudit("{\"page_id\":\"p1\",\"decision\":\"pass\",\"original_target_is_non_body\":false,"
+                + "\"body_unchanged\":true,\"target_removed\":true,\"background_acceptable\":true,\"evidence\":\"x\"}",
+                "audit pass");
     }
 
     private void assertBadPattern(String json, String messagePart) {

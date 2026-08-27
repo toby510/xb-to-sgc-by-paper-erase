@@ -295,13 +295,16 @@ public final class ExamModels {
         public double y2;
     }
 
-    /** 7-audit 的最终审计结论：正文未变和目标移除是两个硬条件。 */
+    /** 7-audit 的最终审计结论：原始目标非正文、正文未变和目标移除均为硬条件。 */
     @JsonIgnoreProperties(ignoreUnknown = false)
     public static final class AuditResponse {
         @JsonProperty(required = true)
         public String page_id;
         @JsonProperty(required = true)
         public String decision;
+        /** ORIGINAL 中获批擦除目标确认为非正文页码/同行元数据；不确定也必须为 false。 */
+        @JsonProperty(required = true)
+        public boolean original_target_is_non_body;
         @JsonProperty(required = true)
         public boolean body_unchanged;
         @JsonProperty(required = true)

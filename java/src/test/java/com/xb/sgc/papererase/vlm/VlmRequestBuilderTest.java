@@ -18,45 +18,13 @@ import static org.junit.Assert.assertTrue;
 
 public class VlmRequestBuilderTest {
     @Test
-    public void initialLocateCarriesCompletePatternStructureRatherThanOnlyGroupId() {
-        PatternGroup group = new PatternGroup();
-        group.group_id = "footer-spread-double-page";
-        group.edge = "bottom";
-        group.alignment = "spread";
-        group.layout_description = "双页扫描，左右各有一个页码，中间可能有版权符号";
-        group.locate_window = new LocateWindow();
-        group.locate_window.x1 = 0.0;
-        group.locate_window.y1 = 0.9;
-        group.locate_window.x2 = 1.0;
-        group.locate_window.y2 = 1.0;
-
-        String evidence = VlmClient.locatePatternEvidence(group);
-
-        assertTrue(evidence.contains("footer-spread-double-page"));
-        assertTrue(evidence.contains("alignment=spread"));
-        assertTrue(evidence.contains("左右各有一个页码"));
-        assertTrue(evidence.contains("0.0,0.9,1.0,1.0"));
-    }
-
-    @Test
-    public void spreadVerifyCarriesPatternButOrdinaryVerifyKeepsItsOriginalInput() {
-        PatternGroup spread = new PatternGroup();
-        spread.group_id = "footer-spread-double-page";
-        spread.edge = "bottom";
-        spread.alignment = "spread";
-        spread.layout_description = "双页扫描，左右各有一个页码";
-        spread.locate_window = new LocateWindow();
-        spread.locate_window.x1 = 0.0;
-        spread.locate_window.y1 = 0.9;
-        spread.locate_window.x2 = 1.0;
-        spread.locate_window.y2 = 1.0;
-
-        PatternGroup ordinary = new PatternGroup();
-        ordinary.alignment = "center";
-
-        assertTrue(VlmClient.verifyPatternEvidence(spread).contains("alignment=spread"));
-        assertTrue(VlmClient.verifyPatternEvidence(spread).contains("左右各有一个页码"));
-        assertEquals("", VlmClient.verifyPatternEvidence(ordinary));
+    public void verifyCarriesOnlyCurrentPageSemanticAnchor() {
+        EraseRegion region = region("r1", "第2页", "英语试卷");
+        String anchor = VlmClient.verifySemanticAnchor(region);
+        assertTrue(anchor.contains("第2页"));
+        assertTrue(anchor.contains("英语试卷"));
+        assertEquals("", VlmClient.verifySemanticAnchor(null));
+        assertFalse(anchor.contains("pattern_group"));
     }
 
     @Test

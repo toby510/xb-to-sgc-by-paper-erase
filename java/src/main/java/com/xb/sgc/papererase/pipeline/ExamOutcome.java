@@ -66,6 +66,33 @@ public final class ExamOutcome {
     }
 
     /** 单页终态：原图、候选/擦除图、门禁状态、定位和审计证据。 */
+    public static final class ApprovedRegion {
+        public final String region_id;
+        public final EraseRegion original_locate_normalized_box;
+        public final int x;
+        public final int y;
+        public final int width;
+        public final int height;
+        public final EraseRegion final_normalized_box;
+        public final boolean java_expanded;
+        public final boolean java_coordinate_rescued;
+        public final boolean vlm_coordinate_refined;
+        public final String semantic_confirmation;
+
+        public ApprovedRegion(String regionId, EraseRegion originalLocate, int x, int y, int width, int height,
+                              EraseRegion finalNormalized, boolean javaExpanded, boolean javaCoordinateRescued,
+                              boolean vlmCoordinateRefined, String semanticConfirmation) {
+            this.region_id = regionId;
+            this.original_locate_normalized_box = originalLocate;
+            this.x = x; this.y = y; this.width = width; this.height = height;
+            this.final_normalized_box = finalNormalized;
+            this.java_expanded = javaExpanded;
+            this.java_coordinate_rescued = javaCoordinateRescued;
+            this.vlm_coordinate_refined = vlmCoordinateRefined;
+            this.semantic_confirmation = semanticConfirmation;
+        }
+    }
+
     public static final class PageOutcome {
         private final String pageId;
         private final String status;
@@ -79,6 +106,7 @@ public final class ExamOutcome {
         private final List<EraseRegion> regions;
         private final LocateResponse locate;
         private final AuditResponse audit;
+        private List<ApprovedRegion> approvedRegions;
 
         public PageOutcome(String pageId, String status, String reason, BufferedImage original, BufferedImage normalized,
                            BufferedImage candidate, PageTransforms transforms, PatternGroup consensus,
@@ -96,6 +124,16 @@ public final class ExamOutcome {
                     : Collections.unmodifiableList(new ArrayList<EraseRegion>(regions));
             this.locate = locate;
             this.audit = audit;
+            this.approvedRegions = Collections.emptyList();
+        }
+
+        public PageOutcome(String pageId, String status, String reason, BufferedImage original, BufferedImage normalized,
+                           BufferedImage candidate, PageTransforms transforms, PatternGroup consensus,
+                           List<EraseRegion> regions, LocateResponse locate, AuditResponse audit,
+                           List<ApprovedRegion> approvedRegions) {
+            this(pageId, status, reason, original, normalized, candidate, transforms, consensus, regions, locate, audit);
+            this.approvedRegions = approvedRegions == null ? Collections.<ApprovedRegion>emptyList()
+                    : Collections.unmodifiableList(new ArrayList<ApprovedRegion>(approvedRegions));
         }
 
         public String getPageId() {
@@ -148,6 +186,8 @@ public final class ExamOutcome {
         public AuditResponse getAudit() {
             return audit;
         }
+
+        public List<ApprovedRegion> getApprovedRegions() { return approvedRegions; }
     }
 
     /** 原图与旋正图之间的尺寸和阅读方向元数据，用于输出坐标还原。 */

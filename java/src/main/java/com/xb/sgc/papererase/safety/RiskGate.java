@@ -24,9 +24,9 @@ public final class RiskGate {
         if (blank(context.getPageId()) || blank(context.getPatternGroupId())) {
             return true;
         }
-        // consensusState 是 pattern 阶段对“同卷页码共性是否稳定”的结论。
-        // 只有明确为 stable，才允许把整卷共性作为低风险依据；mixed/uncertain 必须二检。
-        if (!"stable".equals(context.getConsensusState())) {
+        // mixed 可能只是同卷存在多个合法版式（例如双页和答案页）。当前页已绑定高置信度本地
+        // group 时，不因其他页合法分组单独触发 verify；uncertain/unknown 仍失败关闭。
+        if (!"stable".equals(context.getConsensusState()) && !"mixed".equals(context.getConsensusState())) {
             return true;
         }
         // 三项分别检查：共性本身稳定、当前页边缘与共性一致、Java 已证明正文方向存在安全空白带。

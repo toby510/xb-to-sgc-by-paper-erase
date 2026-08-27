@@ -33,6 +33,10 @@ import java.util.Map;
  * {@link ResponseParser}，避免调用方在“坐标不可信”时仍继续擦除。
  */
 public interface VlmClient {
+    /** 导出本次客户端构造时冻结的提示词，仅供 run 元数据快照，不含任何密钥。 */
+    default Map<String, String> frozenPrompts() {
+        return java.util.Collections.emptyMap();
+    }
     /** 1-pattern：跨页识别阅读方向、页码共性和粗略边缘窗口。 */
     PatternResponse pattern(List<PageImage> pages);
 
@@ -49,6 +53,14 @@ public interface VlmClient {
 
     /** 同一页、同一图的 locate 协议纠错重试；不允许脱离图片仅修补 JSON。 */
     default LocateResponse correctLocateAfterProtocolError(PageImage page, PatternGroup group, String error) {
+        return locate(page, group);
+    }
+
+    /**
+     * 首次整页 locate 已返回空框 manual_review 时，同图、同 locate 角色只纠正状态枚举。
+     * Java 不解析 evidence 猜测语义；真实客户端必须让模型按完整 locate 协议重新返回结果。
+     */
+    default LocateResponse correctLocateStatusAfterManualReview(PageImage page, PatternGroup group) {
         return locate(page, group);
     }
 
@@ -153,24 +165,11 @@ public interface VlmClient {
         return value == null ? "" : value.replace("'", "’").replace('\n', ' ').replace('\r', ' ');
     }
 
-    /** 给局部定位提供整卷共性；粗窗口只用于核对，最终坐标仍必须按 ROI 可见墨迹测量。 */
-    static String locatePatternEvidence(PatternGroup group) {
-        if (group == null || group.locate_window == null) {
-            return " edge=unknown";
-        }
-        return " pattern_group_id=" + safePromptText(group.group_id)
-                + " edge=" + group.edge + " alignment=" + group.alignment
-                + " layout_description='" + safePromptText(group.layout_description) + "'"
-                + " coarse_window_full_page=" + group.locate_window.x1 + "," + group.locate_window.y1
-                + "," + group.locate_window.x2 + "," + group.locate_window.y2
-                + " (cross-page structural prior only; inspect current full-page ink and measure final coordinates from it)";
-    }
-
-    /**
-     * verify 只补充双页版式这一项必要事实，其他版式保持原请求完全不变，避免扩大影响面。
-     */
-    static String verifyPatternEvidence(PatternGroup group) {
-        return group != null && "spread".equals(group.alignment) ? locatePatternEvidence(group) : "";
+    /** 普通 verify 只带当前页 locate 的文字语义锚点；边缘无候选复核不带任何猜测锚点。 */
+    static String verifySemanticAnchor(EraseRegion region) {
+        if (region == null) return "";
+        return " semantic_anchor: page_number_text='" + safePromptText(region.page_number_text)
+                + "', same_line_metadata='" + safePromptText(region.same_line_metadata) + "'.";
     }
 
     static String patternProtocolCorrectionInstruction(List<String> expectedPageIds, String error) {
@@ -185,6 +184,14 @@ public interface VlmClient {
         return exactProtocolPageIdInstruction(pageId) + " PROTOCOL_CORRECTION: Previous JSON violated the strict locate contract ("
                 + safePromptText(error) + "). For safe_to_erase every region must provide a non-empty page_number_text "
                 + "copied as the visible page-number literal. If it cannot be read, return manual_review with empty regions.";
+    }
+
+    static String locateStatusCorrectionInstruction(String pageId) {
+        return exactProtocolPageIdInstruction(pageId) + " STATUS_CORRECTION: The previous locate response returned "
+                + "manual_review with empty regions. Re-evaluate this same image and return the complete strict locate JSON. "
+                + "If you can already determine that every candidate belongs to the body reading flow, or that the page has no "
+                + "independent non-body page-number line, status MUST be no_pagenum with empty regions. manual_review is allowed "
+                + "only when the image genuinely cannot distinguish page number from body. safe_to_erase requires complete non-empty regions.";
     }
 
     static String exactProtocolPageIdInstruction(String pageId) {
@@ -210,16 +217,27 @@ public interface VlmClient {
         private final VlmConfig config;
         private final Path skillRoot;
         private final ObjectMapper mapper = new ObjectMapper();
+        /** 一次运行内冻结角色提示词，防止运行中编辑文件造成同一 run 混用版本。 */
+        private final Map<String, String> prompts = new LinkedHashMap<String, String>();
 
         public OpenAiCompatible(VlmConfig config, Path skillRoot) {
             this.config = config;
             this.skillRoot = skillRoot;
+            freezePrompts();
+        }
+
+        private void freezePrompts() {
+            for (String role : new String[]{"pattern", "locate", "verify", "audit"}) {
+                prompts.put(role, loadPrompt(config.role(role)));
+            }
+        }
+
+        @Override
+        public Map<String, String> frozenPrompts() {
+            return java.util.Collections.unmodifiableMap(prompts);
         }
 
         public PatternResponse pattern(List<PageImage> pages) {
-            if (pages.size() > 8) {
-                throw new IllegalArgumentException("pattern accepts at most 8 pages");
-            }
             List<String> ids = new ArrayList<String>();
             for (PageImage page : pages) {
                 ids.add(page.getPageId());
@@ -236,24 +254,27 @@ public interface VlmClient {
         }
 
         public LocateResponse locate(PageImage page, PatternGroup group) {
-            return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Locate")
-                    + locatePatternEvidence(group), one(page),
+            return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Locate"), one(page),
                     java.util.Collections.<RoiImage>emptyList()), page.getPageId());
         }
 
         @Override
         public LocateResponse correctLocateAfterProtocolError(PageImage page, PatternGroup group, String error) {
             return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Locate")
-                    + locatePatternEvidence(group)
                     + locateProtocolCorrectionInstruction(page.getPageId(), error), one(page),
+                    java.util.Collections.<RoiImage>emptyList()), page.getPageId());
+        }
+
+        @Override
+        public LocateResponse correctLocateStatusAfterManualReview(PageImage page, PatternGroup group) {
+            return ResponseParser.parseLocate(call("locate", locateStatusCorrectionInstruction(page.getPageId()), one(page),
                     java.util.Collections.<RoiImage>emptyList()), page.getPageId());
         }
 
         @Override
         public LocateResponse locate(PageImage page, PatternGroup group, RoiImage roi) {
             return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Locate ROI")
-                    + " pattern_group=" + (group == null ? "none" : group.group_id)
-                    + locatePatternEvidence(group),
+                    ,
                     java.util.Collections.<PageImage>emptyList(), java.util.Collections.singletonList(roi)), page.getPageId());
         }
 
@@ -261,15 +282,14 @@ public interface VlmClient {
         public LocateResponse relocateCoordinateRefinement(PageImage page, PatternGroup group,
                                                             EraseRegion semanticAnchor, RoiImage roi) {
             return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Relocate")
-                    + " pattern_group=" + (group == null ? "none" : group.group_id)
-                    + locatePatternEvidence(group) + relocationInstruction(semanticAnchor),
+                    + relocationInstruction(semanticAnchor),
                     java.util.Collections.<PageImage>emptyList(), java.util.Collections.singletonList(roi)), page.getPageId());
         }
 
         public VerifyResponse verify(PageImage page, EraseRegion region, RoiImage roi) {
             String regionId = region == null ? "edge" : region.region_id;
             return ResponseParser.parseVerify(call("verify", "Verify page_id=" + page.getPageId()
-                    + " region_id=" + regionId + refinementInstruction(region), one(page), java.util.Collections.singletonList(roi)),
+                    + " region_id=" + regionId + verifySemanticAnchor(region) + refinementInstruction(region), one(page), java.util.Collections.singletonList(roi)),
                     page.getPageId(), regionId);
         }
 
@@ -277,7 +297,7 @@ public interface VlmClient {
         public VerifyResponse verify(PageImage page, PatternGroup group, EraseRegion region, RoiImage roi) {
             String regionId = region == null ? "edge" : region.region_id;
             return ResponseParser.parseVerify(call("verify", "Verify page_id=" + page.getPageId()
-                    + " region_id=" + regionId + verifyPatternEvidence(group) + refinementInstruction(region),
+                    + " region_id=" + regionId + verifySemanticAnchor(region) + refinementInstruction(region),
                     one(page), java.util.Collections.singletonList(roi)), page.getPageId(), regionId);
         }
 
@@ -414,6 +434,10 @@ public interface VlmClient {
         }
 
         private String readPrompt(VlmConfig.RoleConfig role) {
+            return prompts.get(role.getRole());
+        }
+
+        private String loadPrompt(VlmConfig.RoleConfig role) {
             try {
                 return new String(Files.readAllBytes(skillRoot.resolve(role.getPromptPath())), StandardCharsets.UTF_8);
             } catch (IOException e) {
@@ -442,16 +466,27 @@ public interface VlmClient {
         private final VlmConfig config;
         private final Path skillRoot;
         private final ObjectMapper mapper = new ObjectMapper();
+        /** 一次运行内冻结角色提示词，防止运行中编辑文件造成同一 run 混用版本。 */
+        private final Map<String, String> prompts = new LinkedHashMap<String, String>();
 
         public ArkResponses(VlmConfig config, Path skillRoot) {
             this.config = config;
             this.skillRoot = skillRoot;
+            freezePrompts();
+        }
+
+        private void freezePrompts() {
+            for (String role : new String[]{"pattern", "locate", "verify", "audit"}) {
+                prompts.put(role, loadPrompt(config.role(role)));
+            }
+        }
+
+        @Override
+        public Map<String, String> frozenPrompts() {
+            return java.util.Collections.unmodifiableMap(prompts);
         }
 
         public PatternResponse pattern(List<PageImage> pages) {
-            if (pages.size() > 8) {
-                throw new IllegalArgumentException("pattern accepts at most 8 pages");
-            }
             List<String> ids = new ArrayList<String>();
             for (PageImage page : pages) {
                 ids.add(page.getPageId());
@@ -467,24 +502,27 @@ public interface VlmClient {
         }
 
         public LocateResponse locate(PageImage page, PatternGroup group) {
-            return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Locate")
-                    + locatePatternEvidence(group), one(page),
+            return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Locate"), one(page),
                     java.util.Collections.<RoiImage>emptyList()), page.getPageId());
         }
 
         @Override
         public LocateResponse correctLocateAfterProtocolError(PageImage page, PatternGroup group, String error) {
             return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Locate")
-                    + locatePatternEvidence(group)
                     + locateProtocolCorrectionInstruction(page.getPageId(), error), one(page),
+                    java.util.Collections.<RoiImage>emptyList()), page.getPageId());
+        }
+
+        @Override
+        public LocateResponse correctLocateStatusAfterManualReview(PageImage page, PatternGroup group) {
+            return ResponseParser.parseLocate(call("locate", locateStatusCorrectionInstruction(page.getPageId()), one(page),
                     java.util.Collections.<RoiImage>emptyList()), page.getPageId());
         }
 
         @Override
         public LocateResponse locate(PageImage page, PatternGroup group, RoiImage roi) {
             return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Locate ROI")
-                    + " pattern_group=" + (group == null ? "none" : group.group_id)
-                    + locatePatternEvidence(group),
+                    ,
                     java.util.Collections.<PageImage>emptyList(), java.util.Collections.singletonList(roi)), page.getPageId());
         }
 
@@ -492,15 +530,14 @@ public interface VlmClient {
         public LocateResponse relocateCoordinateRefinement(PageImage page, PatternGroup group,
                                                             EraseRegion semanticAnchor, RoiImage roi) {
             return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Relocate")
-                    + " pattern_group=" + (group == null ? "none" : group.group_id)
-                    + locatePatternEvidence(group) + relocationInstruction(semanticAnchor),
+                    + relocationInstruction(semanticAnchor),
                     java.util.Collections.<PageImage>emptyList(), java.util.Collections.singletonList(roi)), page.getPageId());
         }
 
         public VerifyResponse verify(PageImage page, EraseRegion region, RoiImage roi) {
             String regionId = region == null ? "edge" : region.region_id;
             return ResponseParser.parseVerify(call("verify", "Verify page_id=" + page.getPageId()
-                    + " region_id=" + regionId + refinementInstruction(region), one(page), java.util.Collections.singletonList(roi)),
+                    + " region_id=" + regionId + verifySemanticAnchor(region) + refinementInstruction(region), one(page), java.util.Collections.singletonList(roi)),
                     page.getPageId(), regionId);
         }
 
@@ -508,7 +545,7 @@ public interface VlmClient {
         public VerifyResponse verify(PageImage page, PatternGroup group, EraseRegion region, RoiImage roi) {
             String regionId = region == null ? "edge" : region.region_id;
             return ResponseParser.parseVerify(call("verify", "Verify page_id=" + page.getPageId()
-                    + " region_id=" + regionId + verifyPatternEvidence(group) + refinementInstruction(region),
+                    + " region_id=" + regionId + verifySemanticAnchor(region) + refinementInstruction(region),
                     one(page), java.util.Collections.singletonList(roi)), page.getPageId(), regionId);
         }
 
@@ -669,6 +706,10 @@ public interface VlmClient {
         }
 
         private String readPrompt(VlmConfig.RoleConfig role) {
+            return prompts.get(role.getRole());
+        }
+
+        private String loadPrompt(VlmConfig.RoleConfig role) {
             try {
                 return new String(Files.readAllBytes(skillRoot.resolve(role.getPromptPath())), StandardCharsets.UTF_8);
             } catch (IOException e) {
