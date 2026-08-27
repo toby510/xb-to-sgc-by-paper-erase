@@ -39,6 +39,27 @@ public class VlmRequestBuilderTest {
     }
 
     @Test
+    public void spreadVerifyCarriesPatternButOrdinaryVerifyKeepsItsOriginalInput() {
+        PatternGroup spread = new PatternGroup();
+        spread.group_id = "footer-spread-double-page";
+        spread.edge = "bottom";
+        spread.alignment = "spread";
+        spread.layout_description = "双页扫描，左右各有一个页码";
+        spread.locate_window = new LocateWindow();
+        spread.locate_window.x1 = 0.0;
+        spread.locate_window.y1 = 0.9;
+        spread.locate_window.x2 = 1.0;
+        spread.locate_window.y2 = 1.0;
+
+        PatternGroup ordinary = new PatternGroup();
+        ordinary.alignment = "center";
+
+        assertTrue(VlmClient.verifyPatternEvidence(spread).contains("alignment=spread"));
+        assertTrue(VlmClient.verifyPatternEvidence(spread).contains("左右各有一个页码"));
+        assertEquals("", VlmClient.verifyPatternEvidence(ordinary));
+    }
+
+    @Test
     public void coordinateRefinementCarriesFirstPassTextAsRoiSearchAnchor() {
         EraseRegion region = new EraseRegion();
         region.safety_margin = "coordinate_refinement_requested";

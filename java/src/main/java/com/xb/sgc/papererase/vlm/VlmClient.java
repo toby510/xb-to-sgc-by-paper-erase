@@ -92,6 +92,14 @@ public interface VlmClient {
     VerifyResponse verify(PageImage page, EraseRegion region, RoiImage roi);
 
     /**
+     * 双页扫描的局部 ROI 需要知道候选属于哪一种整卷版式；默认仍走旧方法，保证所有
+     * 既有替身和非双页调用的行为不变。真实客户端仅在 spread 共性时追加这一事实。
+     */
+    default VerifyResponse verify(PageImage page, PatternGroup group, EraseRegion region, RoiImage roi) {
+        return verify(page, region, roi);
+    }
+
+    /**
      * 坐标门禁拒绝后的二次定位只允许模型看到候选中心 ROI。整页版式已在首次 locate
      * 中确认；此处再附整页会稀释小页码的像素定位精度。默认实现兼容测试替身。
      */
@@ -156,6 +164,13 @@ public interface VlmClient {
                 + " coarse_window_full_page=" + group.locate_window.x1 + "," + group.locate_window.y1
                 + "," + group.locate_window.x2 + "," + group.locate_window.y2
                 + " (cross-page structural prior only; inspect current full-page ink and measure final coordinates from it)";
+    }
+
+    /**
+     * verify 只补充双页版式这一项必要事实，其他版式保持原请求完全不变，避免扩大影响面。
+     */
+    static String verifyPatternEvidence(PatternGroup group) {
+        return group != null && "spread".equals(group.alignment) ? locatePatternEvidence(group) : "";
     }
 
     static String patternProtocolCorrectionInstruction(List<String> expectedPageIds, String error) {
@@ -256,6 +271,14 @@ public interface VlmClient {
             return ResponseParser.parseVerify(call("verify", "Verify page_id=" + page.getPageId()
                     + " region_id=" + regionId + refinementInstruction(region), one(page), java.util.Collections.singletonList(roi)),
                     page.getPageId(), regionId);
+        }
+
+        @Override
+        public VerifyResponse verify(PageImage page, PatternGroup group, EraseRegion region, RoiImage roi) {
+            String regionId = region == null ? "edge" : region.region_id;
+            return ResponseParser.parseVerify(call("verify", "Verify page_id=" + page.getPageId()
+                    + " region_id=" + regionId + verifyPatternEvidence(group) + refinementInstruction(region),
+                    one(page), java.util.Collections.singletonList(roi)), page.getPageId(), regionId);
         }
 
         @Override
@@ -479,6 +502,14 @@ public interface VlmClient {
             return ResponseParser.parseVerify(call("verify", "Verify page_id=" + page.getPageId()
                     + " region_id=" + regionId + refinementInstruction(region), one(page), java.util.Collections.singletonList(roi)),
                     page.getPageId(), regionId);
+        }
+
+        @Override
+        public VerifyResponse verify(PageImage page, PatternGroup group, EraseRegion region, RoiImage roi) {
+            String regionId = region == null ? "edge" : region.region_id;
+            return ResponseParser.parseVerify(call("verify", "Verify page_id=" + page.getPageId()
+                    + " region_id=" + regionId + verifyPatternEvidence(group) + refinementInstruction(region),
+                    one(page), java.util.Collections.singletonList(roi)), page.getPageId(), regionId);
         }
 
         @Override

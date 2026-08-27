@@ -907,7 +907,7 @@ public final class ExamPipeline {
         }
         long startedAt = System.currentTimeMillis();
         context.event("verify", exam.getExamId(), page.getPageId(), "started", "edge", 0);
-        VerifyResponse verify = verifyWithSingleRetry(exam, page, pageImage, null,
+        VerifyResponse verify = verifyWithSingleRetry(exam, page, pageImage, group, null,
                 edgeRoi(page.getPageId(), group, locate.nearest_body_boundary, normalized), context, "edge");
         if (verify == null) {
             return manual(page, original, normalized, transforms, "edge_verify_error", group, locate);
@@ -935,7 +935,7 @@ public final class ExamPipeline {
             }
             long startedAt = System.currentTimeMillis();
             context.event("verify", exam.getExamId(), page.getPageId(), "started", region.region_id, 0);
-            VerifyResponse verify = verifyWithSingleRetry(exam, page, pageImage, region,
+            VerifyResponse verify = verifyWithSingleRetry(exam, page, pageImage, group, region,
                     roi(page.getPageId(), region, locate.nearest_body_boundary, normalized), context, region.region_id);
             if (verify == null) {
                 return manual(page, original, normalized, transforms, "verify_error", group, locate);
@@ -985,15 +985,15 @@ public final class ExamPipeline {
      * 已得到的 safe/no_pagenum/manual_review 语义结论绝不重试，避免把模型的谨慎结论刷掉。
      */
     private VerifyResponse verifyWithSingleRetry(ExamInput exam, PageInput page, VlmClient.PageImage pageImage,
-                                                  EraseRegion region, VlmClient.RoiImage roi, RunContext context,
+                                                  PatternGroup group, EraseRegion region, VlmClient.RoiImage roi, RunContext context,
                                                   String regionId) {
         try {
-            return vlm.verify(pageImage, region, roi);
+            return vlm.verify(pageImage, group, region, roi);
         } catch (RuntimeException firstFailure) {
             context.event("verify", exam.getExamId(), page.getPageId(), "retry",
                     "same_roi_after_protocol_or_transport_failure:" + regionId, 0);
             try {
-                return vlm.verify(pageImage, region, roi);
+                return vlm.verify(pageImage, group, region, roi);
             } catch (RuntimeException secondFailure) {
                 context.event("verify", exam.getExamId(), page.getPageId(), "failed",
                         shortError(secondFailure), 0);
