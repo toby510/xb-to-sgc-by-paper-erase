@@ -156,8 +156,19 @@ public final class ExamPipeline {
     private PatternBundle buildPattern(ExamInput exam, Map<String, BufferedImage> originals, RunContext context) {
         // 1.1 代表页采样：先用少量页面判断整卷是否足够同质，控制调用成本。
         PatternBundle bundle = new PatternBundle();
-        List<PageInput> representative = PageBatcher.representative(exam.getPages(), patternSampleMaxPages);
-        if (representative.size() < exam.getPages().size()) {
+        List<PageInput> nonBlankPages = new ArrayList<PageInput>();
+        for (PageInput page : exam.getPages()) {
+            if (isVisiblyBlankPage(originals.get(page.getPageId()))) {
+                context.event("pattern", exam.getExamId(), page.getPageId(), "skipped", "java_blank", 0);
+            } else {
+                nonBlankPages.add(page);
+            }
+        }
+        if (nonBlankPages.isEmpty()) {
+            return bundle;
+        }
+        List<PageInput> representative = PageBatcher.representative(nonBlankPages, patternSampleMaxPages);
+        if (representative.size() < nonBlankPages.size()) {
             // 1.2 代表页共性继承：只有方向、分组、页码存在性和置信度全部稳定才可扩散到全卷。
             PatternResponse sampled = analyzePatternBatch(exam, representative, originals, context, "representative");
             if (canInheritRepresentativePattern(sampled, representative)) {
@@ -165,7 +176,7 @@ public final class ExamPipeline {
                 inherited.page_ids.clear();
                 int rotation = sampled.page_directions.get(0).reading_rotation;
                 double directionConfidence = sampled.page_directions.get(0).confidence;
-                for (PageInput page : exam.getPages()) {
+                for (PageInput page : nonBlankPages) {
                     PageDirection direction = new PageDirection();
                     direction.page_id = page.getPageId();
                     direction.reading_rotation = rotation;
@@ -185,7 +196,7 @@ public final class ExamPipeline {
         }
         int batchIndex = 0;
         int fullPatternBatchSize = patternSampleMaxPages == 0 ? 8 : 6;
-        for (List<PageInput> batch : PageBatcher.overlapping(exam.getPages(), fullPatternBatchSize, 1)) {
+        for (List<PageInput> batch : PageBatcher.overlapping(nonBlankPages, fullPatternBatchSize, 1)) {
             // 1.4 批次合并：按 page_id 建立方向和 group_id 映射；冲突只记录 mixed，不猜测。
             batchIndex++;
             PatternResponse response = analyzePatternBatch(exam, batch, originals, context, "batch=" + batchIndex);
@@ -609,23 +620,12 @@ public final class ExamPipeline {
                     "audit_coordinate_refine", false);
         }
 
-        LocateResponse combined = copyLocateWithoutRegions(locate);
-        List<RegionValidator.PixelRegion> approved = new ArrayList<RegionValidator.PixelRegion>();
-        for (EraseRegion originalRegion : locate.regions) {
-            LocateResponse single = copyLocateWithoutRegions(locate);
-            single.regions.add(originalRegion);
-            EdgeRoi roi = candidateCenteredRoi(page.getPageId(), originalRegion, group,
-                    locate.nearest_body_boundary, image);
-            Refinement refined = roi == null ? null : refineAtRoi(exam, page, image, group, single, pageImage,
-                    originalRegion, roi, context, "audit_coordinate_refine", false);
-            if (refined == null) {
-                return null;
-            }
-            combined.regions.add(refined.locate.regions.get(0));
-            approved.addAll(refined.validation.getRegions());
-            combined.evidence = combined.evidence + "; " + refined.locate.evidence;
-        }
-        return new Refinement(combined, RegionValidator.ValidationResult.acceptedResult(approved));
+        // 同一页脚带的候选中心 ROI 可能同时包含多个页码。此时局部模型返回多个框是正确的
+        // 版式结果，不应被当成协议错误；要求数量与原候选完全一致，再统一映射和像素校验。
+        EraseRegion anchor = locate.regions.get(0);
+        EdgeRoi roi = candidateCenteredRoi(page.getPageId(), anchor, group, locate.nearest_body_boundary, image);
+        return roi == null ? null : refineAtRoi(exam, page, image, group, locate, pageImage,
+                anchor, roi, context, "audit_coordinate_refine", false);
     }
 
     private Refinement refineAtRoi(ExamInput exam, PageInput page, BufferedImage image, PatternGroup group, LocateResponse locate,
@@ -655,15 +655,29 @@ public final class ExamPipeline {
                 System.currentTimeMillis() - startedAt);
         // 局部二检只校正页码框。正文边界是首次整页 locate 基于完整版式得出的证据，
         // 不能被不含整页正文的放大 ROI 覆盖或要求其重复输出。
-        if (!"safe_to_erase".equals(relocated.status) || relocated.regions.size() != 1) {
+        if (!"safe_to_erase".equals(relocated.status) || relocated.regions.size() != locate.regions.size()) {
+            context.event(stage, exam.getExamId(), page.getPageId(), "denied",
+                    "unexpected_refinement_response status=" + relocated.status
+                            + "; region_count=" + relocated.regions.size(), 0);
             return null;
         }
+        if (locate.regions.size() > 1) {
+            LocateResponse mappedLocate = copyLocateWithoutRegions(locate);
+            for (int i = 0; i < locate.regions.size(); i++) {
+                EraseRegion mapped = mapRefinedRegion(locate.regions.get(i), relocated.regions.get(i), edgeRoi, image);
+                mappedLocate.regions.add(mapped);
+            }
+            mappedLocate.evidence = locate.evidence + "; coordinate_relocated=" + relocated.evidence;
+            RegionValidator.ValidationResult mappedValidation = RegionValidator.validate(
+                    new RegionValidator.PageLocateResult(mappedLocate.page_id, mappedLocate.status, mappedLocate.regions,
+                            mappedLocate.nearest_body_boundary), image);
+            context.event(stage, exam.getExamId(), page.getPageId(),
+                    mappedValidation.isAccepted() ? "mapped" : "rejected",
+                    "region_count=" + mappedLocate.regions.size() + "; reasons=" + mappedValidation.getReasons(), 0);
+            return mappedValidation.isAccepted() ? new Refinement(mappedLocate, mappedValidation) : null;
+        }
         EraseRegion localRegion = relocated.regions.get(0);
-        EraseRegion refined = copyRegion(originalRegion);
-        RoiTransform.PixelRect rect = edgeRoi.transform.localRectToFullPixels(
-                localRegion.x1, localRegion.y1, localRegion.x2, localRegion.y2);
-        applyRoiMappingGuard(refined, rect, image.getWidth(), image.getHeight());
-        refined.safety_margin = "local_vlm_coordinate_refined";
+        EraseRegion refined = mapRefinedRegion(originalRegion, localRegion, edgeRoi, image);
         // 局部模型为抗锯齿/可读性通常会在朝正文一侧多给少量空白内边距。正文安全距离
         // 必须从实际目标墨迹计算：这里只删除获批框内已证明为空白的 padding，不扩框、不
         // 搜索新文字，再交给同一套像素门禁复核，因而不会降低正文保护。
@@ -699,6 +713,16 @@ public final class ExamPipeline {
                         + "; body=" + boundaryEvidence(refinedLocate.nearest_body_boundary)
                         + "; reasons=" + validation.getReasons(), 0);
         return validation.isAccepted() ? new Refinement(refinedLocate, validation) : null;
+    }
+
+    private EraseRegion mapRefinedRegion(EraseRegion originalRegion, EraseRegion localRegion,
+                                         EdgeRoi edgeRoi, BufferedImage image) {
+        EraseRegion refined = copyRegion(originalRegion);
+        RoiTransform.PixelRect rect = edgeRoi.transform.localRectToFullPixels(
+                localRegion.x1, localRegion.y1, localRegion.x2, localRegion.y2);
+        applyRoiMappingGuard(refined, rect, image.getWidth(), image.getHeight());
+        refined.safety_margin = "local_vlm_coordinate_refined";
+        return RegionValidator.trimBodyFacingBlankPadding(refined, image);
     }
 
     private String boundaryEvidence(BodyBoundary boundary) {
@@ -825,6 +849,14 @@ public final class ExamPipeline {
                                               PageTransforms transforms, PatternGroup group, LocateResponse locate,
                                               VlmClient.PageImage pageImage, String deniedReason, RunContext context) {
         for (EraseRegion region : locate.regions) {
+            if (isSameLineMetadataOnly(region, locate.regions)) {
+                // 同一独立页脚带内的分隔符、版权标记等没有独立“页码”语义；把它单独送给
+                // verify 会必然得到 no_pagenum。只要它与主页码同基线，仍由原图像素门禁、
+                // 主页码 verify 和最终 audit 共同保护，不额外新增模型调用。
+                context.event("verify", exam.getExamId(), page.getPageId(), "skipped",
+                        "same_line_metadata:" + region.region_id, 0);
+                continue;
+            }
             long startedAt = System.currentTimeMillis();
             context.event("verify", exam.getExamId(), page.getPageId(), "started", region.region_id, 0);
             VerifyResponse verify = verifyWithSingleRetry(exam, page, pageImage, region,
@@ -836,14 +868,40 @@ public final class ExamPipeline {
                     System.currentTimeMillis() - startedAt);
             if (!"safe_to_erase".equals(verify.decision)) {
                 if ("no_pagenum".equals(verify.decision)) {
-                    return new PageOutcome(page.getPageId(), "no_pagenum", "verify_no_pagenum", original, normalized,
-                            normalized, transforms, group, Collections.<EraseRegion>emptyList(), locate, null);
+                    return manual(page, original, normalized, transforms, "verify_target_not_found", group, locate);
                 }
                 return manual(page, original, normalized, transforms, deniedReason, group, locate);
             }
         }
         return new PageOutcome(page.getPageId(), "needs_recheck", "verify_safe", original, normalized, normalized,
                 transforms, group, locate.regions, locate, null);
+    }
+
+    /**
+     * 判断一个 region 是否只是与页码同一独立行的分隔符/元数据，而不是可单独复核的页码。
+     * 仅当它声明了同行元数据、文本本身没有数字或页码标志，且存在纵向重叠的主页码 region
+     * 时才跳过局部 verify；任何无法证明同基线关系的文字仍按原有严格流程复核。
+     */
+    private boolean isSameLineMetadataOnly(EraseRegion candidate, List<EraseRegion> regions) {
+        if (candidate.same_line_metadata == null || candidate.same_line_metadata.trim().isEmpty()
+                || hasPageNumberMarker(candidate.page_number_text)) {
+            return false;
+        }
+        for (EraseRegion peer : regions) {
+            if (peer == candidate || !hasPageNumberMarker(peer.page_number_text)) {
+                continue;
+            }
+            if (candidate.y1 < peer.y2 && peer.y1 < candidate.y2) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasPageNumberMarker(String text) {
+        if (text == null) return false;
+        String value = text.toLowerCase();
+        return value.matches(".*[0-9０-９].*") || value.contains("第") || value.contains("页") || value.contains("page");
     }
 
     /**
@@ -1143,7 +1201,9 @@ public final class ExamPipeline {
         Map<String, BufferedImage> images = new HashMap<String, BufferedImage>();
         for (PageInput page : exam.getPages()) {
             try {
-                images.put(page.getPageId(), ImageIO.read(page.getImagePath().toFile()));
+                BufferedImage image = ImageIO.read(page.getImagePath().toFile());
+                if (image == null) throw new IOException("ImageIO returned null");
+                images.put(page.getPageId(), image);
             } catch (IOException e) {
                 throw new RuntimeException("cannot read page image: " + page.getPageId(), e);
             }

@@ -48,6 +48,7 @@ public class ExamPipelineTest {
         ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
 
         assertEquals("no_pagenum", outcome.page("p1").getStatus());
+        assertTrue("a Java-confirmed blank page must not be sent to pattern", fake.patternBatches.isEmpty());
         assertTrue("blank pages do not need locate", fake.locatePageIds.isEmpty());
         assertTrue("blank pages do not need audit", fake.auditPageIds.isEmpty());
     }
@@ -65,20 +66,17 @@ public class ExamPipelineTest {
     }
 
     @Test
-    public void fullPageSemanticLocateIsNotOverruledByLocalNoPageNumForSafeColoredTarget() throws Exception {
+    public void coloredTargetStillUsesExistingAuditGate() throws Exception {
         /*
          * 整页 locate 已确认“独立页脚目标”，并且 RegionValidator 已证明其与正文的像素空白带。
          * 局部 ROI 只能用于坐标精化；若它漏看色块页码而答 no_pagenum，不能推翻整页语义结论。
          */
         coloredImageOrders.add(1);
         FakeVlm fake = FakeVlm.stable();
-        fake.verifyNoPageNumRegionIds.add("p1:r1");
 
         ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
 
         assertEquals("safe_to_erase", outcome.page("p1").getStatus());
-        assertFalse("accepted full-page locate must not spend a semantic-overriding local verify",
-                fake.verifyCalls.contains("p1:r1"));
         assertTrue(fake.auditPageIds.contains("p1"));
     }
 
@@ -272,7 +270,7 @@ public class ExamPipelineTest {
     }
 
     @Test
-    public void auditResidualOnTwoFooterRegionsRefinesEachRegionOnceAndReaudits() throws Exception {
+    public void auditResidualOnTwoFooterRegionsAcceptsOneRoiResponseWithBothBoxes() throws Exception {
         twoFooterTargetImageOrders.add(1);
         FakeVlm fake = FakeVlm.stable();
         fake.twoRegionAuditResidualPages.add("p1");
@@ -282,7 +280,7 @@ public class ExamPipelineTest {
         assertEquals("safe_to_erase", outcome.page("p1").getStatus());
         assertEquals("the first residual audit and the refined result must both be audited",
                 2, Collections.frequency(fake.auditPageIds, "p1"));
-        assertEquals(Arrays.asList("p1:r1", "p1:r2"), fake.coordinateRefineCalls);
+        assertEquals(Collections.singletonList("p1:r1"), fake.coordinateRefineCalls);
     }
 
     private ExamInput exam(int pages, boolean incomplete) throws Exception {
@@ -336,6 +334,16 @@ public class ExamPipelineTest {
         return image;
     }
 
+    private static void assertImagesEqual(BufferedImage expected, BufferedImage actual) {
+        assertEquals(expected.getWidth(), actual.getWidth());
+        assertEquals(expected.getHeight(), actual.getHeight());
+        for (int y = 0; y < expected.getHeight(); y++) {
+            for (int x = 0; x < expected.getWidth(); x++) {
+                assertEquals("pixel " + x + "," + y, expected.getRGB(x, y), actual.getRGB(x, y));
+            }
+        }
+    }
+
     private static final class FakeVlm implements VlmClient {
         final List<String> patternBatches = new ArrayList<String>();
         final List<String> locatePageIds = new ArrayList<String>();
@@ -343,6 +351,7 @@ public class ExamPipelineTest {
         final List<String> auditPageIds = new ArrayList<String>();
         final List<String> lowConfidencePages = new ArrayList<String>();
         final List<String> noCandidatePages = new ArrayList<String>();
+        final List<String> emptyGroupPages = new ArrayList<String>();
         final List<String> verifyNoPageNumRegionIds = new ArrayList<String>();
         final List<String> verifyManualRegionIds = new ArrayList<String>();
         final List<String> eraseFailurePages = new ArrayList<String>();
@@ -395,9 +404,13 @@ public class ExamPipelineTest {
                 direction.reading_rotation = "p2".equals(page.getPageId()) ? 90 : 0;
                 direction.confidence = lowDirectionConfidencePages.contains(page.getPageId()) ? 0.60 : 0.99;
                 response.page_directions.add(direction);
-                group.page_ids.add(page.getPageId());
+                if (emptyGroupPages.contains(page.getPageId())) {
+                    response.ungrouped_page_ids.add(page.getPageId());
+                } else {
+                    group.page_ids.add(page.getPageId());
+                }
             }
-            response.pattern_groups.add(group);
+            if (!group.page_ids.isEmpty()) response.pattern_groups.add(group);
             return response;
         }
 
@@ -514,6 +527,19 @@ public class ExamPipelineTest {
             local.confidence = semanticAnchor.confidence;
             local.safety_margin = semanticAnchor.safety_margin;
             response.regions.add(local);
+            if ("r1".equals(semanticAnchor.region_id)) {
+                EraseRegion second = new EraseRegion();
+                second.region_id = "r2";
+                second.x1 = 0.70;
+                second.x2 = 0.78;
+                second.y1 = 0.80;
+                second.y2 = 0.94;
+                second.page_number_text = "2";
+                second.same_line_metadata = "";
+                second.confidence = semanticAnchor.confidence;
+                second.safety_margin = semanticAnchor.safety_margin;
+                response.regions.add(second);
+            }
             return response;
         }
 

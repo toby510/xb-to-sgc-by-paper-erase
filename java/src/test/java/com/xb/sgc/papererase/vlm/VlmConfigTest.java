@@ -19,11 +19,12 @@ import static org.junit.Assert.assertTrue;
 
 public class VlmConfigTest {
     @Test
-    public void loadsFourFailClosedRolesWithoutLeakingApiKey() throws Exception {
+    public void loadsFiveFailClosedRolesWithoutLeakingApiKey() throws Exception {
         Map<String, String> env = new HashMap<String, String>();
         env.put("XB_PAPER_ERASE_PATTERN_API_KEY", "pattern-secret");
         env.put("XB_PAPER_ERASE_LOCATE_API_KEY", "locate-secret");
         env.put("XB_PAPER_ERASE_VERIFY_API_KEY", "verify-secret");
+        env.put("XB_PAPER_ERASE_SEMANTIC_VERIFY_API_KEY", "semantic-secret");
         env.put("XB_PAPER_ERASE_AUDIT_API_KEY", "audit-secret");
 
         VlmConfig config = VlmConfig.load(Paths.get("../config/vlm-providers.json"), env);
@@ -51,6 +52,7 @@ public class VlmConfigTest {
         env.put("XB_PAPER_ERASE_PATTERN_API_KEY", "pattern-secret");
         env.put("XB_PAPER_ERASE_LOCATE_API_KEY", "locate-secret");
         env.put("XB_PAPER_ERASE_VERIFY_API_KEY", "verify-secret");
+        env.put("XB_PAPER_ERASE_SEMANTIC_VERIFY_API_KEY", "semantic-secret");
         env.put("XB_PAPER_ERASE_AUDIT_API_KEY", "audit-secret");
         env.put("XB_PAPER_ERASE_PATTERN_ENDPOINT", " ");
         try {

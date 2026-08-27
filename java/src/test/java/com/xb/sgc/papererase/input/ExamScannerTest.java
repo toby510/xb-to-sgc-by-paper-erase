@@ -9,6 +9,9 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import java.io.File;
+import java.awt.image.BufferedImage;
+import java.awt.Color;
+import javax.imageio.ImageIO;
 import java.nio.file.Files;
 import java.util.List;
 
@@ -105,6 +108,20 @@ public class ExamScannerTest {
     }
 
     @Test
+    public void scanWithRejectionsRejectsOnlyExamWhoseImageCannotBeDecoded() throws Exception {
+        File root = temporaryFolder.newFolder("dataset");
+        corrupt(root, "英语", "bad-image", "15065_bad-image_1.png");
+        touch(root, "数学", "good-image", "15066_good-image_1.png");
+
+        ScanResult result = new ExamScanner().scanWithRejections(root.toPath());
+
+        assertEquals(1, result.getExams().size());
+        assertEquals("good-image", result.getExams().get(0).getExamId());
+        assertEquals(1, result.getRejectedExams().size());
+        assertTrue(result.getRejectedExams().get(0).getReason().contains("cannot decode image"));
+    }
+
+    @Test
     public void scanFailsClosedWhenAnyExamIsRejected() throws Exception {
         File root = temporaryFolder.newFolder("dataset");
         touch(root, "英语", "bad-exam", "15065_bad-exam_1.png");
@@ -124,6 +141,14 @@ public class ExamScannerTest {
     }
 
     private void touch(File root, String subject, String examId, String filename) throws Exception {
+        File examDir = new File(new File(root, subject), examId);
+        assertTrue(examDir.mkdirs() || examDir.isDirectory());
+        BufferedImage image = new BufferedImage(1, 1, BufferedImage.TYPE_INT_RGB);
+        image.setRGB(0, 0, Color.WHITE.getRGB());
+        ImageIO.write(image, "png", new File(examDir, filename));
+    }
+
+    private void corrupt(File root, String subject, String examId, String filename) throws Exception {
         File examDir = new File(new File(root, subject), examId);
         assertTrue(examDir.mkdirs() || examDir.isDirectory());
         Files.write(new File(examDir, filename).toPath(), new byte[]{1});

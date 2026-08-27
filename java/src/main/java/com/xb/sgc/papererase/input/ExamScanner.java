@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import javax.imageio.ImageIO;
 
 /**
  * 输入扫描器：按“学科/试卷ID/图片序号”读取目录，校验命名、顺序和缺页，并聚合为 ExamInput。
@@ -97,6 +98,9 @@ public class ExamScanner {
             for (Path file : files) {
                 if (!Files.isRegularFile(file) || !isImage(file)) {
                     continue;
+                }
+                if (ImageIO.read(file.toFile()) == null) {
+                    throw new IllegalArgumentException("cannot decode image: " + file.getFileName());
                 }
                 ParsedName parsed = parse(file.getFileName().toString(), examId);
                 if (schoolId == null) {
