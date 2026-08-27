@@ -280,7 +280,20 @@ public class ExamPipelineTest {
         assertEquals("safe_to_erase", outcome.page("p1").getStatus());
         assertEquals("the first residual audit and the refined result must both be audited",
                 2, Collections.frequency(fake.auditPageIds, "p1"));
+        assertEquals(Arrays.asList("p1:r1", "p1:r2"), fake.coordinateRefineCalls);
+    }
+
+    @Test
+    public void refinesAnEmptyRegionEvenWhenAnotherFooterRegionPassesGeometryValidation() throws Exception {
+        twoFooterTargetImageOrders.add(1);
+        FakeVlm fake = FakeVlm.stable();
+        fake.emptyMultiRegionPages.add("p1");
+
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
+
+        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
         assertEquals(Collections.singletonList("p1:r1"), fake.coordinateRefineCalls);
+        assertTrue(fake.auditPageIds.contains("p1"));
     }
 
     private ExamInput exam(int pages, boolean incomplete) throws Exception {
@@ -370,6 +383,7 @@ public class ExamPipelineTest {
         final List<String> boundaryConflictPages = new ArrayList<String>();
         final List<String> duplicateRegionPages = new ArrayList<String>();
         final List<String> twoRegionAuditResidualPages = new ArrayList<String>();
+        final List<String> emptyMultiRegionPages = new ArrayList<String>();
         final List<String> coordinateRefineCalls = new ArrayList<String>();
         final java.util.Map<String, Integer> auditCalls = new java.util.HashMap<String, Integer>();
         boolean patternProtocolFailure;
@@ -488,6 +502,20 @@ public class ExamPipelineTest {
                 second.safety_margin = "blank";
                 response.regions.add(second);
             }
+            if (emptyMultiRegionPages.contains(page.getPageId())) {
+                EraseRegion second = new EraseRegion();
+                second.region_id = "r2";
+                second.x1 = 0.65;
+                second.y1 = region.y1;
+                second.x2 = 0.80;
+                second.y2 = region.y2;
+                second.page_number_text = "2";
+                second.same_line_metadata = "";
+                second.on_line = false;
+                second.confidence = region.confidence;
+                second.safety_margin = "blank";
+                response.regions.add(second);
+            }
             if (duplicateRegionPages.contains(page.getPageId())) {
                 EraseRegion duplicate = new EraseRegion();
                 duplicate.region_id = "r2";
@@ -508,6 +536,25 @@ public class ExamPipelineTest {
         @Override
         public LocateResponse relocateCoordinateRefinement(VlmClient.PageImage page, PatternGroup group,
                                                             EraseRegion semanticAnchor, VlmClient.RoiImage roi) {
+            if (emptyMultiRegionPages.contains(page.getPageId())) {
+                coordinateRefineCalls.add(page.getPageId() + ":" + semanticAnchor.region_id);
+                LocateResponse response = new LocateResponse();
+                response.page_id = page.getPageId();
+                response.status = "safe_to_erase";
+                response.evidence = "empty footer region relocated";
+                EraseRegion local = new EraseRegion();
+                local.region_id = semanticAnchor.region_id;
+                local.x1 = 0.10;
+                local.y1 = 0.72;
+                local.x2 = 0.20;
+                local.y2 = 0.88;
+                local.page_number_text = semanticAnchor.page_number_text;
+                local.same_line_metadata = semanticAnchor.same_line_metadata;
+                local.confidence = semanticAnchor.confidence;
+                local.safety_margin = semanticAnchor.safety_margin;
+                response.regions.add(local);
+                return response;
+            }
             if (!twoRegionAuditResidualPages.contains(page.getPageId())) {
                 return VlmClient.super.relocateCoordinateRefinement(page, group, semanticAnchor, roi);
             }

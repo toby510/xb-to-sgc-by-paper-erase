@@ -9,12 +9,35 @@ import java.awt.image.BufferedImage;
 import java.util.Arrays;
 
 import com.xb.sgc.papererase.model.ExamModels.EraseRegion;
+import com.xb.sgc.papererase.model.ExamModels.LocateWindow;
+import com.xb.sgc.papererase.model.ExamModels.PatternGroup;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class VlmRequestBuilderTest {
+    @Test
+    public void initialLocateCarriesCompletePatternStructureRatherThanOnlyGroupId() {
+        PatternGroup group = new PatternGroup();
+        group.group_id = "footer-spread-double-page";
+        group.edge = "bottom";
+        group.alignment = "spread";
+        group.layout_description = "双页扫描，左右各有一个页码，中间可能有版权符号";
+        group.locate_window = new LocateWindow();
+        group.locate_window.x1 = 0.0;
+        group.locate_window.y1 = 0.9;
+        group.locate_window.x2 = 1.0;
+        group.locate_window.y2 = 1.0;
+
+        String evidence = VlmClient.locatePatternEvidence(group);
+
+        assertTrue(evidence.contains("footer-spread-double-page"));
+        assertTrue(evidence.contains("alignment=spread"));
+        assertTrue(evidence.contains("左右各有一个页码"));
+        assertTrue(evidence.contains("0.0,0.9,1.0,1.0"));
+    }
+
     @Test
     public void coordinateRefinementCarriesFirstPassTextAsRoiSearchAnchor() {
         EraseRegion region = new EraseRegion();

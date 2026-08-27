@@ -150,10 +150,12 @@ public interface VlmClient {
         if (group == null || group.locate_window == null) {
             return " edge=unknown";
         }
-        return " edge=" + group.edge + " alignment=" + group.alignment
+        return " pattern_group_id=" + safePromptText(group.group_id)
+                + " edge=" + group.edge + " alignment=" + group.alignment
+                + " layout_description='" + safePromptText(group.layout_description) + "'"
                 + " coarse_window_full_page=" + group.locate_window.x1 + "," + group.locate_window.y1
                 + "," + group.locate_window.x2 + "," + group.locate_window.y2
-                + " (context only; measure final coordinates from visible ROI ink)";
+                + " (cross-page structural prior only; inspect current full-page ink and measure final coordinates from it)";
     }
 
     static String patternProtocolCorrectionInstruction(List<String> expectedPageIds, String error) {
@@ -220,14 +222,14 @@ public interface VlmClient {
 
         public LocateResponse locate(PageImage page, PatternGroup group) {
             return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Locate")
-                    + " pattern_group=" + (group == null ? "none" : group.group_id), one(page),
+                    + locatePatternEvidence(group), one(page),
                     java.util.Collections.<RoiImage>emptyList()), page.getPageId());
         }
 
         @Override
         public LocateResponse correctLocateAfterProtocolError(PageImage page, PatternGroup group, String error) {
             return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Locate")
-                    + " pattern_group=" + (group == null ? "none" : group.group_id)
+                    + locatePatternEvidence(group)
                     + locateProtocolCorrectionInstruction(page.getPageId(), error), one(page),
                     java.util.Collections.<RoiImage>emptyList()), page.getPageId());
         }
@@ -443,14 +445,14 @@ public interface VlmClient {
 
         public LocateResponse locate(PageImage page, PatternGroup group) {
             return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Locate")
-                    + " pattern_group=" + (group == null ? "none" : group.group_id), one(page),
+                    + locatePatternEvidence(group), one(page),
                     java.util.Collections.<RoiImage>emptyList()), page.getPageId());
         }
 
         @Override
         public LocateResponse correctLocateAfterProtocolError(PageImage page, PatternGroup group, String error) {
             return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Locate")
-                    + " pattern_group=" + (group == null ? "none" : group.group_id)
+                    + locatePatternEvidence(group)
                     + locateProtocolCorrectionInstruction(page.getPageId(), error), one(page),
                     java.util.Collections.<RoiImage>emptyList()), page.getPageId());
         }
