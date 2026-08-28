@@ -265,6 +265,7 @@ public interface VlmClient {
                     java.util.Collections.<RoiImage>emptyList()), page.getPageId());
         }
 
+
         @Override
         public LocateResponse correctLocateStatusAfterManualReview(PageImage page, PatternGroup group) {
             return ResponseParser.parseLocate(call("locate", locateStatusCorrectionInstruction(page.getPageId()), one(page),
