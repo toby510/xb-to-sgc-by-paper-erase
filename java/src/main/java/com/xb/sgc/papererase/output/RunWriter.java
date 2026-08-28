@@ -102,8 +102,7 @@ public class RunWriter {
      * 将试卷输入目录直系的原始文档随 Word 产物交付。图片页目录是 ExamInput 的唯一来源，
      * 所以从任意一页反推父目录即可；只复制 docx/pdf，且绝不让源文件覆盖本次生成的 Word。
      */
-    private static void copySourceDocuments(ExamInput input, Path wordDir, String originalWordName, String erasedWordName)
-            throws IOException {
+    private static void copySourceDocuments(ExamInput input, Path wordDir, String originalWordName, String erasedWordName) {
         if (input.getPages().isEmpty()) {
             return;
         }
@@ -116,12 +115,27 @@ public class RunWriter {
                 if (!Files.isRegularFile(source) || !isSourceDocument(source)) {
                     continue;
                 }
-                String sourceName = source.getFileName().toString();
-                String destinationName = isGeneratedWord(sourceName, originalWordName, erasedWordName)
-                        ? sourceFileName(sourceName) : sourceName;
-                Files.copy(source, wordDir.resolve(destinationName), StandardCopyOption.REPLACE_EXISTING);
+                try {
+                    String sourceName = source.getFileName().toString();
+                    String destinationName = isGeneratedWord(sourceName, originalWordName, erasedWordName)
+                            ? sourceFileName(sourceName) : sourceName;
+                    Files.copy(source, wordDir.resolve(destinationName), StandardCopyOption.REPLACE_EXISTING);
+                } catch (IOException | SecurityException copyFailure) {
+                    logSourceDocumentCopySkipped(source.getFileName().toString(), copyFailure);
+                }
             }
+        } catch (IOException | SecurityException listingFailure) {
+            // 源目录只是附带交付物；无法读取时不能影响图片、Word、报告或 run.json 主链路。
+            logSourceDocumentCopySkipped(sourceDir.getFileName() == null ? "source_directory"
+                    : sourceDir.getFileName().toString(), listingFailure);
         }
+    }
+
+    /** 源文档为附属产物，日志仅保留文件名和异常类型，避免泄露绝对路径或异常堆栈。 */
+    private static void logSourceDocumentCopySkipped(String filename, Exception failure) {
+        String safeName = filename == null ? "unknown" : filename.replace('\n', '_').replace('\r', '_');
+        System.err.println("source_document_copy_skipped=" + safeName + "; reason="
+                + failure.getClass().getSimpleName());
     }
 
     private static boolean isSourceDocument(Path source) {

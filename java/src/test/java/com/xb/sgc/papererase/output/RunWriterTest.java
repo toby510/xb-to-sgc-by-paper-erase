@@ -91,6 +91,8 @@ public class RunWriterTest {
     @Test
     public void keepsNormalErasedWordNameWhenEveryPageIsDeliverable() throws Exception {
         Path root = Files.createTempDirectory("run-writer-safe-");
+        Files.write(root.resolve("可复制.pdf"), "good-source".getBytes("UTF-8"));
+        Files.write(root.resolve("复制失败.docx"), "broken-source".getBytes("UTF-8"));
         ExamInput input = new ExamInput("数学", "2002", "15065", Collections.singletonList(
                 new PageInput("2002:1", "2002", 1, root.resolve("15065_2002_1.png"))),
                 false, Collections.<String>emptyList());
@@ -101,11 +103,15 @@ public class RunWriterTest {
                         null, Collections.emptyList(), null, null)), Collections.emptyList());
 
         Path runDir = RunWriter.createRunDir(root, "qwen3.8-max", "20260821T120001");
+        Path wordDir = runDir.resolve("word_output/数学/2002");
+        // 同名非空目录不能被 Files.copy(REPLACE_EXISTING) 替换，稳定模拟单源文档复制失败。
+        Files.createDirectories(wordDir.resolve("复制失败.docx/child"));
         new RunWriter().writeExam(input, outcome, runDir);
 
-        Path wordDir = runDir.resolve("word_output/数学/2002");
         assertTrue(Files.isRegularFile(wordDir.resolve("2002_擦除后.docx")));
         assertTrue(!Files.exists(wordDir.resolve("2002_擦除后_待人工审核.docx")));
+        assertTrue("other source documents still copy after one failure", Files.isRegularFile(wordDir.resolve("可复制.pdf")));
+        assertTrue(Files.isDirectory(wordDir.resolve("复制失败.docx")));
     }
 
     private static BufferedImage solid(Color color) {
