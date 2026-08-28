@@ -551,11 +551,17 @@ public class ReportWriter {
 
     private boolean mentionsBodyDamage(String reason, String evidence) {
         String text = (nvl(reason) + " " + nvl(evidence)).toLowerCase();
-        return text.contains("正文被")
-                || text.contains("正文损")
-                || text.contains("正文变化")
-                || text.contains("伤正文")
-                || text.contains("body damaged");
+        if (text.contains("正文被") || text.contains("正文损") || text.contains("伤正文")
+                || text.contains("body damaged")) {
+            return true;
+        }
+        // 朴素子串匹配会把 audit 通过页 evidence 里的 "无正文变化" 误判为 "正文变化"；
+        // 先剔除常见否定表述再匹配，避免报告虚报"擦除正文"。
+        String stripped = text
+                .replace("无任何正文变化", "").replace("无正文变化", "")
+                .replace("未见正文变化", "").replace("未发现正文变化", "")
+                .replace("没有正文变化", "").replace("未出现正文变化", "");
+        return stripped.contains("正文变化");
     }
 
     private boolean auditSaysBodyDamaged(boolean auditBodyChanged, String reason, String evidence) {
