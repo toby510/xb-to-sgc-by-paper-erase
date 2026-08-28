@@ -202,6 +202,12 @@ public final class ExamModels {
     public static final class LocateResponse {
         @JsonProperty(required = true)
         public String page_id;
+        /** 当前输入图顺时针旋转该角度后，正文进入正常阅读方向。 */
+        @JsonProperty(required = true)
+        public int reading_rotation;
+        /** 模型对 reading_rotation 的置信度；低于流水线门限时禁止坐标换算。 */
+        @JsonProperty(required = true)
+        public double direction_confidence;
         @JsonProperty(required = true)
         public String status;
         @JsonProperty(required = true)

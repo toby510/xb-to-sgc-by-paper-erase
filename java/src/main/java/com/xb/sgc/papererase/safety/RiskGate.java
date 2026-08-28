@@ -9,8 +9,8 @@ public final class RiskGate {
     }
 
     /**
-     * 判断是否值得消耗一次局部 VLM 二检。稳定共性、方向、正文空白带和高置信度全部满足时
-     * 走快速路径；旋转、双栏、首尾页、共性混合、缺页或边界风险任一出现就升级局部复核。
+     * 判断是否值得消耗一次局部 VLM 二检。页面方向、正文空白带和候选置信度全部满足时
+     * 走快速路径；旋转、双栏、缺页或边界风险任一出现就升级局部复核。
      * 该门禁只会增加检查，不会替代正文像素门禁，也不会把失败页自动放行。
      */
     public static boolean requiresLocalVerify(PageContext context, RegionValidator.ValidationResult validation) {
@@ -19,19 +19,12 @@ public final class RiskGate {
         if (context == null || validation == null || !validation.isAccepted() || validation.getRegions().isEmpty()) {
             return true;
         }
-        // 页面 ID 用于把 VLM 返回的候选框和当前原图绑定；pattern 分组 ID 用于确认该页继承的整卷共性来源。
-        // 任一 ID 缺失，都不能确认坐标属于当前页面或当前试卷模式，因此升级局部复核。
-        if (blank(context.getPageId()) || blank(context.getPatternGroupId())) {
+        // 页面 ID 用于把 VLM 返回的候选框和当前原图绑定；缺失时不能确认坐标归属。
+        if (blank(context.getPageId())) {
             return true;
         }
-        // mixed 可能只是同卷存在多个合法版式（例如双页和答案页）。当前页已绑定高置信度本地
-        // group 时，不因其他页合法分组单独触发 verify；uncertain/unknown 仍失败关闭。
-        if (!"stable".equals(context.getConsensusState()) && !"mixed".equals(context.getConsensusState())) {
-            return true;
-        }
-        // 三项分别检查：共性本身稳定、当前页边缘与共性一致、Java 已证明正文方向存在安全空白带。
-        // 其中任何一项失败，都说明“语义可能正确但坐标风险未收敛”，不能走快速擦除路径。
-        if (!context.isStablePattern() || !context.isEdgeMatchesPattern() || !context.isJavaBlankGap()) {
+        // Java 未证明正文方向存在安全空白带时，不能走快速擦除路径。
+        if (!context.isJavaBlankGap()) {
             return true;
         }
         // 4.2 页面级高风险：这些情况会让整页坐标关系发生变化，或让正文边界判断更不可靠。
@@ -65,25 +58,17 @@ public final class RiskGate {
     }
 
     private static boolean blank(String value) {
-        // null 和去除首尾空白后为空字符串，都表示无法建立可靠的页面/共性关联。
+        // null 和去除首尾空白后为空字符串，都表示无法建立可靠的页面关联。
         return value == null || value.trim().length() == 0;
     }
 
     /**
-     * 单页风险上下文：保存 pattern、locate 和 Java 像素校验阶段提供给 RiskGate 的事实。
+     * 单页风险上下文：保存 locate 和 Java 像素校验阶段提供给 RiskGate 的事实。
      * 该对象只描述风险，不执行擦除；字段任一不稳定时，RiskGate 只会要求追加 verify。
      */
     public static final class PageContext {
         /** 当前正在处理的图片 ID，用于防止候选框串页。 */
         private final String pageId;
-        /** 当前图片继承的 pattern 共性分组 ID。 */
-        private final String patternGroupId;
-        /** 整卷共性结论，通常为 stable、mixed 或 uncertain。 */
-        private final String consensusState;
-        /** pattern 是否形成单一且稳定的页码模式。 */
-        private final boolean stablePattern;
-        /** 当前页的页码边缘是否与 pattern 预测边缘一致。 */
-        private final boolean edgeMatchesPattern;
         /** Java 是否已证明候选框与正文之间存在安全空白带。 */
         private final boolean javaBlankGap;
         /** 擦除掩码是否触及候选区域边界。 */
@@ -105,15 +90,10 @@ public final class RiskGate {
          * 创建不可变风险上下文。
          * 参数按字段顺序保存，withXxx 方法通过复制全部字段实现“只替换一个风险事实”。
          */
-        private PageContext(String pageId, String patternGroupId, String consensusState, boolean stablePattern,
-                            boolean edgeMatchesPattern, boolean javaBlankGap, boolean maskTouchesBoundary,
+        private PageContext(String pageId, boolean javaBlankGap, boolean maskTouchesBoundary,
                             int readingRotation, boolean doublePage, boolean heterogeneousFirstOrLast,
                             boolean bodyBoundaryConflict, boolean pageSequenceIncomplete, boolean missingPageRisk) {
             this.pageId = pageId;
-            this.patternGroupId = patternGroupId;
-            this.consensusState = consensusState;
-            this.stablePattern = stablePattern;
-            this.edgeMatchesPattern = edgeMatchesPattern;
             this.javaBlankGap = javaBlankGap;
             this.maskTouchesBoundary = maskTouchesBoundary;
             this.readingRotation = readingRotation;
@@ -126,120 +106,64 @@ public final class RiskGate {
 
         /**
          * 创建默认稳定上下文。
-         * 该工厂只提供低风险初始值，调用方仍应继续补充 pattern 分组、共性状态和页面事实。
+         * 该工厂只提供低风险初始值，调用方仍应继续补充页面事实。
          */
         public static PageContext stable(String pageId) {
-            return new PageContext(pageId, null, "stable", true, true, true, false,
+            return new PageContext(pageId, true, false,
                     0, false, false, false, false, false);
-        }
-
-        /** 返回仅替换 pattern 分组 ID 的新上下文。 */
-        public PageContext withPatternGroupId(String patternGroupId) {
-            return new PageContext(pageId, patternGroupId, consensusState, stablePattern, edgeMatchesPattern,
-                    javaBlankGap, maskTouchesBoundary, readingRotation, doublePage, heterogeneousFirstOrLast,
-                    bodyBoundaryConflict, pageSequenceIncomplete, missingPageRisk);
-        }
-
-        /** 返回仅替换整卷共性结论的新上下文。 */
-        public PageContext withConsensusState(String consensusState) {
-            return new PageContext(pageId, patternGroupId, consensusState, stablePattern, edgeMatchesPattern,
-                    javaBlankGap, maskTouchesBoundary, readingRotation, doublePage, heterogeneousFirstOrLast,
-                    bodyBoundaryConflict, pageSequenceIncomplete, missingPageRisk);
-        }
-
-        /** 返回仅替换“共性是否稳定”标志的新上下文。 */
-        public PageContext withStablePattern(boolean stablePattern) {
-            return new PageContext(pageId, patternGroupId, consensusState, stablePattern, edgeMatchesPattern,
-                    javaBlankGap, maskTouchesBoundary, readingRotation, doublePage, heterogeneousFirstOrLast,
-                    bodyBoundaryConflict, pageSequenceIncomplete, missingPageRisk);
-        }
-
-        /** 返回仅替换“当前页边缘是否匹配共性”标志的新上下文。 */
-        public PageContext withEdgeMatchesPattern(boolean edgeMatchesPattern) {
-            return new PageContext(pageId, patternGroupId, consensusState, stablePattern, edgeMatchesPattern,
-                    javaBlankGap, maskTouchesBoundary, readingRotation, doublePage, heterogeneousFirstOrLast,
-                    bodyBoundaryConflict, pageSequenceIncomplete, missingPageRisk);
         }
 
         /** 返回仅替换“正文方向安全空白带是否通过”标志的新上下文。 */
         public PageContext withJavaBlankGap(boolean javaBlankGap) {
-            return new PageContext(pageId, patternGroupId, consensusState, stablePattern, edgeMatchesPattern,
-                    javaBlankGap, maskTouchesBoundary, readingRotation, doublePage, heterogeneousFirstOrLast,
+            return new PageContext(pageId, javaBlankGap, maskTouchesBoundary, readingRotation, doublePage, heterogeneousFirstOrLast,
                     bodyBoundaryConflict, pageSequenceIncomplete, missingPageRisk);
         }
 
         /** 返回仅替换“擦除掩码是否触边”标志的新上下文。 */
         public PageContext withMaskTouchesBoundary(boolean maskTouchesBoundary) {
-            return new PageContext(pageId, patternGroupId, consensusState, stablePattern, edgeMatchesPattern,
-                    javaBlankGap, maskTouchesBoundary, readingRotation, doublePage, heterogeneousFirstOrLast,
+            return new PageContext(pageId, javaBlankGap, maskTouchesBoundary, readingRotation, doublePage, heterogeneousFirstOrLast,
                     bodyBoundaryConflict, pageSequenceIncomplete, missingPageRisk);
         }
 
         /** 返回仅替换页面阅读旋转角度的新上下文。 */
         public PageContext withReadingRotation(int readingRotation) {
-            return new PageContext(pageId, patternGroupId, consensusState, stablePattern, edgeMatchesPattern,
-                    javaBlankGap, maskTouchesBoundary, readingRotation, doublePage, heterogeneousFirstOrLast,
+            return new PageContext(pageId, javaBlankGap, maskTouchesBoundary, readingRotation, doublePage, heterogeneousFirstOrLast,
                     bodyBoundaryConflict, pageSequenceIncomplete, missingPageRisk);
         }
 
         /** 返回仅替换“双页风险”标志的新上下文。 */
         public PageContext withDoublePage(boolean doublePage) {
-            return new PageContext(pageId, patternGroupId, consensusState, stablePattern, edgeMatchesPattern,
-                    javaBlankGap, maskTouchesBoundary, readingRotation, doublePage, heterogeneousFirstOrLast,
+            return new PageContext(pageId, javaBlankGap, maskTouchesBoundary, readingRotation, doublePage, heterogeneousFirstOrLast,
                     bodyBoundaryConflict, pageSequenceIncomplete, missingPageRisk);
         }
 
         /** 返回仅替换“首尾页版式异构”标志的新上下文。 */
         public PageContext withHeterogeneousFirstOrLast(boolean heterogeneousFirstOrLast) {
-            return new PageContext(pageId, patternGroupId, consensusState, stablePattern, edgeMatchesPattern,
-                    javaBlankGap, maskTouchesBoundary, readingRotation, doublePage, heterogeneousFirstOrLast,
+            return new PageContext(pageId, javaBlankGap, maskTouchesBoundary, readingRotation, doublePage, heterogeneousFirstOrLast,
                     bodyBoundaryConflict, pageSequenceIncomplete, missingPageRisk);
         }
 
         /** 返回仅替换“正文边界冲突”标志的新上下文。 */
         public PageContext withBodyBoundaryConflict(boolean bodyBoundaryConflict) {
-            return new PageContext(pageId, patternGroupId, consensusState, stablePattern, edgeMatchesPattern,
-                    javaBlankGap, maskTouchesBoundary, readingRotation, doublePage, heterogeneousFirstOrLast,
+            return new PageContext(pageId, javaBlankGap, maskTouchesBoundary, readingRotation, doublePage, heterogeneousFirstOrLast,
                     bodyBoundaryConflict, pageSequenceIncomplete, missingPageRisk);
         }
 
         /** 返回仅替换“页序不完整”标志的新上下文。 */
         public PageContext withPageSequenceIncomplete(boolean pageSequenceIncomplete) {
-            return new PageContext(pageId, patternGroupId, consensusState, stablePattern, edgeMatchesPattern,
-                    javaBlankGap, maskTouchesBoundary, readingRotation, doublePage, heterogeneousFirstOrLast,
+            return new PageContext(pageId, javaBlankGap, maskTouchesBoundary, readingRotation, doublePage, heterogeneousFirstOrLast,
                     bodyBoundaryConflict, pageSequenceIncomplete, missingPageRisk);
         }
 
         /** 返回仅替换“缺页或页面归属风险”标志的新上下文。 */
         public PageContext withMissingPageRisk(boolean missingPageRisk) {
-            return new PageContext(pageId, patternGroupId, consensusState, stablePattern, edgeMatchesPattern,
-                    javaBlankGap, maskTouchesBoundary, readingRotation, doublePage, heterogeneousFirstOrLast,
+            return new PageContext(pageId, javaBlankGap, maskTouchesBoundary, readingRotation, doublePage, heterogeneousFirstOrLast,
                     bodyBoundaryConflict, pageSequenceIncomplete, missingPageRisk);
         }
 
         /** 返回当前页面 ID。 */
         public String getPageId() {
             return pageId;
-        }
-
-        /** 返回当前页面使用的 pattern 分组 ID。 */
-        public String getPatternGroupId() {
-            return patternGroupId;
-        }
-
-        /** 返回整卷共性稳定性结论。 */
-        public String getConsensusState() {
-            return consensusState;
-        }
-
-        /** 返回 pattern 是否稳定。 */
-        public boolean isStablePattern() {
-            return stablePattern;
-        }
-
-        /** 返回当前页边缘是否匹配 pattern。 */
-        public boolean isEdgeMatchesPattern() {
-            return edgeMatchesPattern;
         }
 
         /** 返回 Java 是否证明正文方向存在安全空白带。 */

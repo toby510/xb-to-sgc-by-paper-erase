@@ -196,7 +196,7 @@ public class RunWriter {
         run.put("planned_page_count", plannedPageCount);
         run.put("code", gitMetadata(skillRoot));
         Map<String, Object> prompts = new LinkedHashMap<String, Object>();
-        for (String role : new String[]{"pattern", "locate", "verify", "audit"}) {
+        for (String role : new String[]{"locate", "verify", "audit"}) {
             com.xb.sgc.papererase.vlm.VlmConfig.RoleConfig roleConfig = config.role(role);
             byte[] content = frozenPrompts.get(role).getBytes(StandardCharsets.UTF_8);
             Path source = skillRoot.resolve(roleConfig.getPromptPath());

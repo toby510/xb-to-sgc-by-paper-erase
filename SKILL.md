@@ -7,7 +7,7 @@ description: 当用户要按“整份试卷”而不是单张图片去除页码�
 
 ## 目标与边界
 
-本 skill 以“同一份试卷的多张页图”为最小分析单元：先让视觉模型识别跨页的页码共性，再逐页定位、擦除和审计。首要目标是**正文像素零误伤**；无法证明安全时，保留原图并进入 `manual_review`，不得为了提高擦除率强行擦除。
+本 skill 以“同一份试卷的多张页图”为组织单元，并以单页原图独立执行方向定位、擦除和审计。首要目标是**正文像素零误伤**；无法证明安全时，保留原图并进入 `manual_review`，不得为了提高擦除率强行擦除。
 
 仅允许处理以下目标：
 
@@ -34,20 +34,21 @@ description: 当用户要按“整份试卷”而不是单张图片去除页码�
 ## 执行流程
 
 1. 用 `ExamScanner.scanWithRejections(Path)` 扫描并按试卷聚合；有结构性拒绝时，先写入报告，不进入自动擦除。
-2. 对同一试卷按配置采样上限（当前 6 张）分批，调用 `pattern` 角色分析阅读方向、页码是否存在、所在边和跨页共性。
-3. Java 校验每批返回的页面 ID：必须与请求页面集合完全一致且无重复；不满足则整卷 `manual_review`。
-4. 对每页按识别出的阅读方向标准化图像，再调用 `locate` 只基于当前整页返回候选区域、置信度和最近正文边界；pattern 仅在 Java 内部用于方向、分组、ROI 和风险控制。
+2. 空白页由 Java 像素证据直接判为 `no_pagenum`；非空白页先调用 `locate`，同时返回阅读方向和页码候选。
+3. 方向置信度不足时转人工；非零旋转页由 Java 旋正原图后再调用一次 `locate`，未旋正图上的候选坐标一律废弃。
+4. `locate` 在当前旋正整页返回候选区域、置信度和最近正文边界；坐标精修仅发送“候选框+正文边界+固定 margin”的 3 倍局部 ROI。
 5. `RegionValidator` 先做硬校验：边缘带、坐标、正文间隔、空白安全带、候选框边界墨迹。任一失败不得擦除。
 6. 高风险页面（低置信度、旋转、首尾页差异、同线候选、共性不稳定、缺页等）只对局部 ROI 调用 `verify`；二检非 `safe_to_erase` 时不擦除。
 7. `InkMaskEraser` 仅修改候选框内识别出的目标墨迹；背景估计失败时可仅在已批准掩码内降级为白色。
 8. `PixelDiffGate` 必须证明候选掩码以外的所有像素未变；该门禁失败立即丢弃候选图。
-9. 每张修改过的图都调用 `audit` 对原图、擦除图和局部 ROI 进行视觉复核。`original_target_is_non_body=false`、`body_unchanged=false` 或 `target_removed=false` 一律人工审核；`body_unchanged` 覆盖 ROI 内外整页正文；仅背景色问题可作为色差警告交付。
+9. 每张修改过的图都调用 `audit` 对原图、擦除图和局部 ROI 进行视觉复核。`original_target_is_non_body=false`、`body_unchanged=false` 或 `target_removed=false` 一律人工审核；仅当 audit 报告的正文变化与 PixelDiffGate 的批准框范围证据矛盾时，允许对同一前后图纠错复核一次。
+10. 网络、协议、几何或审计失败均按页失败关闭；客户端可按配置重试同一 HTTP 请求，流水线不得以整页重跑、改写提示词或放宽门禁改变已得到的保守结论。
 
 ## VLM 请求与协议
 
 - 所有图片通过 OpenAI 兼容的 `messages[].content[]` 发送，图片项必须是 `{"type":"image_url","image_url":{"url":"data:image/..."}}`；不得把 data URL 当普通文本。
 - 每张整页图前附加 `PAGE_ID`；审计的两张图额外附加 `IMAGE_ROLE: ORIGINAL|ERASED`；局部图附加 `ROI_PAGE_ID` 和 `ROI_REGION_ID`。
-- `pattern` 是多图调用，`locate`、`verify`、`audit` 使用相应角色提示词。`references/` 已按“整卷共性识别、单页页码定位、局部安全复核、擦除结果审计”分目录；当前生效版本和每个角色的中文说明均在 `config/vlm-providers.json` 的 `roles` 中。
+- 活跃角色为 `locate`、`verify`、`audit`；历史 pattern 提示词和 parser 只为旧 run 兼容保留，不参与新运行。当前生效版本和角色说明在 `config/vlm-providers.json`。
 - 任何网络失败、响应 JSON 无法解析、页面 ID 错配或协议字段缺失，都按失败关闭：不擦除，转人工审核。
 
 ## 安全门禁与降级原则

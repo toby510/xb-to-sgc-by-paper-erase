@@ -16,7 +16,6 @@ public class VlmProviderConfigTest {
         JsonNode root = new ObjectMapper().readTree(Paths.get("../config/vlm-providers.json").toFile());
         JsonNode roles = root.path("providers").path("dashscope").path("roles");
 
-        assertRoleOverride(roles, "pattern", "XB_PAPER_ERASE_PATTERN_MODEL");
         assertRoleOverride(roles, "locate", "XB_PAPER_ERASE_LOCATE_MODEL");
         assertRoleOverride(roles, "verify", "XB_PAPER_ERASE_VERIFY_MODEL");
         assertRoleOverride(roles, "audit", "XB_PAPER_ERASE_AUDIT_MODEL");

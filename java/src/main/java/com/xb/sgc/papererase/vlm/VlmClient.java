@@ -51,19 +51,6 @@ public interface VlmClient {
     /** 2-locate：在整页版式中确认页码语义，并输出整图归一化候选框。 */
     LocateResponse locate(PageImage page, PatternGroup group);
 
-    /** 同一页、同一图的 locate 协议纠错重试；不允许脱离图片仅修补 JSON。 */
-    default LocateResponse correctLocateAfterProtocolError(PageImage page, PatternGroup group, String error) {
-        return locate(page, group);
-    }
-
-    /**
-     * 首次整页 locate 已返回空框 manual_review 时，同图、同 locate 角色只纠正状态枚举。
-     * Java 不解析 evidence 猜测语义；真实客户端必须让模型按完整 locate 协议重新返回结果。
-     */
-    default LocateResponse correctLocateStatusAfterManualReview(PageImage page, PatternGroup group) {
-        return locate(page, group);
-    }
-
     /**
      * 局部精修 locate 只发送 pattern/候选框生成的 ROI。默认实现保留旧 fake/client 兼容；
      * 真实客户端覆写后不得把整页与 ROI 同时发送，以免降低局部坐标精度。
@@ -81,6 +68,8 @@ public interface VlmClient {
         VerifyResponse verified = verifyCoordinateRefinement(page, semanticAnchor, roi);
         LocateResponse relocated = new LocateResponse();
         relocated.page_id = page.getPageId();
+        relocated.reading_rotation = 0;
+        relocated.direction_confidence = 1.0;
         relocated.status = verified.decision;
         relocated.evidence = verified.evidence;
         if ("safe_to_erase".equals(verified.decision) && verified.refined_region != null) {
@@ -180,20 +169,6 @@ public interface VlmClient {
                 + "These classifications are mutually exclusive; uncertain pages must be ungrouped only.";
     }
 
-    static String locateProtocolCorrectionInstruction(String pageId, String error) {
-        return exactProtocolPageIdInstruction(pageId) + " PROTOCOL_CORRECTION: Previous JSON violated the strict locate contract ("
-                + safePromptText(error) + "). For safe_to_erase every region must provide a non-empty page_number_text "
-                + "copied as the visible page-number literal. If it cannot be read, return manual_review with empty regions.";
-    }
-
-    static String locateStatusCorrectionInstruction(String pageId) {
-        return exactProtocolPageIdInstruction(pageId) + " STATUS_CORRECTION: The previous locate response returned "
-                + "manual_review with empty regions. Re-evaluate this same image and return the complete strict locate JSON. "
-                + "If you can already determine that every candidate belongs to the body reading flow, or that the page has no "
-                + "independent non-body page-number line, status MUST be no_pagenum with empty regions. manual_review is allowed "
-                + "only when the image genuinely cannot distinguish page number from body. safe_to_erase requires complete non-empty regions.";
-    }
-
     static String exactProtocolPageIdInstruction(String pageId) {
         return "REQUEST_PAGE_ID='" + safePromptText(pageId) + "'. JSON page_id MUST exactly equal this string. ";
     }
@@ -227,7 +202,7 @@ public interface VlmClient {
         }
 
         private void freezePrompts() {
-            for (String role : new String[]{"pattern", "locate", "verify", "audit"}) {
+            for (String role : new String[]{"locate", "verify", "audit"}) {
                 prompts.put(role, loadPrompt(config.role(role)));
             }
         }
@@ -255,20 +230,6 @@ public interface VlmClient {
 
         public LocateResponse locate(PageImage page, PatternGroup group) {
             return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Locate"), one(page),
-                    java.util.Collections.<RoiImage>emptyList()), page.getPageId());
-        }
-
-        @Override
-        public LocateResponse correctLocateAfterProtocolError(PageImage page, PatternGroup group, String error) {
-            return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Locate")
-                    + locateProtocolCorrectionInstruction(page.getPageId(), error), one(page),
-                    java.util.Collections.<RoiImage>emptyList()), page.getPageId());
-        }
-
-
-        @Override
-        public LocateResponse correctLocateStatusAfterManualReview(PageImage page, PatternGroup group) {
-            return ResponseParser.parseLocate(call("locate", locateStatusCorrectionInstruction(page.getPageId()), one(page),
                     java.util.Collections.<RoiImage>emptyList()), page.getPageId());
         }
 
@@ -477,7 +438,7 @@ public interface VlmClient {
         }
 
         private void freezePrompts() {
-            for (String role : new String[]{"pattern", "locate", "verify", "audit"}) {
+            for (String role : new String[]{"locate", "verify", "audit"}) {
                 prompts.put(role, loadPrompt(config.role(role)));
             }
         }
@@ -504,19 +465,6 @@ public interface VlmClient {
 
         public LocateResponse locate(PageImage page, PatternGroup group) {
             return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Locate"), one(page),
-                    java.util.Collections.<RoiImage>emptyList()), page.getPageId());
-        }
-
-        @Override
-        public LocateResponse correctLocateAfterProtocolError(PageImage page, PatternGroup group, String error) {
-            return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "Locate")
-                    + locateProtocolCorrectionInstruction(page.getPageId(), error), one(page),
-                    java.util.Collections.<RoiImage>emptyList()), page.getPageId());
-        }
-
-        @Override
-        public LocateResponse correctLocateStatusAfterManualReview(PageImage page, PatternGroup group) {
-            return ResponseParser.parseLocate(call("locate", locateStatusCorrectionInstruction(page.getPageId()), one(page),
                     java.util.Collections.<RoiImage>emptyList()), page.getPageId());
         }
 

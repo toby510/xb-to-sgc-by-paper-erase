@@ -18,20 +18,11 @@ public class RiskGateTest {
 
         assertTrue(RiskGate.requiresLocalVerify(RiskGate.PageContext.stable(null), validation));
         assertTrue(RiskGate.requiresLocalVerify(RiskGate.PageContext.stable(" "), validation));
-        assertTrue(RiskGate.requiresLocalVerify(stablePage().withPatternGroupId(null), validation));
-        assertTrue(RiskGate.requiresLocalVerify(stablePage().withPatternGroupId(" "), validation));
-        assertTrue(RiskGate.requiresLocalVerify(stablePage().withConsensusState(null), validation));
-        assertTrue(RiskGate.requiresLocalVerify(stablePage().withConsensusState("Stable"), validation));
-        assertTrue(RiskGate.requiresLocalVerify(stablePage().withConsensusState("unknown"), validation));
-        assertTrue(RiskGate.requiresLocalVerify(stablePage().withStablePattern(false), validation));
-        assertTrue(RiskGate.requiresLocalVerify(stablePage().withEdgeMatchesPattern(false), validation));
         assertTrue(RiskGate.requiresLocalVerify(stablePage().withJavaBlankGap(false), validation));
         assertTrue(RiskGate.requiresLocalVerify(stablePage().withMaskTouchesBoundary(true), validation));
         assertTrue(RiskGate.requiresLocalVerify(stablePage().withReadingRotation(90), validation));
         assertTrue(RiskGate.requiresLocalVerify(stablePage().withDoublePage(true), validation));
         assertTrue(RiskGate.requiresLocalVerify(stablePage().withHeterogeneousFirstOrLast(true), validation));
-        assertTrue(RiskGate.requiresLocalVerify(stablePage().withConsensusState("mixed").withPatternGroupId(null), validation));
-        assertTrue(RiskGate.requiresLocalVerify(stablePage().withConsensusState("uncertain"), validation));
         assertTrue(RiskGate.requiresLocalVerify(stablePage().withBodyBoundaryConflict(true), validation));
         assertTrue(RiskGate.requiresLocalVerify(stablePage().withPageSequenceIncomplete(true), validation));
         assertTrue(RiskGate.requiresLocalVerify(stablePage().withMissingPageRisk(true), validation));
@@ -45,14 +36,10 @@ public class RiskGateTest {
     public void skipsLocalVerifyOnlyForFullyStableValidatedPage() {
         assertFalse(RiskGate.requiresLocalVerify(stablePage(), validated(0.97)));
         assertFalse(RiskGate.requiresLocalVerify(stablePage(), validated(0.99)));
-        assertFalse(RiskGate.requiresLocalVerify(stablePage().withConsensusState("mixed"), validated(0.99)));
-        assertTrue(RiskGate.requiresLocalVerify(stablePage().withConsensusState("mixed").withStablePattern(false), validated(0.99)));
     }
 
     private RiskGate.PageContext stablePage() {
         return RiskGate.PageContext.stable("page-1")
-                .withPatternGroupId("g-top")
-                .withConsensusState("stable")
                 .withReadingRotation(0);
     }
 

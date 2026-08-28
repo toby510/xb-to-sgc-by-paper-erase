@@ -144,11 +144,19 @@ public final class ResponseParser {
 
     public static LocateResponse parseLocate(String raw, String expectedPageId) {
         JsonNode root = root(raw);
-        requireFields(root, "page_id", "status", "regions", "nearest_body_boundary", "evidence");
-        rejectUnknown(root, "page_id", "status", "regions", "nearest_body_boundary", "evidence");
+        requireFields(root, "page_id", "reading_rotation", "direction_confidence", "status", "regions",
+                "nearest_body_boundary", "evidence");
+        rejectUnknown(root, "page_id", "reading_rotation", "direction_confidence", "status", "regions",
+                "nearest_body_boundary", "evidence");
         LocateResponse response = new LocateResponse();
         response.page_id = requiredText(root, "page_id");
         requireEqual(response.page_id, expectedPageId, "page_id", raw);
+        response.reading_rotation = requiredInt(root, "reading_rotation");
+        if (!(response.reading_rotation == 0 || response.reading_rotation == 90
+                || response.reading_rotation == 180 || response.reading_rotation == 270)) {
+            throw bad("reading rotation must be 0/90/180/270", raw);
+        }
+        response.direction_confidence = requiredFiniteUnit(root, "direction_confidence", raw);
         response.status = enumText(root, "status", "safe_to_erase", "no_pagenum", "manual_review");
         response.evidence = requiredText(root, "evidence");
         Set<String> regionIds = new HashSet<String>();
@@ -177,8 +185,17 @@ public final class ResponseParser {
             response.regions.add(region);
         }
         response.nearest_body_boundary = parseBoundary(root.path("nearest_body_boundary"), raw);
+        // 未旋正图的候选坐标不能映射到最终擦除图，只允许 Java 旋正后重新定位。
+        if (response.reading_rotation != 0
+                && ("safe_to_erase".equals(response.status) || !response.regions.isEmpty())) {
+            throw bad("rotated locate requires non-safe status and empty regions", raw);
+        }
         if ("safe_to_erase".equals(response.status) && response.regions.isEmpty()) {
             throw bad("safe_to_erase locate requires regions", raw);
+        }
+        // 非放行状态没有可擦除语义；携带候选框会让后续调用误把保守结论当作可用坐标。
+        if (!"safe_to_erase".equals(response.status) && !response.regions.isEmpty()) {
+            throw bad("non-safe locate requires empty regions", raw);
         }
         return response;
     }
@@ -203,6 +220,12 @@ public final class ResponseParser {
             }
         } else if (root.has("refined_nearest_body_boundary") && !root.path("refined_nearest_body_boundary").isNull()) {
             throw bad("refined_nearest_body_boundary requires refined_region", raw);
+        }
+        if ("safe_to_erase".equals(response.decision) && response.refined_region == null) {
+            throw bad("safe_to_erase verify requires refined_region", raw);
+        }
+        if (!"safe_to_erase".equals(response.decision) && response.refined_region != null) {
+            throw bad("non-safe verify requires null refined_region", raw);
         }
         return response;
     }
@@ -241,9 +264,10 @@ public final class ResponseParser {
         response.target_removed = requiredBoolean(root, "target_removed");
         response.background_acceptable = requiredBoolean(root, "background_acceptable");
         response.evidence = requiredText(root, "evidence");
-        if ("pass".equals(response.decision)
-                && (!response.original_target_is_non_body || !response.body_unchanged || !response.target_removed)) {
-            throw bad("audit pass requires original_target_is_non_body, body_unchanged and target_removed", raw);
+        boolean hardConditionsPassed = response.original_target_is_non_body
+                && response.body_unchanged && response.target_removed;
+        if ("pass".equals(response.decision) != hardConditionsPassed) {
+            throw bad("audit decision must exactly match original_target_is_non_body, body_unchanged and target_removed", raw);
         }
         return response;
     }

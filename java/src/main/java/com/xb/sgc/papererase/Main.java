@@ -81,17 +81,19 @@ public final class Main {
         System.err.println("run_dir=" + runDir.toAbsolutePath());
         System.err.println("progress_file=" + runDir.resolve("_progress.ndjson").toAbsolutePath());
         List<ExamOutcome> outcomes = new ArrayList<ExamOutcome>();
-        ExamPipeline pipeline = new ExamPipeline(vlm, config.getPatternSampleMaxPages());
+        ExamPipeline pipeline = new ExamPipeline(vlm);
         RunWriter runWriter = new RunWriter();
         int pages = 0;
         for (ExamInput exam : exams) {
             ExamPipeline.RunContext context = new ExamPipeline.RunContext(runDir);
-            context.event("output", exam.getExamId(), null, "started", null, 0);
+            context.event(ExamPipeline.PipelineStage.OUTPUT, exam.getExamId(), null,
+                    ExamPipeline.EventStatus.STARTED, null, 0);
             ExamOutcome outcome = pipeline.process(exam, context);
             runWriter.writeExam(exam, outcome, runDir);
             // 已落盘原图/擦除图/Word 与审计，本卷大图不再被 ReportWriter 引用，立即释放避免 100 卷累积超堆。
             outcome.releaseImages();
-            context.event("output", exam.getExamId(), null, "completed", null, 0);
+            context.event(ExamPipeline.PipelineStage.OUTPUT, exam.getExamId(), null,
+                    ExamPipeline.EventStatus.COMPLETED, null, 0);
             outcomes.add(outcome);
             pages += exam.getPages().size();
         }

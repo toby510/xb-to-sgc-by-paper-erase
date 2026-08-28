@@ -19,7 +19,7 @@ import static org.junit.Assert.assertTrue;
 
 public class VlmConfigTest {
     @Test
-    public void loadsFiveFailClosedRolesWithoutLeakingApiKey() throws Exception {
+    public void loadsThreeFailClosedRolesWithoutLeakingApiKey() throws Exception {
         Map<String, String> env = new HashMap<String, String>();
         env.put("XB_PAPER_ERASE_PATTERN_API_KEY", "pattern-secret");
         env.put("XB_PAPER_ERASE_LOCATE_API_KEY", "locate-secret");
@@ -29,13 +29,12 @@ public class VlmConfigTest {
 
         VlmConfig config = VlmConfig.load(Paths.get("../config/vlm-providers.json"), env);
 
-        assertEquals("qwen3.8-max", config.role("pattern").getModel());
         assertEquals("qwen3.8-max", config.role("locate").getModel());
         assertEquals("qwen3.8-max", config.role("verify").getModel());
         assertEquals("qwen3.8-max", config.role("audit").getModel());
-        assertEquals(2, config.role("pattern").getRetries());
+        assertEquals(2, config.role("locate").getRetries());
         assertTrue(config.role("audit").getEndpoint().contains("/chat/completions"));
-        assertFalse(config.role("pattern").safeSummary().contains("pattern-secret"));
+        assertFalse(config.role("locate").safeSummary().contains("locate-secret"));
     }
 
     @Test
@@ -54,13 +53,13 @@ public class VlmConfigTest {
         env.put("XB_PAPER_ERASE_VERIFY_API_KEY", "verify-secret");
         env.put("XB_PAPER_ERASE_SEMANTIC_VERIFY_API_KEY", "semantic-secret");
         env.put("XB_PAPER_ERASE_AUDIT_API_KEY", "audit-secret");
-        env.put("XB_PAPER_ERASE_PATTERN_ENDPOINT", " ");
+        env.put("XB_PAPER_ERASE_LOCATE_ENDPOINT", " ");
         try {
             VlmConfig.load(Paths.get("../config/vlm-providers.json"), env);
             throw new AssertionError("blank endpoint override must fail closed");
         } catch (IllegalStateException expected) {
             assertTrue(expected.getMessage().contains("endpoint"));
-            assertFalse(expected.getMessage().contains("pattern-secret"));
+            assertFalse(expected.getMessage().contains("locate-secret"));
         }
     }
 
@@ -82,13 +81,13 @@ public class VlmConfigTest {
             assertFalse(config.role("audit").safeSummary().contains("ark-secret"));
             assertTrue(VlmClient.create(config, Paths.get("..")).getClass().getName().endsWith("VlmClient$ArkResponses"));
             JsonNode roles = new ObjectMapper().readTree(source).path("roles");
-            assertTrue(roles.path("pattern").path("provider").isMissingNode());
+            assertTrue(roles.path("pattern").isMissingNode());
             Method maxOutput = VlmConfig.RoleConfig.class.getMethod("getMaxOutputTokens");
             Method detail = VlmConfig.RoleConfig.class.getMethod("getImageDetail");
-            assertEquals(0, ((Integer) maxOutput.invoke(config.role("pattern"))).intValue());
-            assertEquals("enabled", config.role("pattern").getThinkingType());
-            assertEquals("low", config.role("pattern").getReasoningEffort());
-            assertEquals("auto", detail.invoke(config.role("pattern")));
+            assertEquals(0, ((Integer) maxOutput.invoke(config.role("locate"))).intValue());
+            assertEquals("enabled", config.role("locate").getThinkingType());
+            assertEquals("medium", config.role("locate").getReasoningEffort());
+            assertEquals("high", detail.invoke(config.role("locate")));
             assertEquals(0, ((Integer) maxOutput.invoke(config.role("audit"))).intValue());
             assertEquals("enabled", config.role("audit").getThinkingType());
             assertEquals("medium", config.role("audit").getReasoningEffort());

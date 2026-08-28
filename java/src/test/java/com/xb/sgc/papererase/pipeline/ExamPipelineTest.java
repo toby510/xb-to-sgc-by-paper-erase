@@ -82,14 +82,13 @@ public class ExamPipelineTest {
     }
 
     @Test
-    public void batchesPatternWithOverlapAndRunsStableFastPathWithMandatoryAudit() throws Exception {
+    public void skipsPatternAndRunsPageLocalFastPathWithMandatoryAudit() throws Exception {
         FakeVlm fake = FakeVlm.stable();
         fake.onLinePages.add("p9");
         ExamOutcome outcome = new ExamPipeline(fake).process(exam(18, false), new ExamPipeline.RunContext());
 
-        assertEquals(Arrays.asList("p1,p2,p3,p4,p5,p6,p7,p8", "p8,p9,p10,p11,p12,p13,p14,p15",
-                "p15,p16,p17,p18"), fake.patternBatches);
-        assertEquals(18, fake.locatePageIds.size());
+        assertTrue(fake.patternBatches.isEmpty());
+        assertEquals("rotated p2 requires one extra normalized locate", 19, fake.locatePageIds.size());
         assertEquals("only rotated and on-line pages should require local verify",
                 Arrays.asList("p2:r1", "p9:r1"), fake.verifyCalls);
         assertEquals("every modified page must be audited", 18, fake.auditPageIds.size());
@@ -116,7 +115,7 @@ public class ExamPipelineTest {
         ExamOutcome outcome = new ExamPipeline(fake).process(exam(10, false), new ExamPipeline.RunContext());
 
         assertTrue(fake.verifyCalls.contains("p2:r1"));
-        assertTrue("strong consensus with no candidate should verify edge ROI", fake.verifyCalls.contains("p3:edge"));
+        assertFalse("no_pagenum is accepted page-locally without pattern edge probing", fake.verifyCalls.contains("p3:edge"));
         assertEquals("no_pagenum", outcome.page("p3").getStatus());
         assertEquals("manual_review", outcome.page("p4").getStatus());
         assertEquals("manual_review", outcome.page("p5").getStatus());
@@ -142,14 +141,14 @@ public class ExamPipelineTest {
     }
 
     @Test
-    public void wholeExamFallsBackOnProtocolMappingFailureButSinglePageModelFailureIsIsolated() throws Exception {
+    public void inactivePatternFailureHasNoEffectButSinglePageModelFailureIsIsolated() throws Exception {
         FakeVlm badPattern = FakeVlm.stable();
         badPattern.patternProtocolFailure = true;
         ExamOutcome protocolOutcome = new ExamPipeline(badPattern).process(exam(3, false), new ExamPipeline.RunContext());
 
-        assertEquals("manual_review", protocolOutcome.page("p1").getStatus());
-        assertEquals("manual_review", protocolOutcome.page("p2").getStatus());
-        assertEquals("pattern_protocol_error", protocolOutcome.getReason());
+        assertEquals("safe_to_erase", protocolOutcome.page("p1").getStatus());
+        assertEquals("safe_to_erase", protocolOutcome.page("p2").getStatus());
+        assertTrue(badPattern.patternBatches.isEmpty());
 
         FakeVlm singlePageFailure = FakeVlm.stable();
         singlePageFailure.locateThrowsPages.add("p2");
@@ -162,44 +161,44 @@ public class ExamPipelineTest {
     }
 
     @Test
-    public void retriesPatternProtocolOnceWithCorrectionAndRecovers() throws Exception {
+    public void neverInvokesInactivePatternProtocol() throws Exception {
         FakeVlm fake = FakeVlm.stable();
         fake.patternProtocolFailureOnce = true;
 
         ExamOutcome outcome = new ExamPipeline(fake).process(exam(3, false), new ExamPipeline.RunContext());
 
         assertEquals("safe_to_erase", outcome.page("p1").getStatus());
-        assertEquals(1, fake.patternCorrectionCalls);
-        assertEquals("one first attempt plus one correction request", 2, fake.patternBatches.size());
+        assertEquals(0, fake.patternCorrectionCalls);
+        assertTrue(fake.patternBatches.isEmpty());
     }
 
     @Test
-    public void fallsBackWholeExamWhenPatternProtocolCorrectionAlsoFails() throws Exception {
+    public void ignoresInactivePatternProtocolFailure() throws Exception {
         FakeVlm fake = FakeVlm.stable();
         fake.patternProtocolFailure = true;
 
         ExamOutcome outcome = new ExamPipeline(fake).process(exam(3, false), new ExamPipeline.RunContext());
 
-        assertEquals("manual_review", outcome.page("p1").getStatus());
-        assertEquals("pattern_protocol_error", outcome.getReason());
-        assertEquals(1, fake.patternCorrectionCalls);
+        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
+        assertEquals(0, fake.patternCorrectionCalls);
     }
 
     @Test
-    public void retriesLocateProtocolOnceWithCorrectionAndRecoversOnlyThatPage() throws Exception {
+    public void closesPageWhenLocateProtocolFailsWithoutPromptRewrite() throws Exception {
         FakeVlm fake = FakeVlm.stable();
         fake.locateProtocolFailureOncePages.add("p2");
 
         ExamOutcome outcome = new ExamPipeline(fake).process(exam(3, false), new ExamPipeline.RunContext());
 
         assertEquals("safe_to_erase", outcome.page("p1").getStatus());
-        assertEquals("safe_to_erase", outcome.page("p2").getStatus());
-        assertEquals(1, fake.locateCorrectionCalls);
+        assertEquals("manual_review", outcome.page("p2").getStatus());
+        assertEquals("locate_error", outcome.page("p2").getReason());
+        assertEquals(0, fake.locateCorrectionCalls);
         assertEquals("safe_to_erase", outcome.page("p3").getStatus());
     }
 
     @Test
-    public void isolatesPageWhenLocateProtocolCorrectionAlsoFails() throws Exception {
+    public void isolatesPageWhenLocateProtocolFails() throws Exception {
         FakeVlm fake = FakeVlm.stable();
         fake.locateProtocolFailurePages.add("p2");
 
@@ -208,7 +207,7 @@ public class ExamPipelineTest {
         assertEquals("safe_to_erase", outcome.page("p1").getStatus());
         assertEquals("manual_review", outcome.page("p2").getStatus());
         assertEquals("locate_error", outcome.page("p2").getReason());
-        assertEquals(1, fake.locateCorrectionCalls);
+        assertEquals(0, fake.locateCorrectionCalls);
         assertEquals("safe_to_erase", outcome.page("p3").getStatus());
     }
 
@@ -312,17 +311,17 @@ public class ExamPipelineTest {
     }
 
     @Test
-    public void patternRoiRelocateMayRecoverWhenStatusCorrectionRemainsManualReview() throws Exception {
+    public void doesNotUseRemovedPatternRoiToOverrideManualReview() throws Exception {
         FakeVlm fake = FakeVlm.stable();
         fake.locateManualPages.add("p1");
         fake.patternRoiSafeLocatePages.add("p1");
 
         ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
 
-        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
-        assertEquals(Collections.singletonList("p1"), fake.locateStatusCorrectionPageIds);
-        assertEquals(Collections.singletonList("p1"), fake.patternRoiLocatePageIds);
-        assertTrue("the ROI result must still reach the existing audit gate", fake.auditPageIds.contains("p1"));
+        assertEquals("manual_review", outcome.page("p1").getStatus());
+        assertTrue(fake.locateStatusCorrectionPageIds.isEmpty());
+        assertTrue(fake.patternRoiLocatePageIds.isEmpty());
+        assertTrue(fake.auditPageIds.isEmpty());
     }
 
     @Test
@@ -334,13 +333,13 @@ public class ExamPipelineTest {
 
         assertEquals("manual_review", outcome.page("p1").getStatus());
         assertEquals("locate_manual_review", outcome.page("p1").getReason());
-        assertEquals(Collections.singletonList("p1"), fake.locateStatusCorrectionPageIds);
-        assertEquals(Collections.singletonList("p1"), fake.patternRoiLocatePageIds);
+        assertTrue(fake.locateStatusCorrectionPageIds.isEmpty());
+        assertTrue(fake.patternRoiLocatePageIds.isEmpty());
         assertTrue("a non-safe ROI response cannot erase or audit", fake.auditPageIds.isEmpty());
     }
 
     @Test
-    public void correctsEmptyLocateManualReviewToNoPageNumberOnlyThroughTheVlmProtocol() throws Exception {
+    public void preservesEmptyLocateManualReviewWithoutStatusRewrite() throws Exception {
         FakeVlm fake = FakeVlm.stable();
         fake.locateManualPages.add("p1");
         fake.locateStatusCorrectionNoPageNumPages.add("p1");
@@ -348,9 +347,60 @@ public class ExamPipelineTest {
 
         ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
 
-        assertEquals("no_pagenum", outcome.page("p1").getStatus());
-        assertEquals(Collections.singletonList("p1"), fake.locateStatusCorrectionPageIds);
-        assertTrue("status correction must not erase or audit", fake.auditPageIds.isEmpty());
+        assertEquals("manual_review", outcome.page("p1").getStatus());
+        assertTrue(fake.locateStatusCorrectionPageIds.isEmpty());
+        assertTrue(fake.auditPageIds.isEmpty());
+    }
+
+    @Test
+    public void usesLocateForDirectionWithoutCallingPatternAndRelocatesAfterRotation() throws Exception {
+        FakeVlm fake = FakeVlm.stable();
+
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(2, false), new ExamPipeline.RunContext());
+
+        assertTrue("pattern must be absent from the active path", fake.patternBatches.isEmpty());
+        assertEquals("normal page uses one locate; rotated page uses original plus normalized locate",
+                Arrays.asList("p1", "p2", "p2"), fake.locatePageIds);
+        assertEquals(90, outcome.page("p2").getTransforms().getReadingRotation());
+        assertEquals("safe_to_erase", outcome.page("p2").getStatus());
+    }
+
+    @Test
+    public void closesPageAfterTransientLocateFailureWithoutWholePageRetry() throws Exception {
+        FakeVlm fake = FakeVlm.stable();
+        fake.locateThrowsOncePages.add("p1");
+
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
+
+        assertEquals("manual_review", outcome.page("p1").getStatus());
+        assertEquals(Collections.singletonList("p1"), fake.locatePageIds);
+        assertTrue(fake.auditPageIds.isEmpty());
+    }
+
+    @Test
+    public void closesPageWhenAuditReportsBodyChange() throws Exception {
+        FakeVlm fake = FakeVlm.stable();
+        fake.auditContradictionOncePages.add("p1");
+
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
+
+        assertEquals("manual_review", outcome.page("p1").getStatus());
+        assertEquals("audit_failed", outcome.page("p1").getReason());
+        assertEquals(Collections.singletonList("p1"), fake.locatePageIds);
+        assertEquals(1, Collections.frequency(fake.auditPageIds, "p1"));
+    }
+
+    @Test
+    public void neverRetriesWhenAuditSaysOriginalTargetIsBody() throws Exception {
+        FakeVlm fake = FakeVlm.stable();
+        fake.auditTargetIsBodyPages.add("p1");
+
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
+
+        assertEquals("manual_review", outcome.page("p1").getStatus());
+        assertEquals("audit_original_target_is_body", outcome.page("p1").getReason());
+        assertEquals(Collections.singletonList("p1"), fake.locatePageIds);
+        assertEquals(1, Collections.frequency(fake.auditPageIds, "p1"));
     }
 
     @Test
@@ -483,6 +533,8 @@ public class ExamPipelineTest {
         final List<String> verifyManualRegionIds = new ArrayList<String>();
         final List<String> eraseFailurePages = new ArrayList<String>();
         final List<String> auditFailPages = new ArrayList<String>();
+        final List<String> auditContradictionOncePages = new ArrayList<String>();
+        final List<String> auditTargetIsBodyPages = new ArrayList<String>();
         final List<String> auditColorWarningPages = new ArrayList<String>();
         final List<String> locateManualPages = new ArrayList<String>();
         final List<String> patternRoiSafeLocatePages = new ArrayList<String>();
@@ -491,6 +543,7 @@ public class ExamPipelineTest {
         final List<String> locateStatusCorrectionPageIds = new ArrayList<String>();
         final List<String> lowDirectionConfidencePages = new ArrayList<String>();
         final List<String> locateThrowsPages = new ArrayList<String>();
+        final List<String> locateThrowsOncePages = new ArrayList<String>();
         final List<String> locateProtocolFailurePages = new ArrayList<String>();
         final List<String> locateProtocolFailureOncePages = new ArrayList<String>();
         final List<String> onLinePages = new ArrayList<String>();
@@ -567,8 +620,14 @@ public class ExamPipelineTest {
             if (locateThrowsPages.contains(page.getPageId())) {
                 throw new RuntimeException("locate failed");
             }
+            if (locateThrowsOncePages.remove(page.getPageId())) {
+                throw new RuntimeException("transient locate failure");
+            }
             LocateResponse response = new LocateResponse();
             response.page_id = page.getPageId();
+            response.reading_rotation = "p2".equals(page.getPageId())
+                    && page.getImage().getWidth() < page.getImage().getHeight() ? 90 : 0;
+            response.direction_confidence = lowDirectionConfidencePages.contains(page.getPageId()) ? 0.60 : 0.99;
             response.evidence = "fake";
             BodyBoundary boundary = new BodyBoundary();
             boundary.y = "p2".equals(page.getPageId()) ? 0.80
@@ -658,12 +717,16 @@ public class ExamPipelineTest {
             if (!patternRoiSafeLocatePages.contains(page.getPageId())) {
                 LocateResponse manual = new LocateResponse();
                 manual.page_id = page.getPageId();
+                manual.reading_rotation = 0;
+                manual.direction_confidence = 0.99;
                 manual.status = "manual_review";
                 manual.evidence = "fake ROI remains uncertain";
                 return manual;
             }
             LocateResponse safe = new LocateResponse();
             safe.page_id = page.getPageId();
+            safe.reading_rotation = 0;
+            safe.direction_confidence = 0.99;
             safe.status = "safe_to_erase";
             safe.evidence = "fake pattern ROI locate";
             BodyBoundary boundary = new BodyBoundary();
@@ -692,6 +755,8 @@ public class ExamPipelineTest {
                 coordinateRefineCalls.add(page.getPageId() + ":" + semanticAnchor.region_id);
                 LocateResponse response = new LocateResponse();
                 response.page_id = page.getPageId();
+                response.reading_rotation = 0;
+                response.direction_confidence = 0.99;
                 response.status = "safe_to_erase";
                 response.evidence = "empty footer region relocated";
                 EraseRegion local = new EraseRegion();
@@ -713,14 +778,17 @@ public class ExamPipelineTest {
             coordinateRefineCalls.add(page.getPageId() + ":" + semanticAnchor.region_id);
             LocateResponse response = new LocateResponse();
             response.page_id = page.getPageId();
+            response.reading_rotation = 0;
+            response.direction_confidence = 0.99;
             response.status = "safe_to_erase";
             response.evidence = "two-region coordinate refinement";
             EraseRegion local = new EraseRegion();
             local.region_id = semanticAnchor.region_id;
-            local.x1 = "r1".equals(semanticAnchor.region_id) ? 0.22 : 0.70;
-            local.x2 = "r1".equals(semanticAnchor.region_id) ? 0.30 : 0.78;
-            local.y1 = 0.80;
-            local.y2 = 0.94;
+            // pattern 退出后，每个候选都使用“候选框+正文边界+固定 margin”的独立 ROI。
+            local.x1 = 0.44;
+            local.x2 = 0.66;
+            local.y1 = 0.60;
+            local.y2 = 0.82;
             local.page_number_text = semanticAnchor.page_number_text;
             local.same_line_metadata = semanticAnchor.same_line_metadata;
             local.confidence = semanticAnchor.confidence;
@@ -729,10 +797,10 @@ public class ExamPipelineTest {
             if ("r1".equals(semanticAnchor.region_id)) {
                 EraseRegion second = new EraseRegion();
                 second.region_id = "r2";
-                second.x1 = 0.70;
-                second.x2 = 0.78;
-                second.y1 = 0.80;
-                second.y2 = 0.94;
+                second.x1 = 0.44;
+                second.x2 = 0.66;
+                second.y1 = 0.60;
+                second.y2 = 0.82;
                 second.page_number_text = "2";
                 second.same_line_metadata = "";
                 second.confidence = semanticAnchor.confidence;
@@ -753,11 +821,12 @@ public class ExamPipelineTest {
             return locate(page, group);
         }
 
-        @Override
         public LocateResponse correctLocateStatusAfterManualReview(VlmClient.PageImage page, PatternGroup group) {
             locateStatusCorrectionPageIds.add(page.getPageId());
             LocateResponse response = new LocateResponse();
             response.page_id = page.getPageId();
+            response.reading_rotation = 0;
+            response.direction_confidence = 0.99;
             response.status = locateStatusCorrectionNoPageNumPages.contains(page.getPageId()) ? "no_pagenum" : "manual_review";
             response.evidence = "fake status correction";
             BodyBoundary boundary = new BodyBoundary();
@@ -789,12 +858,10 @@ public class ExamPipelineTest {
             if ((coordinateRefinePages.contains(page.getPageId()) || boundaryConflictPages.contains(page.getPageId()))
                     && "coordinate_refinement_requested".equals(region.safety_margin)) {
                 response.refined_region = new com.xb.sgc.papererase.model.ExamModels.LocalRegion();
-                // pattern 窗口已成为 coordinate refine ROI 的底座；这里的模拟坐标对应
-                // 新 ROI 中真实页码的位置，而不是历史候选小 ROI 的相对位置。
-                response.refined_region.x1 = boundaryConflictPages.contains(page.getPageId()) ? 0.42 : 0.44;
-                response.refined_region.y1 = boundaryConflictPages.contains(page.getPageId()) ? 0.64 : 0.82;
-                response.refined_region.x2 = boundaryConflictPages.contains(page.getPageId()) ? 0.68 : 0.54;
-                response.refined_region.y2 = boundaryConflictPages.contains(page.getPageId()) ? 0.79 : 0.94;
+                response.refined_region.x1 = boundaryConflictPages.contains(page.getPageId()) ? 0.42 : 0.60;
+                response.refined_region.y1 = boundaryConflictPages.contains(page.getPageId()) ? 0.64 : 0.58;
+                response.refined_region.x2 = boundaryConflictPages.contains(page.getPageId()) ? 0.68 : 0.82;
+                response.refined_region.y2 = boundaryConflictPages.contains(page.getPageId()) ? 0.79 : 0.82;
             }
             return response;
         }
@@ -806,14 +873,25 @@ public class ExamPipelineTest {
             auditCalls.put(original.getPageId(), call);
             AuditResponse response = new AuditResponse();
             response.page_id = original.getPageId();
-            response.original_target_is_non_body = true;
-            response.decision = auditFailPages.contains(original.getPageId()) || auditColorWarningPages.contains(original.getPageId())
-                    ? "manual_review" : "pass";
+            response.original_target_is_non_body = !auditTargetIsBodyPages.contains(original.getPageId());
+            response.decision = auditFailPages.contains(original.getPageId()) ? "manual_review" : "pass";
             response.body_unchanged = !auditFailPages.contains(original.getPageId());
             response.target_removed = !auditFailPages.contains(original.getPageId());
             response.background_acceptable = !auditFailPages.contains(original.getPageId())
                     && !auditColorWarningPages.contains(original.getPageId());
             response.evidence = "fake";
+            if (auditContradictionOncePages.contains(original.getPageId()) && call == 1) {
+                response.decision = "manual_review";
+                response.body_unchanged = false;
+                response.target_removed = true;
+                response.background_acceptable = true;
+                response.evidence = "reported body change inside approved target";
+            }
+            if (auditTargetIsBodyPages.contains(original.getPageId())) {
+                response.decision = "manual_review";
+                response.body_unchanged = true;
+                response.target_removed = true;
+            }
             if (twoRegionAuditResidualPages.contains(original.getPageId()) && call == 1) {
                 response.decision = "manual_review";
                 response.body_unchanged = true;

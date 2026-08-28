@@ -45,8 +45,7 @@ public class VlmRequestBuilderTest {
     public void protocolCorrectionInstructionIsCarriedInOpenAiRequestBody() throws Exception {
         String patternCorrection = VlmClient.patternProtocolCorrectionInstruction(Arrays.asList("exam:1", "exam:2"),
                 "page_ids must be classified exactly once");
-        String locateCorrection = VlmClient.locateProtocolCorrectionInstruction("exam:2", "page_number_text is required");
-        String body = VlmClient.OpenAiCompatible.buildRequestBody("qwen", "prompt", patternCorrection + locateCorrection,
+        String body = VlmClient.OpenAiCompatible.buildRequestBody("qwen", "prompt", patternCorrection,
                 Arrays.asList(new VlmClient.PageImage("exam:1", image(Color.WHITE)), new VlmClient.PageImage("exam:2", image(Color.WHITE))),
                 java.util.Collections.<VlmClient.RoiImage>emptyList());
         String instruction = new ObjectMapper().readTree(body).path("messages").path(0).path("content").path(0).path("text").asText();
@@ -54,8 +53,6 @@ public class VlmRequestBuilderTest {
         assertTrue(instruction.contains("every input page_id exactly once"));
         assertTrue(instruction.contains("exam:1"));
         assertTrue(instruction.contains("exam:2"));
-        assertTrue(instruction.contains("non-empty page_number_text"));
-        assertTrue(instruction.contains("manual_review with empty regions"));
     }
 
     @Test

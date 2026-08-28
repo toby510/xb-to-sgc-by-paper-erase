@@ -2,34 +2,27 @@
   "active": "dashscope",
   "defaults": {
     "max_preview_long_edge": 1536,
-    "pattern_sample_max_pages": 6,
     "network_retries": 2,
     "fail_closed": true
   },
   "roles": {
-    "pattern": {
-      "说明": "整卷共性识别：先比较同一试卷多页的阅读方向、页码是否存在、所在边缘和跨页规律；它不输出可擦除像素。",
-      "输入": "同一试卷按配置采样的一批整页缩略图（带 PAGE_ID）。",
-      "调用时机": "每份试卷处理开始时；分批结果会在 Java 侧合并并校验 PAGE_ID。",
-      "prompt": "references/01-整卷共性识别/pattern-prompt-v5.md"
-    },
     "locate": {
       "说明": "页码目标行定位：整页模式识别独立页眉/页脚页码行及最近正文边界；局部 ROI 模式只精确复测候选边缘带坐标。结果始终只是候选。",
       "输入": "首次定位仅输入标准化整页图（带 PAGE_ID）；坐标精修输入边缘带 ROI（带 PAGE_ID、ROI_PAGE_ID、ROI_REGION_ID）。",
-      "调用时机": "pattern 建立共性后先逐页整页定位；仅在候选框为空、坐标风险等需精修时调用 ROI 模式。",
-      "prompt": "references/02-单页页码定位/locate-prompt-v26.md"
+      "调用时机": "逐页先在原图定位并判断阅读方向；旋转页由 Java 旋正后再定位一次；仅在候选框为空、坐标风险等需精修时调用 ROI 模式。",
+      "prompt": "references/02-单页页码定位/locate-prompt-v32.md"
     },
     "verify": {
       "说明": "局部安全复核：仅确认或细化候选独立页眉/页脚目标行的 ROI，目标包含页码及明确同行非正文元数据；专门处理低置信度、旋转和正文过近等风险页面。",
       "输入": "原分辨率整页图和候选区域 ROI（带 PAGE_ID、ROI_PAGE_ID、ROI_REGION_ID）。",
       "调用时机": "只有 RiskGate 判定为高风险，或需要确认无页码时才调用，避免每页重复消耗。",
-      "prompt": "references/03-局部安全复核/verify-prompt-v13.md"
+      "prompt": "references/03-局部安全复核/verify-prompt-v19.md"
     },
     "audit": {
       "说明": "擦除结果审计：对比擦除前后，确认正文未变、页码及获批同行非正文元数据组成的目标行已消失，并独立评估背景色。",
       "输入": "同一页的 ORIGINAL、ERASED 两张图及所有相关 ROI。",
       "调用时机": "每张实际发生过像素擦除的页面完成后；正文或目标判断失败即回退人工审核。",
-      "prompt": "references/04-擦除结果审计/audit-prompt-v8.md"
+      "prompt": "references/04-擦除结果审计/audit-prompt-v11.md"
     }
   },
   "providers": {
@@ -45,21 +38,6 @@
         "default": "qwen3.8-max"
       },
       "roles": {
-        "pattern": {
-          "model": {
-            "env": "XB_PAPER_ERASE_PATTERN_MODEL",
-            "default": "qwen3.8-max"
-          },
-          "base_url": {
-            "env": "XB_PAPER_ERASE_PATTERN_BASE_URL",
-            "default": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-          },
-          "endpoint": {
-            "env": "XB_PAPER_ERASE_PATTERN_ENDPOINT",
-            "default": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-          },
-          "api_key": ["XB_PAPER_ERASE_PATTERN_API_KEY", "MST_QWEN_API_KEY"]
-        },
         "locate": {
           "model": {
             "env": "XB_PAPER_ERASE_LOCATE_MODEL",
@@ -119,11 +97,6 @@
         "env": "MST_XB_AI_ARK_MODEL_ENDPOINT"
       },
       "roles": {
-        "pattern": {
-          "thinking": { "type": "enabled" },
-          "reasoning": { "effort": "low" },
-          "image_detail": "auto"
-        },
         "locate": {
           "thinking": { "type": "enabled" },
           "reasoning": { "effort": "medium" },

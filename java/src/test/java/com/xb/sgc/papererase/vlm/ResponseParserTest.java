@@ -57,17 +57,19 @@ public class ResponseParserTest {
 
     @Test
     public void parsesLocateVerifyAndAuditWithStrictCoordinatesAndDecisions() {
-        LocateResponse locate = ResponseParser.parseLocate("{\"page_id\":\"p1\",\"status\":\"safe_to_erase\","
+        LocateResponse locate = ResponseParser.parseLocate("{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,\"status\":\"safe_to_erase\","
                 + "\"regions\":[{\"region_id\":\"r1\",\"x1\":0.45,\"y1\":0.94,\"x2\":0.55,\"y2\":0.98,"
                 + "\"page_number_text\":\"1\",\"same_line_metadata\":\"page only\",\"on_line\":false,"
                 + "\"confidence\":0.99,\"safety_margin\":\"blank\"}],"
                 + "\"nearest_body_boundary\":{\"x\":null,\"y\":0.88,\"basis\":\"java\"},"
                 + "\"evidence\":\"ok\"}", "p1");
         assertEquals("r1", locate.regions.get(0).region_id);
+        assertEquals(0, locate.reading_rotation);
+        assertEquals(0.99, locate.direction_confidence, 0.0);
 
         VerifyResponse verify = ResponseParser.parseVerify("{\"page_id\":\"p1\",\"region_id\":\"r1\","
                 + "\"decision\":\"safe_to_erase\",\"allowed_scope\":\"page number only\","
-                + "\"evidence\":\"ok\",\"refined_region\":null}", "p1", "r1");
+                + "\"evidence\":\"ok\",\"refined_region\":{\"x1\":0.2,\"y1\":0.7,\"x2\":0.8,\"y2\":0.9}}", "p1", "r1");
         assertEquals("safe_to_erase", verify.decision);
 
         AuditResponse audit = ResponseParser.parseAudit("{\"page_id\":\"p1\",\"decision\":\"pass\","
@@ -89,7 +91,7 @@ public class ResponseParserTest {
     @Test
     public void parsesLocateWhenBoundaryOmitsTheNullAxis() {
         // 底部/顶部目标：模型省略 x:null 只返回 y 轴（locate-prompt-v20 允许 null 轴，模型常省略该字段）
-        LocateResponse footer = ResponseParser.parseLocate("{\"page_id\":\"p1\",\"status\":\"safe_to_erase\","
+        LocateResponse footer = ResponseParser.parseLocate("{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,\"status\":\"safe_to_erase\","
                 + "\"regions\":[{\"region_id\":\"r1\",\"x1\":0.45,\"y1\":0.94,\"x2\":0.55,\"y2\":0.98,"
                 + "\"page_number_text\":\"1\",\"same_line_metadata\":\"\",\"on_line\":false,"
                 + "\"confidence\":0.99,\"safety_margin\":\"blank\"}],"
@@ -98,7 +100,7 @@ public class ResponseParserTest {
         assertEquals(0.88, footer.nearest_body_boundary.y, 0.0);
 
         // 左侧/右侧目标：模型省略 y:null 只返回 x 轴
-        LocateResponse side = ResponseParser.parseLocate("{\"page_id\":\"p1\",\"status\":\"safe_to_erase\","
+        LocateResponse side = ResponseParser.parseLocate("{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,\"status\":\"safe_to_erase\","
                 + "\"regions\":[{\"region_id\":\"r1\",\"x1\":0.02,\"y1\":0.45,\"x2\":0.04,\"y2\":0.55,"
                 + "\"page_number_text\":\"2\",\"same_line_metadata\":\"\",\"on_line\":false,"
                 + "\"confidence\":0.96,\"safety_margin\":\"blank\"}],"
@@ -107,7 +109,7 @@ public class ResponseParserTest {
         assertTrue(side.nearest_body_boundary.y == null);
 
         // 边界必须至少保留 basis：只有坐标、无 basis 仍拒绝，避免放空协议。
-        assertBadLocate("{\"page_id\":\"p1\",\"status\":\"safe_to_erase\","
+        assertBadLocate("{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,\"status\":\"safe_to_erase\","
                 + "\"regions\":[{\"region_id\":\"r1\",\"x1\":0.45,\"y1\":0.94,\"x2\":0.55,\"y2\":0.98,"
                 + "\"page_number_text\":\"1\",\"same_line_metadata\":\"\",\"on_line\":false,"
                 + "\"confidence\":0.99,\"safety_margin\":\"blank\"}],"
@@ -116,7 +118,7 @@ public class ResponseParserTest {
 
     @Test
     public void parsesLocateWhenArkWrapsOtherwiseValidJsonInOneCodeFence() {
-        LocateResponse locate = ResponseParser.parseLocate("```json\n{\"page_id\":\"p1\",\"status\":\"safe_to_erase\","
+        LocateResponse locate = ResponseParser.parseLocate("```json\n{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,\"status\":\"safe_to_erase\","
                 + "\"regions\":[{\"region_id\":\"r1\",\"x1\":0.45,\"y1\":0.94,\"x2\":0.55,\"y2\":0.98,"
                 + "\"page_number_text\":\"1\",\"same_line_metadata\":\"page only\",\"on_line\":false,"
                 + "\"confidence\":0.99,\"safety_margin\":\"blank\"}],"
@@ -128,7 +130,7 @@ public class ResponseParserTest {
 
     @Test
     public void extractsOnlyOneSchemaValidJsonObjectFromModelExplanation() {
-        String json = "{\"page_id\":\"p1\",\"status\":\"safe_to_erase\","
+        String json = "{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,\"status\":\"safe_to_erase\","
                 + "\"regions\":[{\"region_id\":\"r1\",\"x1\":0.45,\"y1\":0.94,\"x2\":0.55,\"y2\":0.98,"
                 + "\"page_number_text\":\"1\",\"same_line_metadata\":\"page only\",\"on_line\":false,"
                 + "\"confidence\":0.99,\"safety_margin\":\"blank\"}],"
@@ -142,9 +144,9 @@ public class ResponseParserTest {
 
     @Test
     public void rejectsUnsafeLocateVerifyAuditAndStoresShortSafeRawSummary() {
-        assertBadLocate("{\"page_id\":\"p1\",\"status\":\"safe\",\"regions\":[],"
+        assertBadLocate("{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,\"status\":\"safe\",\"regions\":[],"
                 + "\"nearest_body_boundary\":{\"x\":null,\"y\":0.8,\"basis\":\"java\"},\"evidence\":\"x\"}", "status");
-        assertBadLocate("{\"page_id\":\"p1\",\"status\":\"safe_to_erase\","
+        assertBadLocate("{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,\"status\":\"safe_to_erase\","
                 + "\"regions\":[{\"region_id\":\"r1\",\"x1\":0.1,\"y1\":0.9,\"x2\":0.2,\"y2\":NaN,"
                 + "\"page_number_text\":\"1\",\"same_line_metadata\":\"\",\"on_line\":false,"
                 + "\"confidence\":0.99,\"safety_margin\":\"blank\"}],"
@@ -153,7 +155,7 @@ public class ResponseParserTest {
                 + "\"allowed_scope\":\"x\",\"evidence\":\"x\",\"refined_region\":null,"
                 + "\"refined_nearest_body_boundary\":null}", "decision");
         assertBadAudit("{\"page_id\":\"p1\",\"decision\":\"pass\",\"original_target_is_non_body\":true,\"body_unchanged\":true,"
-                + "\"target_removed\":false,\"background_acceptable\":true,\"evidence\":\"x\"}", "audit pass");
+                + "\"target_removed\":false,\"background_acceptable\":true,\"evidence\":\"x\"}", "decision must exactly match");
 
         ResponseParser.ParseException ex = ResponseParser.parseFailure("token=secret-1234567890 " + repeat("x", 500));
         assertTrue(ex.getRawSummary().length() <= 240);
@@ -169,13 +171,44 @@ public class ResponseParserTest {
     }
 
     @Test
+    public void requiresAValidDirectionOnEveryLocateResponse() {
+        assertBadLocate("{\"page_id\":\"p1\",\"reading_rotation\":45,\"direction_confidence\":0.99,"
+                + "\"status\":\"manual_review\",\"regions\":[],"
+                + "\"nearest_body_boundary\":{\"basis\":\"uncertain\"},\"evidence\":\"direction only\"}",
+                "rotation");
+        assertBadLocate("{\"page_id\":\"p1\",\"reading_rotation\":90,\"status\":\"manual_review\","
+                + "\"regions\":[],\"nearest_body_boundary\":{\"basis\":\"uncertain\"},"
+                + "\"evidence\":\"direction only\"}", "missing field");
+    }
+
+    @Test
+    public void rejectsLocateStateAndRegionCombinationsThatCannotBeSafelyExecuted() {
+        assertBadLocate("{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,"
+                + "\"status\":\"no_pagenum\",\"regions\":[{\"region_id\":\"r1\",\"x1\":0.4,\"y1\":0.9,\"x2\":0.6,\"y2\":0.95,"
+                + "\"page_number_text\":\"1\",\"same_line_metadata\":\"\",\"on_line\":false,\"confidence\":0.99,\"safety_margin\":\"blank\"}],"
+                + "\"nearest_body_boundary\":{\"x\":null,\"y\":0.8,\"basis\":\"body\"},\"evidence\":\"x\"}", "empty regions");
+        assertBadLocate("{\"page_id\":\"p1\",\"reading_rotation\":90,\"direction_confidence\":0.99,"
+                + "\"status\":\"safe_to_erase\",\"regions\":[],\"nearest_body_boundary\":{\"x\":null,\"y\":null,\"basis\":\"rotation\"},\"evidence\":\"x\"}", "rotated locate");
+    }
+
+    @Test
+    public void rejectsVerifyAndAuditDecisionCombinationsThatContradictTheirPayloads() {
+        assertBadVerify("{\"page_id\":\"p1\",\"region_id\":\"r1\",\"decision\":\"safe_to_erase\","
+                + "\"allowed_scope\":\"x\",\"evidence\":\"x\",\"refined_region\":null}", "refined_region");
+        assertBadVerify("{\"page_id\":\"p1\",\"region_id\":\"r1\",\"decision\":\"manual_review\","
+                + "\"allowed_scope\":\"x\",\"evidence\":\"x\",\"refined_region\":{\"x1\":0.1,\"y1\":0.1,\"x2\":0.2,\"y2\":0.2}}", "refined_region");
+        assertBadAudit("{\"page_id\":\"p1\",\"decision\":\"manual_review\",\"original_target_is_non_body\":true,"
+                + "\"body_unchanged\":true,\"target_removed\":true,\"background_acceptable\":false,\"evidence\":\"x\"}", "decision must exactly match");
+    }
+
+    @Test
     public void rejectsAuditPassWhenOriginalTargetIsBodyOrFieldIsMissing() {
         assertBadAudit("{\"page_id\":\"p1\",\"decision\":\"pass\",\"body_unchanged\":true,"
                 + "\"target_removed\":true,\"background_acceptable\":true,\"evidence\":\"x\"}",
                 "original_target_is_non_body");
         assertBadAudit("{\"page_id\":\"p1\",\"decision\":\"pass\",\"original_target_is_non_body\":false,"
                 + "\"body_unchanged\":true,\"target_removed\":true,\"background_acceptable\":true,\"evidence\":\"x\"}",
-                "audit pass");
+                "decision must exactly match");
     }
 
     private void assertBadPattern(String json, String messagePart) {
