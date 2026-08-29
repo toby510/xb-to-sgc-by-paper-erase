@@ -95,6 +95,24 @@ public final class ExamPipeline {
         return outcome;
     }
 
+    /**
+     * 对同一张整页 locate 请求最多补发一次，仅处理模型响应的瞬态协议/传输失败。
+     *
+     * <p>首个可解析响应无论其业务结论为何都直接使用，绝不通过整页重试改变
+     * {@code safe_to_erase}/{@code no_pagenum}/{@code manual_review} 的语义决定；因此该重试
+     * 不会放宽正文保护，也不会把保守结论改为擦除结论。</p>
+     */
+    private LocateResponse locateWithProtocolRetry(ExamInput exam, PageInput page, VlmClient.PageImage pageImage,
+                                                    PatternGroup group, RunContext context, String requestPhase) {
+        try {
+            return vlm.locate(pageImage, group);
+        } catch (RuntimeException firstFailure) {
+            context.event(PipelineStage.LOCATE, exam.getExamId(), page.getPageId(), EventStatus.RETRY.wireValue(),
+                    "same_page_after_transport_or_protocol_failure; phase=" + requestPhase, 0);
+            return vlm.locate(pageImage, group);
+        }
+    }
+
     private static String shortError(RuntimeException error) {
         String message = error.getMessage();
         if (error instanceof ResponseParser.ParseException) {
@@ -139,9 +157,9 @@ public final class ExamPipeline {
         long firstLocateStartedAt = System.currentTimeMillis();
         context.event(PipelineStage.LOCATE, exam.getExamId(), page.getPageId(), EventStatus.STARTED, null, 0);
         try {
-            // 2.2 首次 locate 同时判断阅读方向。传输层重试由 VLM 客户端统一负责；页面层不再
-            // 额外改写提示词或整页重跑，避免把一次保守结论变成不稳定的多次采样。
-            firstLocate = vlm.locate(originalPageImage, group);
+            // 2.2 首次 locate 同时判断阅读方向。正常语义结论绝不整页重采样；仅当响应无法
+            // 解析为既定 JSON 协议时，原样重发一次相同请求，消除瞬态的模型格式波动。
+            firstLocate = locateWithProtocolRetry(exam, page, originalPageImage, group, context, "initial");
             context.event(PipelineStage.LOCATE, exam.getExamId(), page.getPageId(), EventStatus.COMPLETED,
                     firstLocate.status, System.currentTimeMillis() - firstLocateStartedAt);
         } catch (RuntimeException failure) {
@@ -166,15 +184,18 @@ public final class ExamPipeline {
             context.event(PipelineStage.LOCATE, exam.getExamId(), page.getPageId(), EventStatus.STARTED, "normalized", 0);
             try {
                 // 未旋正图上的坐标一律废弃；旋正后重新定位，第二次响应必须确认当前图方向为 0。
-                locate = vlm.locate(pageImage, group);
+                locate = locateWithProtocolRetry(exam, page, pageImage, group, context, "normalized");
                 context.event(PipelineStage.LOCATE, exam.getExamId(), page.getPageId(), EventStatus.COMPLETED,
                         locate.status, System.currentTimeMillis() - normalizedLocateStartedAt);
             } catch (RuntimeException failure) {
                 context.event(PipelineStage.LOCATE, exam.getExamId(), page.getPageId(), "failed", shortError(failure), 0);
                 return manual(page, original, normalizedImage, transforms, "locate_error", null, null);
             }
-            if (locate.direction_confidence < MIN_DIRECTION_CONFIDENCE || locate.reading_rotation != 0) {
+            if (locate.direction_confidence < MIN_DIRECTION_CONFIDENCE) {
                 return manual(page, original, normalizedImage, transforms, "low_direction_confidence", null, locate);
+            }
+            if (locate.reading_rotation != 0) {
+                return manual(page, original, normalizedImage, transforms, "orientation_normalization_failed", null, locate);
             }
         }
         if ("manual_review".equals(locate.status)) {
@@ -379,8 +400,10 @@ public final class ExamPipeline {
                                              boolean allowConflictingBoundaryReplacement) {
         if (locate.regions.size() == 1) {
             EraseRegion originalRegion = locate.regions.get(0);
-            EdgeRoi edgeRoi = candidateCenteredRoi(page.getPageId(), originalRegion,
-                    locate.nearest_body_boundary, image);
+            // 空框已由 hasEmptyTargetBox 证明：原候选没有可擦墨迹。此时候选中心 ROI 会把
+            // 模型继续锚在错误空白处，因此只扩展到同一物理边缘完整 20% 带，让模型按原有
+            // page_number_text 锚点重新定位；映射守卫和 RegionValidator 仍决定是否可擦。
+            EdgeRoi edgeRoi = fullEdgeRoi(page.getPageId(), originalRegion, image);
             return edgeRoi == null ? null : refineAtRoi(exam, page, image, group, locate, pageImage, originalRegion, edgeRoi, context,
                     "coordinate_refine", allowConflictingBoundaryReplacement);
         }
@@ -411,8 +434,12 @@ public final class ExamPipeline {
             if (!singleValidation.isAccepted() && !shouldRefineRejected(singleValidation)) {
                 return null;
             }
-            EdgeRoi edgeRoi = candidateCenteredRoi(page.getPageId(), originalRegion,
-                    locate.nearest_body_boundary, image);
+            // 每个 region 独立决定精修视野：仅已证明为空框的候选使用完整边缘带；其它
+            // 验证拒绝情形仍保留原候选中心 ROI，避免扩大既有精修的可见范围。
+            EdgeRoi edgeRoi = emptyTargetBox
+                    ? fullEdgeRoi(page.getPageId(), originalRegion, image)
+                    : candidateCenteredRoi(page.getPageId(), originalRegion,
+                            locate.nearest_body_boundary, image);
             if (edgeRoi == null) {
                 return null;
             }
@@ -677,7 +704,11 @@ public final class ExamPipeline {
             return null;
         }
         RoiTransform transform = RoiTransform.fromEdge(image.getWidth(), image.getHeight(), edge, null, 0);
-        return new EdgeRoi(transform, new VlmClient.RoiImage(pageId, region.region_id, crop(image, transform)));
+        // 与候选中心 ROI 保持同一视觉测量条件：边缘带仍映射回未经处理的原图，但送检图先
+        // 提升文字/背景反差并放大。否则整幅 20% 页脚带中的小号页码会在模型看来过小，虽能
+        // 读出语义却容易把坐标落在相邻空白处。
+        BufferedImage enlarged = coordinateGrid(enlarge(inkContrast(crop(image, transform)), 3));
+        return new EdgeRoi(transform, new VlmClient.RoiImage(pageId, region.region_id, enlarged));
     }
 
     /**

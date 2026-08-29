@@ -565,16 +565,10 @@ public class ReportWriter {
     }
 
     private boolean auditSaysBodyDamaged(boolean auditBodyChanged, String reason, String evidence) {
-        if (!auditBodyChanged) {
-            return mentionsBodyDamage(reason, evidence);
-        }
-        String text = nvl(evidence);
-        if (text.contains("正文") && (text.contains("无变化") || text.contains("无可见变化")
-                || text.contains("未见变化") || text.contains("未变")
-                || text.contains("保持一致") || text.contains("主体区域一致"))) {
-            return false;
-        }
-        return true;
+        // 结构化审计字段是最高优先级证据：body_unchanged=false 必须统计为正文变化，不能
+        // 被模型 evidence 中可能自相矛盾的“未变”字样反向覆盖。字段为 true 时，仍保留
+        // 文字兜底，用于发现 reason/evidence 中额外报告的正文损伤。
+        return auditBodyChanged || mentionsBodyDamage(reason, evidence);
     }
 
     private String text(JsonNode root, String field, String fallback) {

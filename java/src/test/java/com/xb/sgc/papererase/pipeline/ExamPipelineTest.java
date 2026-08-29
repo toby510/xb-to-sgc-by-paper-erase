@@ -763,9 +763,11 @@ public class ExamPipelineTest {
                 response.evidence = "empty footer region relocated";
                 EraseRegion local = new EraseRegion();
                 local.region_id = semanticAnchor.region_id;
-                local.x1 = 0.10;
+                // 空框精修现改为完整底部 20% ROI：该页左侧真实页码位于整图 x=25..29，
+                // 因此返回的 ROI 相对框必须落在 x=0.20..0.35 才能映射回同一真实墨迹。
+                local.x1 = 0.20;
                 local.y1 = 0.72;
-                local.x2 = 0.20;
+                local.x2 = 0.35;
                 local.y2 = 0.88;
                 local.page_number_text = semanticAnchor.page_number_text;
                 local.same_line_metadata = semanticAnchor.same_line_metadata;
@@ -860,10 +862,10 @@ public class ExamPipelineTest {
             if ((coordinateRefinePages.contains(page.getPageId()) || boundaryConflictPages.contains(page.getPageId()))
                     && "coordinate_refinement_requested".equals(region.safety_margin)) {
                 response.refined_region = new com.xb.sgc.papererase.model.ExamModels.LocalRegion();
-                response.refined_region.x1 = boundaryConflictPages.contains(page.getPageId()) ? 0.42 : 0.60;
-                response.refined_region.y1 = boundaryConflictPages.contains(page.getPageId()) ? 0.64 : 0.58;
-                response.refined_region.x2 = boundaryConflictPages.contains(page.getPageId()) ? 0.68 : 0.82;
-                response.refined_region.y2 = boundaryConflictPages.contains(page.getPageId()) ? 0.79 : 0.82;
+                response.refined_region.x1 = boundaryConflictPages.contains(page.getPageId()) ? 0.42 : 0.45;
+                response.refined_region.y1 = boundaryConflictPages.contains(page.getPageId()) ? 0.64 : 0.75;
+                response.refined_region.x2 = boundaryConflictPages.contains(page.getPageId()) ? 0.68 : 0.55;
+                response.refined_region.y2 = boundaryConflictPages.contains(page.getPageId()) ? 0.79 : 0.85;
             }
             return response;
         }
