@@ -41,17 +41,18 @@ public final class OrientationNormalizer {
                     targetX = x;
                     targetY = y;
                 } else if (readingRotation == 90) {
-                    // 原图 (x,y) → 旋正图 (y, width-1-x)，宽高互换。
-                    targetX = y;
-                    targetY = width - 1 - x;
+                    // 顺时针 90°：原图 (x,y) → 旋正图 (height-1-y, x)，宽高互换。
+                    // 与 locate 提示词约定一致：reading_rotation 表示“把当前图顺时针转多少度后可正常阅读”。
+                    targetX = height - 1 - y;
+                    targetY = x;
                 } else if (readingRotation == 180) {
                     // 原图 (x,y) → 旋正图 (width-1-x, height-1-y)。
                     targetX = width - 1 - x;
                     targetY = height - 1 - y;
                 } else {
-                    // 原图 (x,y) → 旋正图 (height-1-y, x)，宽高互换。
-                    targetX = height - 1 - y;
-                    targetY = x;
+                    // 逆时针 90°（=顺时针 270°）：原图 (x,y) → 旋正图 (y, width-1-x)，宽高互换。
+                    targetX = y;
+                    targetY = width - 1 - x;
                 }
                 normalized.setRGB(targetX, targetY, source.getRGB(x, y));
             }

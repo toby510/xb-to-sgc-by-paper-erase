@@ -486,8 +486,10 @@ public class ExamPipelineTest {
             return image;
         }
         if (pageOrder == 2) {
+            // p2 模拟横置扫描页：竖版原图需顺时针 90° 归正为横版。顺时针映射下源图右边缘
+            // (x=96) 对应归正图底边，页码墨迹画在此处才会落入底部候选框。
             for (int y = 94; y <= 106; y++) {
-                for (int x = 3; x <= 3; x++) {
+                for (int x = 96; x <= 96; x++) {
                     image.setRGB(x, y, Color.BLACK.getRGB());
                 }
             }

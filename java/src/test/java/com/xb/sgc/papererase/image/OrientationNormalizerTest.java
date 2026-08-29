@@ -16,12 +16,14 @@ public class OrientationNormalizerTest {
 
         assertNormalized(OrientationNormalizer.normalize(image, 0), 3, 2,
                 new int[]{red(), green(), blue(), yellow(), cyan(), magenta()});
+        // 90 = 顺时针：原图顶行 R G B 变成旋正图最右列（自上而下）。
         assertNormalized(OrientationNormalizer.normalize(image, 90), 2, 3,
-                new int[]{blue(), magenta(), green(), cyan(), red(), yellow()});
+                new int[]{yellow(), red(), cyan(), green(), magenta(), blue()});
         assertNormalized(OrientationNormalizer.normalize(image, 180), 3, 2,
                 new int[]{magenta(), cyan(), yellow(), blue(), green(), red()});
+        // 270 = 逆时针：原图顶行 R G B 变成旋正图最左列（自下而上）。
         assertNormalized(OrientationNormalizer.normalize(image, 270), 2, 3,
-                new int[]{yellow(), red(), cyan(), green(), magenta(), blue()});
+                new int[]{blue(), magenta(), green(), cyan(), red(), yellow()});
     }
 
     @Test
