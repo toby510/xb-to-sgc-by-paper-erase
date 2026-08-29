@@ -570,6 +570,7 @@ public class ReportWriter {
         }
         String text = nvl(evidence);
         if (text.contains("正文") && (text.contains("无变化") || text.contains("无可见变化")
+                || text.contains("未见变化") || text.contains("未变")
                 || text.contains("保持一致") || text.contains("主体区域一致"))) {
             return false;
         }

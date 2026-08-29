@@ -3,6 +3,7 @@ package com.xb.sgc.papererase;
 import com.xb.sgc.papererase.input.ExamScanner;
 import com.xb.sgc.papererase.input.GateDatasetSelector;
 import com.xb.sgc.papererase.model.ExamModels.ExamInput;
+import com.xb.sgc.papererase.model.ExamModels.PageInput;
 import com.xb.sgc.papererase.model.ExamModels.ScanResult;
 import com.xb.sgc.papererase.output.ReportWriter;
 import com.xb.sgc.papererase.output.RunWriter;
@@ -11,6 +12,7 @@ import com.xb.sgc.papererase.pipeline.ExamPipeline;
 import com.xb.sgc.papererase.vlm.VlmClient;
 import com.xb.sgc.papererase.vlm.VlmConfig;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -28,14 +30,25 @@ public final class Main {
     }
 
     public static void main(String[] args) throws Exception {
-        if (args.length < 2 || (!"run".equals(args[0]) && !"gate".equals(args[0]) && !"report".equals(args[0]))) {
-            System.err.println("Usage: Main run <test-root> | Main gate <bad-root> <full-root> | Main report <run-dir>");
+        if (args.length < 2 || (!"run".equals(args[0]) && !"gate".equals(args[0]) && !"report".equals(args[0])
+                && !"resume".equals(args[0]))) {
+            System.err.println("Usage: Main run <test-root> | Main gate <bad-root> <full-root> "
+                    + "| Main report <run-dir> | Main resume <test-root> <run-dir>");
             System.exit(2);
         }
         if ("report".equals(args[0])) {
             Path runDir = Paths.get(args[1]);
             new ReportWriter().writeFromRunDirectory(runDir);
             System.out.println(runDir.resolve("测试报告").resolve("测试报告.md").toAbsolutePath().toString());
+            return;
+        }
+        if ("resume".equals(args[0])) {
+            if (args.length != 3) {
+                System.err.println("Usage: Main resume <test-root> <run-dir>");
+                System.exit(2);
+                return;
+            }
+            resumeRun(Paths.get(args[1]), Paths.get(args[2]));
             return;
         }
         Path skillRoot = findSkillRoot();
@@ -100,6 +113,76 @@ public final class Main {
         new ReportWriter().write(exams, outcomes, runDir);
         RunWriter.completeRunJson(runDir, exams.size(), pages);
         System.out.println(runDir.toAbsolutePath().toString());
+    }
+
+    /**
+     * 断点续跑：扫描 test-root 全量试卷，跳过本 run 目录已完整落盘的试卷（每页原图/擦除图/regions +
+     * consensus + Word 齐备），只处理剩余试卷并写入同一 run 目录，最后从产物重建完整报告。
+     * 被系统终止的 run（run.json=completed 前）可通过该命令继续，不重复消耗已完成卷的模型额度。
+     */
+    private static void resumeRun(Path testRoot, Path runDir) throws Exception {
+        if (!Files.isRegularFile(runDir.resolve("run.json"))) {
+            throw new IllegalStateException("not a run dir, missing run.json: " + runDir);
+        }
+        Path skillRoot = findSkillRoot();
+        VlmConfig config = VlmConfig.load(skillRoot.resolve("config/vlm-providers.json"));
+        VlmClient vlm = VlmClient.create(config, skillRoot);
+        ScanResult scan = new ExamScanner().scanWithRejections(testRoot);
+        if (!scan.getRejectedExams().isEmpty()) {
+            throw new IllegalStateException("rejected exams present; cannot resume: "
+                    + scan.getRejectedExams().size());
+        }
+        List<ExamInput> exams = scan.getExams();
+        ExamPipeline pipeline = new ExamPipeline(vlm);
+        RunWriter runWriter = new RunWriter();
+        int resumed = 0;
+        int skipped = 0;
+        for (ExamInput exam : exams) {
+            if (examFullyWritten(exam, runDir)) {
+                skipped++;
+                continue;
+            }
+            ExamPipeline.RunContext context = new ExamPipeline.RunContext(runDir);
+            context.event(ExamPipeline.PipelineStage.OUTPUT, exam.getExamId(), null,
+                    ExamPipeline.EventStatus.STARTED, null, 0);
+            ExamOutcome outcome = pipeline.process(exam, context);
+            runWriter.writeExam(exam, outcome, runDir);
+            outcome.releaseImages();
+            context.event(ExamPipeline.PipelineStage.OUTPUT, exam.getExamId(), null,
+                    ExamPipeline.EventStatus.COMPLETED, null, 0);
+            resumed++;
+        }
+        new ReportWriter().writeFromRunDirectory(runDir);
+        int pages = 0;
+        for (ExamInput exam : exams) {
+            pages += exam.getPages().size();
+        }
+        RunWriter.completeRunJson(runDir, exams.size(), pages);
+        System.err.println("resume skipped=" + skipped + " processed=" + resumed);
+        System.out.println(runDir.resolve("测试报告").resolve("测试报告.md").toAbsolutePath().toString());
+    }
+
+    /** 判定一份试卷是否已在本 run 目录完整落盘（每页原图/擦除图/regions + consensus + Word 均存在）。 */
+    private static boolean examFullyWritten(ExamInput exam, Path runDir) {
+        Path erasedDir = runDir.resolve("erased").resolve(exam.getSubject()).resolve(exam.getExamId());
+        Path consensusDir = runDir.resolve("consensus").resolve(exam.getSubject()).resolve(exam.getExamId());
+        Path wordDir = runDir.resolve("word_output").resolve(exam.getSubject()).resolve(exam.getExamId());
+        for (PageInput page : exam.getPages()) {
+            String stem = exam.getExamId() + "_" + page.getPageOrder();
+            if (!Files.isRegularFile(erasedDir.resolve(stem + "_原图.png"))
+                    || !Files.isRegularFile(erasedDir.resolve(stem + "_擦除后.png"))
+                    || !Files.isRegularFile(erasedDir.resolve(stem + "_regions.json"))) {
+                return false;
+            }
+        }
+        if (!Files.isRegularFile(consensusDir.resolve("exam_consensus.json"))) {
+            return false;
+        }
+        try (java.nio.file.DirectoryStream<Path> stream = Files.newDirectoryStream(wordDir, "*.docx")) {
+            return stream.iterator().hasNext();
+        } catch (IOException e) {
+            return false;
+        }
     }
 
     private static Path findSkillRoot() {
