@@ -116,8 +116,9 @@ public class LineRestorerTest {
         BodyBoundary boundary = new BodyBoundary();
         boundary.y = 0.40;
         boundary.basis = "java";
+        region.nearest_body_boundary = boundary;
         return RegionValidator.validate(new RegionValidator.PageLocateResult("page-1", "safe_to_erase",
-                Arrays.asList(region), boundary), image).getRegions().get(0);
+                Arrays.asList(region)), image).getRegions().get(0);
     }
 
     private BufferedImage page() {

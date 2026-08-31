@@ -39,6 +39,12 @@ public class VlmRequestBuilderTest {
         assertTrue(instruction.contains("第2页(共8页)"));
         assertTrue(instruction.contains("【英语(八)】"));
         assertTrue(instruction.contains("Search the entire ROI"));
+        assertTrue("局部精修必须重新测量当前 ROI 可见的正文边界，不能沿用整页幻觉边界",
+                instruction.contains("ROI-relative nearest_body_boundary"));
+        assertFalse(instruction.contains("Do not return or infer a body boundary"));
+
+        String relocation = VlmClient.relocationInstruction(region);
+        assertTrue(relocation.contains("nearest_body_boundary inside each matched region"));
     }
 
     @Test

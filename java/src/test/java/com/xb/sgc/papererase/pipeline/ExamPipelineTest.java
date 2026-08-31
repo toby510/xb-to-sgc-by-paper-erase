@@ -234,28 +234,39 @@ public class ExamPipelineTest {
     }
 
     @Test
-    public void coordinateRefineKeepsWholePageBodyBoundaryWhenLocalResponseHasNoBoundary() throws Exception {
+    public void coordinateRefineDoesNotBorrowAnotherBoundaryWhenLocalResponseHasNoBoundary() throws Exception {
         FakeVlm fake = FakeVlm.stable();
         fake.coordinateRefinePages.add("p1");
 
         ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
 
         assertEquals("safe_to_erase", outcome.page("p1").getStatus());
-        assertEquals(0.88, outcome.page("p1").getLocate().nearest_body_boundary.y, 0.0);
+        assertTrue(outcome.page("p1").getLocate().regions.get(0).nearest_body_boundary == null);
         assertTrue(fake.verifyCalls.contains("p1:r1"));
     }
 
     @Test
-    public void localRefineMayReplaceOnlyAConflictingWholePageBoundaryWithProvenBlankBand() throws Exception {
+    public void localRefineMayUsePixelBlankBandWhenItsOwnBoundaryIsUnavailable() throws Exception {
         FakeVlm fake = FakeVlm.stable();
         fake.boundaryConflictPages.add("p1");
 
         ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
 
         assertEquals(outcome.page("p1").getReason(), "safe_to_erase", outcome.page("p1").getStatus());
-        assertTrue(outcome.page("p1").getLocate().nearest_body_boundary.basis
-                .startsWith("java_8px_blank_band_replaced_conflicting_vlm_boundary"));
+        assertTrue(outcome.page("p1").getLocate().regions.get(0).nearest_body_boundary == null);
         assertEquals(Arrays.asList("p1:r1"), fake.verifyCalls);
+    }
+
+    @Test
+    public void coordinateRefineUsesTheBodyBoundaryMeasuredInTheSameRoiAsTheRefinedBox() throws Exception {
+        FakeVlm fake = FakeVlm.stable();
+        fake.localBoundaryConflictPages.add("p1");
+
+        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
+
+        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
+        assertEquals("ROI-local body boundary must replace the incompatible whole-page estimate",
+                "roi-local", outcome.page("p1").getLocate().regions.get(0).nearest_body_boundary.basis);
     }
 
     @Test
@@ -414,9 +425,11 @@ public class ExamPipelineTest {
         BodyBoundary boundary = new BodyBoundary();
         boundary.y = 0.95;
         boundary.basis = "body";
-        locate.nearest_body_boundary = boundary;
+        for (EraseRegion region : locate.regions) {
+            region.nearest_body_boundary = boundary;
+        }
         RegionValidator.ValidationResult validation = RegionValidator.validate(
-                new RegionValidator.PageLocateResult("p1", "safe_to_erase", locate.regions, boundary), image);
+                new RegionValidator.PageLocateResult("p1", "safe_to_erase", locate.regions), image);
 
         assertFalse(validation.isAccepted());
         assertTrue(new ExamPipeline(FakeVlm.stable()).isOnlyBodyGapConflict(validation));
@@ -554,6 +567,7 @@ public class ExamPipelineTest {
         final List<String> tightLocatePages = new ArrayList<String>();
         final List<String> coordinateRefinePages = new ArrayList<String>();
         final List<String> boundaryConflictPages = new ArrayList<String>();
+        final List<String> localBoundaryConflictPages = new ArrayList<String>();
         final List<String> duplicateRegionPages = new ArrayList<String>();
         final List<String> twoRegionAuditResidualPages = new ArrayList<String>();
         final List<String> twoRegionLocatePages = new ArrayList<String>();
@@ -634,9 +648,9 @@ public class ExamPipelineTest {
             BodyBoundary boundary = new BodyBoundary();
             boundary.y = "p2".equals(page.getPageId()) ? 0.80
                     : boundaryConflictPages.contains(page.getPageId()) ? 0.95
+                    : localBoundaryConflictPages.contains(page.getPageId()) ? 0.95
                     : coordinateRefinePages.contains(page.getPageId()) ? 0.88 : 0.90;
             boundary.basis = "java";
-            response.nearest_body_boundary = boundary;
             if (locateManualPages.contains(page.getPageId())) {
                 response.status = "manual_review";
                 return response;
@@ -653,18 +667,21 @@ public class ExamPipelineTest {
                     : coordinateRefinePages.contains(page.getPageId()) ? 0.40 : 0.45;
             region.y1 = validationRejectedPages.contains(page.getPageId()) ? 0.40
                     : boundaryConflictPages.contains(page.getPageId()) ? 0.94
+                    : localBoundaryConflictPages.contains(page.getPageId()) ? 0.94
                     : tightLocatePages.contains(page.getPageId()) ? 0.95 : 0.94;
             region.x2 = eraseFailurePages.contains(page.getPageId()) ? 0.20
                     : tightLocatePages.contains(page.getPageId()) ? 0.58
                     : coordinateRefinePages.contains(page.getPageId()) ? 0.45 : 0.55;
             region.y2 = validationRejectedPages.contains(page.getPageId()) ? 0.44
                     : boundaryConflictPages.contains(page.getPageId()) ? 0.98
+                    : localBoundaryConflictPages.contains(page.getPageId()) ? 0.98
                     : tightLocatePages.contains(page.getPageId()) ? 0.97 : 0.98;
             region.page_number_text = "1";
             region.same_line_metadata = "page only";
             region.on_line = onLinePages.contains(page.getPageId());
             region.confidence = lowConfidencePages.contains(page.getPageId()) ? 0.80 : 0.99;
             region.safety_margin = "blank";
+            region.nearest_body_boundary = boundary;
             response.regions.add(region);
             if (twoRegionAuditResidualPages.contains(page.getPageId()) || twoRegionLocatePages.contains(page.getPageId())) {
                 region.x1 = 0.20;
@@ -680,6 +697,7 @@ public class ExamPipelineTest {
                 second.on_line = false;
                 second.confidence = region.confidence;
                 second.safety_margin = "blank";
+                second.nearest_body_boundary = boundary;
                 response.regions.add(second);
             }
             if (emptyMultiRegionPages.contains(page.getPageId())) {
@@ -694,6 +712,7 @@ public class ExamPipelineTest {
                 second.on_line = false;
                 second.confidence = region.confidence;
                 second.safety_margin = "blank";
+                second.nearest_body_boundary = boundary;
                 response.regions.add(second);
             }
             if (duplicateRegionPages.contains(page.getPageId())) {
@@ -708,6 +727,7 @@ public class ExamPipelineTest {
                 duplicate.on_line = false;
                 duplicate.confidence = region.confidence;
                 duplicate.safety_margin = "blank";
+                duplicate.nearest_body_boundary = boundary;
                 response.regions.add(duplicate);
             }
             return response;
@@ -734,7 +754,6 @@ public class ExamPipelineTest {
             BodyBoundary boundary = new BodyBoundary();
             boundary.y = 0.50;
             boundary.basis = "ROI body boundary";
-            safe.nearest_body_boundary = boundary;
             EraseRegion region = new EraseRegion();
             region.region_id = "r1";
             // Fake pattern ROI is x=0..1, y=0.63..1.00; this maps back to the footer target.
@@ -746,6 +765,7 @@ public class ExamPipelineTest {
             region.same_line_metadata = "page only";
             region.confidence = 0.99;
             region.safety_margin = "blank";
+            region.nearest_body_boundary = boundary;
             safe.regions.add(region);
             return safe;
         }
@@ -753,6 +773,30 @@ public class ExamPipelineTest {
         @Override
         public LocateResponse relocateCoordinateRefinement(VlmClient.PageImage page, PatternGroup group,
                                                             EraseRegion semanticAnchor, VlmClient.RoiImage roi) {
+            if (localBoundaryConflictPages.contains(page.getPageId())) {
+                LocateResponse response = new LocateResponse();
+                response.page_id = page.getPageId();
+                response.reading_rotation = 0;
+                response.direction_confidence = 0.99;
+                response.status = "safe_to_erase";
+                response.evidence = "local boundary remeasured";
+                BodyBoundary boundary = new BodyBoundary();
+                boundary.y = 0.30;
+                boundary.basis = "roi-local";
+                EraseRegion local = new EraseRegion();
+                local.region_id = semanticAnchor.region_id;
+                local.x1 = 0.45;
+                local.y1 = 0.70;
+                local.x2 = 0.55;
+                local.y2 = 0.90;
+                local.page_number_text = semanticAnchor.page_number_text;
+                local.same_line_metadata = semanticAnchor.same_line_metadata;
+                local.confidence = semanticAnchor.confidence;
+                local.safety_margin = semanticAnchor.safety_margin;
+                local.nearest_body_boundary = boundary;
+                response.regions.add(local);
+                return response;
+            }
             if (emptyMultiRegionPages.contains(page.getPageId())) {
                 coordinateRefineCalls.add(page.getPageId() + ":" + semanticAnchor.region_id);
                 LocateResponse response = new LocateResponse();
@@ -836,7 +880,6 @@ public class ExamPipelineTest {
             BodyBoundary boundary = new BodyBoundary();
             boundary.y = 0.90;
             boundary.basis = "java";
-            response.nearest_body_boundary = boundary;
             return response;
         }
 

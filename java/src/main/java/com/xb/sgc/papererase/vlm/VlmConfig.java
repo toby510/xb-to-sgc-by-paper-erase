@@ -18,11 +18,13 @@ public final class VlmConfig {
     private final Map<String, RoleConfig> roles;
     private final int maxPreviewLongEdge;
     private final String providerKind;
+    private final String contractPath;
 
-    private VlmConfig(Map<String, RoleConfig> roles, int maxPreviewLongEdge, String providerKind) {
+    private VlmConfig(Map<String, RoleConfig> roles, int maxPreviewLongEdge, String providerKind, String contractPath) {
         this.roles = Collections.unmodifiableMap(new HashMap<String, RoleConfig>(roles));
         this.maxPreviewLongEdge = maxPreviewLongEdge;
         this.providerKind = providerKind;
+        this.contractPath = contractPath;
     }
 
     public static VlmConfig load(Path configPath) throws IOException {
@@ -36,6 +38,7 @@ public final class VlmConfig {
         JsonNode root = new ObjectMapper().readTree(configPath.toFile());
         int previewLongEdge = root.path("defaults").path("max_preview_long_edge").asInt(1536);
         int defaultRetries = root.path("defaults").path("network_retries").asInt(2);
+        String contractPath = text(root.path("defaults").path("vlm_contract"));
         String active = text(root.path("active"));
         JsonNode provider = root.path("providers").path(active);
         if (provider.isMissingNode()) {
@@ -79,7 +82,7 @@ public final class VlmConfig {
             roles.put(role, new RoleConfig(role, prompt, model, endpoint, apiKey, retries, maxOutputTokens, imageDetail,
                     thinkingType, reasoningEffort));
         }
-        return new VlmConfig(roles, previewLongEdge, providerKind);
+        return new VlmConfig(roles, previewLongEdge, providerKind, contractPath);
     }
 
     private static String resolveEndpoint(JsonNode provider, JsonNode roleOverride, Map<String, String> env) {
@@ -167,6 +170,11 @@ public final class VlmConfig {
     /** 当前 active provider 的传输协议；客户端工厂据此选择请求/响应编解码方式。 */
     public String getProviderKind() {
         return providerKind;
+    }
+
+    /** 当前运行冻结的 VLM 协议文档路径；空值仅用于兼容历史配置。 */
+    public String getContractPath() {
+        return contractPath;
     }
 
     /** 单个 VLM 角色配置：提示词、模型参数和请求级开关。 */

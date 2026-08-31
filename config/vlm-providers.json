@@ -3,14 +3,15 @@
   "defaults": {
     "max_preview_long_edge": 1536,
     "network_retries": 2,
-    "fail_closed": true
+    "fail_closed": true,
+    "vlm_contract": "references/00-协议/VLM-CONTRACT-v1.md"
   },
   "roles": {
     "locate": {
-      "说明": "页码目标行定位：整页模式识别独立页眉/页脚页码行及最近正文边界；局部 ROI 模式只精确复测候选边缘带坐标。结果始终只是候选。",
+      "说明": "页码目标行定位：整页模式识别独立页眉/页脚页码行，并为每个 region 分别测量最近正文边界；局部 ROI 模式同步精确复测当前 region 及其正文边界。结果始终只是候选。",
       "输入": "首次定位仅输入标准化整页图（带 PAGE_ID）；坐标精修输入边缘带 ROI（带 PAGE_ID、ROI_PAGE_ID、ROI_REGION_ID）。",
       "调用时机": "逐页先在原图定位并判断阅读方向；旋转页由 Java 旋正后再定位一次；仅在候选框为空、坐标风险等需精修时调用 ROI 模式。",
-      "prompt": "references/02-单页页码定位/locate-prompt-v32.md"
+      "prompt": "references/02-单页页码定位/locate-prompt-v33.md"
     },
     "verify": {
       "说明": "局部安全复核：仅确认或细化候选独立页眉/页脚目标行的 ROI，目标包含页码及明确同行非正文元数据；专门处理低置信度、旋转和正文过近等风险页面。",

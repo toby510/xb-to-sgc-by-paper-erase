@@ -87,13 +87,45 @@ public class RegionValidatorTest {
 
         BufferedImage bandInk = blankPage();
         drawText(bandInk, 11, 9, 18, 14);
-        bandInk.setRGB(12, 18, new Color(190, 190, 190).getRGB());
+        drawText(bandInk, 12, 18, 14, 21);
         RegionValidator.ValidationResult bandResult = RegionValidator.validate(
                 locate("page-1", region("r1", 0.10, 0.04, 0.20, 0.08), boundary(null, 0.205)),
                 bandInk);
         assertFalse(bandResult.isAccepted());
         assertTrue(bandResult.getReasons().get(0).contains("body blank gap contains ink"));
 
+    }
+
+    @Test
+    public void validateAllowsSparseScanNoiseButRejectsTextAndLineStructuresInBodyGap() {
+        BufferedImage sparseNoise = blankPage();
+        drawText(sparseNoise, 45, 8, 54, 14);
+        // 宽页码行与正文之间的 8px 安全带内出现多个互不相连的浅灰点；这是扫描噪声，
+        // 不能因候选框更宽而被累计为正文。
+        sparseNoise.setRGB(14, 18, new Color(220, 220, 220).getRGB());
+        sparseNoise.setRGB(48, 20, new Color(220, 220, 220).getRGB());
+        sparseNoise.setRGB(84, 22, new Color(220, 220, 220).getRGB());
+        // 扫描底纹也可能连成 1~3 行的小斑块；它没有足够的文字高度或答题线长度。
+        drawGrayBlock(sparseNoise, 58, 18, 65, 20, 220);
+        RegionValidator.ValidationResult sparseResult = RegionValidator.validate(
+                locate("page-1", region("r1", 0.10, 0.04, 0.90, 0.08), boundary(null, 0.205)), sparseNoise);
+        assertTrue(sparseResult.getReasons().toString(), sparseResult.isAccepted());
+
+        BufferedImage faintText = blankPage();
+        drawText(faintText, 45, 8, 54, 14);
+        drawGrayBlock(faintText, 46, 18, 50, 21, 220);
+        RegionValidator.ValidationResult textResult = RegionValidator.validate(
+                locate("page-1", region("r1", 0.10, 0.04, 0.90, 0.08), boundary(null, 0.205)), faintText);
+        assertFalse(textResult.isAccepted());
+        assertTrue(textResult.getReasons().get(0).contains("body blank gap contains ink"));
+
+        BufferedImage faintLine = blankPage();
+        drawText(faintLine, 45, 8, 54, 14);
+        drawGrayBlock(faintLine, 30, 20, 70, 21, 220);
+        RegionValidator.ValidationResult lineResult = RegionValidator.validate(
+                locate("page-1", region("r1", 0.10, 0.04, 0.90, 0.08), boundary(null, 0.205)), faintLine);
+        assertFalse(lineResult.isAccepted());
+        assertTrue(lineResult.getReasons().get(0).contains("body blank gap contains ink"));
     }
 
     @Test
@@ -266,7 +298,7 @@ public class RegionValidatorTest {
                 locate("page-1", region("r1", 0.40, 0.04, 0.60, 0.08), null), image);
         assertTrue(accepted.getReasons().toString(), accepted.isAccepted());
 
-        image.setRGB(48, 18, Color.BLACK.getRGB());
+        drawText(image, 48, 18, 50, 21);
         RegionValidator.ValidationResult rejected = RegionValidator.validate(
                 locate("page-1", region("r1", 0.40, 0.04, 0.60, 0.08), null), image);
         assertFalse(rejected.isAccepted());
@@ -403,7 +435,7 @@ public class RegionValidatorTest {
     public void refusesConflictingFooterBoundaryWithOnlySevenBlankPixels() {
         BufferedImage image = blankPage();
         drawText(image, 45, 184, 54, 190);
-        drawText(image, 45, 170, 47, 174);
+        drawText(image, 45, 174, 47, 177);
 
         assertNull(RegionValidator.replaceConflictingBodyBoundary(
                 region("r1", 0.40, 0.90, 0.60, 0.98),
@@ -425,7 +457,7 @@ public class RegionValidatorTest {
     public void refusesConflictingBoundaryReplacementForSubstantiveInkInSafetyBand() {
         BufferedImage image = blankPage();
         drawText(image, 45, 8, 54, 14);
-        drawText(image, 47, 18, 49, 18);
+        drawText(image, 47, 18, 49, 21);
 
         assertNull(RegionValidator.replaceConflictingBodyBoundary(
                 region("r1", 0.40, 0.04, 0.60, 0.08),
@@ -524,19 +556,19 @@ public class RegionValidatorTest {
         BufferedImage image = blankPage();
 
         assertRejectedLocate(new RegionValidator.PageLocateResult("page-1", "manual_review",
-                Arrays.asList(region("r1", 0.10, 0.04, 0.20, 0.08)), boundary(null, 0.16)),
+                Arrays.asList(region("r1", 0.10, 0.04, 0.20, 0.08))),
                 image, "status must be safe_to_erase");
         assertRejectedLocate(new RegionValidator.PageLocateResult("page-1", "Safe_To_Erase",
-                Arrays.asList(region("r1", 0.10, 0.04, 0.20, 0.08)), boundary(null, 0.16)),
+                Arrays.asList(region("r1", 0.10, 0.04, 0.20, 0.08))),
                 image, "status must be safe_to_erase");
         assertRejectedLocate(new RegionValidator.PageLocateResult(" ", "safe_to_erase",
-                Arrays.asList(region("r1", 0.10, 0.04, 0.20, 0.08)), boundary(null, 0.16)),
+                Arrays.asList(region("r1", 0.10, 0.04, 0.20, 0.08))),
                 image, "page_id is required");
         assertRejectedLocate(new RegionValidator.PageLocateResult("page-1", "safe_to_erase",
-                java.util.Collections.<EraseRegion>emptyList(), boundary(null, 0.16)),
+                java.util.Collections.<EraseRegion>emptyList()),
                 image, "regions must not be empty");
         assertRejectedLocate(new RegionValidator.PageLocateResult("page-1", "safe_to_erase",
-                null, boundary(null, 0.16)), image, "regions are required");
+                null), image, "regions are required");
     }
 
     private void assertRejected(EraseRegion region, String reason) {
@@ -574,7 +606,12 @@ public class RegionValidatorTest {
     }
 
     private RegionValidator.PageLocateResult locate(String pageId, java.util.List<EraseRegion> regions, BodyBoundary boundary) {
-        return new RegionValidator.PageLocateResult(pageId, "safe_to_erase", regions, boundary);
+        if (regions != null) {
+            for (EraseRegion region : regions) {
+                region.nearest_body_boundary = boundary;
+            }
+        }
+        return new RegionValidator.PageLocateResult(pageId, "safe_to_erase", regions);
     }
 
     private EraseRegion region(String id, double x1, double y1, double x2, double y2) {
@@ -619,6 +656,14 @@ public class RegionValidatorTest {
                 if (x >= 0 && y >= 0 && x < image.getWidth() && y < image.getHeight()) {
                     image.setRGB(x, y, Color.BLACK.getRGB());
                 }
+            }
+        }
+    }
+
+    private void drawGrayBlock(BufferedImage image, int left, int top, int right, int bottom, int gray) {
+        for (int y = top; y <= bottom; y++) {
+            for (int x = left; x <= right; x++) {
+                image.setRGB(x, y, new Color(gray, gray, gray).getRGB());
             }
         }
     }

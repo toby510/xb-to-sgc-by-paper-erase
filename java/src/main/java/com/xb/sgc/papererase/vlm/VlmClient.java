@@ -84,6 +84,7 @@ public interface VlmClient {
             local.on_line = semanticAnchor.on_line;
             local.confidence = semanticAnchor.confidence;
             local.safety_margin = semanticAnchor.safety_margin;
+            local.nearest_body_boundary = verified.refined_nearest_body_boundary;
             relocated.regions.add(local);
         }
         return relocated;
@@ -132,8 +133,9 @@ public interface VlmClient {
     static String refinementInstruction(EraseRegion region) {
         if (region != null && "coordinate_refinement_requested".equals(region.safety_margin)) {
             return "\nCOORDINATE_REFINEMENT: This is a coordinate refinement request. Return non-null refined_region "
-                    + "in ROI-relative 0..1 coordinates when and only when safe_to_erase. Do not return or infer a body boundary; "
-                    + "the whole-page boundary from locate remains authoritative. "
+                    + "in ROI-relative 0..1 coordinates when and only when safe_to_erase. Also return the region-level "
+                    + "ROI-relative nearest_body_boundary measured only from the clear body visible in this ROI; do not infer "
+                    + "content outside the ROI. It must correspond to the returned region's parallel projection. "
                     + "The first-pass semantic clues are page_number_text='" + safePromptText(region.page_number_text)
                     + "' and same_line_metadata='" + safePromptText(region.same_line_metadata) + "'. "
                     + "Search the entire ROI for the actually visible literal markers and measure that line's ink, rather than "
@@ -144,6 +146,8 @@ public interface VlmClient {
 
     static String relocationInstruction(EraseRegion region) {
         return " LOCAL_RELOCATE: The image is an edge ROI, so all returned coordinates are ROI-relative. "
+                + "Return nearest_body_boundary inside each matched region, measured from the clear body visible in this ROI; "
+                + "do not infer content outside this ROI, and keep the boundary in the matched target's parallel projection. "
                 + "The whole-page semantic anchor is page_number_text='" + safePromptText(region.page_number_text)
                 + "' and same_line_metadata='" + safePromptText(region.same_line_metadata) + "'. "
                 + "Search the complete ROI for the visible matching line. The old coordinates are not evidence and must not be copied.";
@@ -251,7 +255,8 @@ public interface VlmClient {
         public VerifyResponse verify(PageImage page, EraseRegion region, RoiImage roi) {
             String regionId = region == null ? "edge" : region.region_id;
             return ResponseParser.parseVerify(call("verify", "Verify page_id=" + page.getPageId()
-                    + " region_id=" + regionId + verifySemanticAnchor(region) + refinementInstruction(region), one(page), java.util.Collections.singletonList(roi)),
+                    + " region_id=" + regionId + verifySemanticAnchor(region) + refinementInstruction(region),
+                    java.util.Collections.<PageImage>emptyList(), java.util.Collections.singletonList(roi)),
                     page.getPageId(), regionId);
         }
 
@@ -260,7 +265,7 @@ public interface VlmClient {
             String regionId = region == null ? "edge" : region.region_id;
             return ResponseParser.parseVerify(call("verify", "Verify page_id=" + page.getPageId()
                     + " region_id=" + regionId + verifySemanticAnchor(region) + refinementInstruction(region),
-                    one(page), java.util.Collections.singletonList(roi)), page.getPageId(), regionId);
+                    java.util.Collections.<PageImage>emptyList(), java.util.Collections.singletonList(roi)), page.getPageId(), regionId);
         }
 
         @Override
@@ -486,7 +491,8 @@ public interface VlmClient {
         public VerifyResponse verify(PageImage page, EraseRegion region, RoiImage roi) {
             String regionId = region == null ? "edge" : region.region_id;
             return ResponseParser.parseVerify(call("verify", "Verify page_id=" + page.getPageId()
-                    + " region_id=" + regionId + verifySemanticAnchor(region) + refinementInstruction(region), one(page), java.util.Collections.singletonList(roi)),
+                    + " region_id=" + regionId + verifySemanticAnchor(region) + refinementInstruction(region),
+                    java.util.Collections.<PageImage>emptyList(), java.util.Collections.singletonList(roi)),
                     page.getPageId(), regionId);
         }
 
@@ -495,7 +501,7 @@ public interface VlmClient {
             String regionId = region == null ? "edge" : region.region_id;
             return ResponseParser.parseVerify(call("verify", "Verify page_id=" + page.getPageId()
                     + " region_id=" + regionId + verifySemanticAnchor(region) + refinementInstruction(region),
-                    one(page), java.util.Collections.singletonList(roi)), page.getPageId(), regionId);
+                    java.util.Collections.<PageImage>emptyList(), java.util.Collections.singletonList(roi)), page.getPageId(), regionId);
         }
 
         @Override

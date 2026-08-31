@@ -60,8 +60,8 @@ public class ResponseParserTest {
         LocateResponse locate = ResponseParser.parseLocate("{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,\"status\":\"safe_to_erase\","
                 + "\"regions\":[{\"region_id\":\"r1\",\"x1\":0.45,\"y1\":0.94,\"x2\":0.55,\"y2\":0.98,"
                 + "\"page_number_text\":\"1\",\"same_line_metadata\":\"page only\",\"on_line\":false,"
-                + "\"confidence\":0.99,\"safety_margin\":\"blank\"}],"
-                + "\"nearest_body_boundary\":{\"x\":null,\"y\":0.88,\"basis\":\"java\"},"
+                + "\"confidence\":0.99,\"safety_margin\":\"blank\","
+                + "\"nearest_body_boundary\":{\"x\":null,\"y\":0.88,\"basis\":\"java\"}}],"
                 + "\"evidence\":\"ok\"}", "p1");
         assertEquals("r1", locate.regions.get(0).region_id);
         assertEquals(0, locate.reading_rotation);
@@ -89,31 +89,40 @@ public class ResponseParserTest {
     }
 
     @Test
-    public void parsesLocateWhenBoundaryOmitsTheNullAxis() {
-        // 底部/顶部目标：模型省略 x:null 只返回 y 轴（locate-prompt-v20 允许 null 轴，模型常省略该字段）
-        LocateResponse footer = ResponseParser.parseLocate("{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,\"status\":\"safe_to_erase\","
+    public void rejectsLocateWhenBoundaryOmitsAnExplicitNullAxis() {
+        // Contract v1 固定 boundary JSON shape：省略 x:null 不能与“该轴无边界”混为一谈。
+        assertBadLocate("{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,\"status\":\"safe_to_erase\","
                 + "\"regions\":[{\"region_id\":\"r1\",\"x1\":0.45,\"y1\":0.94,\"x2\":0.55,\"y2\":0.98,"
                 + "\"page_number_text\":\"1\",\"same_line_metadata\":\"\",\"on_line\":false,"
-                + "\"confidence\":0.99,\"safety_margin\":\"blank\"}],"
-                + "\"nearest_body_boundary\":{\"y\":0.88,\"basis\":\"java\"},\"evidence\":\"ok\"}", "p1");
-        assertTrue(footer.nearest_body_boundary.x == null);
-        assertEquals(0.88, footer.nearest_body_boundary.y, 0.0);
+                + "\"confidence\":0.99,\"safety_margin\":\"blank\","
+                + "\"nearest_body_boundary\":{\"y\":0.88,\"basis\":\"body\"}}],\"evidence\":\"ok\"}", "missing field");
 
-        // 左侧/右侧目标：模型省略 y:null 只返回 x 轴
-        LocateResponse side = ResponseParser.parseLocate("{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,\"status\":\"safe_to_erase\","
+        assertBadLocate("{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,\"status\":\"safe_to_erase\","
                 + "\"regions\":[{\"region_id\":\"r1\",\"x1\":0.02,\"y1\":0.45,\"x2\":0.04,\"y2\":0.55,"
                 + "\"page_number_text\":\"2\",\"same_line_metadata\":\"\",\"on_line\":false,"
-                + "\"confidence\":0.96,\"safety_margin\":\"blank\"}],"
-                + "\"nearest_body_boundary\":{\"x\":0.06,\"basis\":\"page left edge\"},\"evidence\":\"ok\"}", "p1");
-        assertEquals(0.06, side.nearest_body_boundary.x, 0.0);
-        assertTrue(side.nearest_body_boundary.y == null);
+                + "\"confidence\":0.96,\"safety_margin\":\"blank\","
+                + "\"nearest_body_boundary\":{\"x\":0.06,\"basis\":\"page left edge\"}}],\"evidence\":\"ok\"}", "missing field");
 
         // 边界必须至少保留 basis：只有坐标、无 basis 仍拒绝，避免放空协议。
         assertBadLocate("{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,\"status\":\"safe_to_erase\","
                 + "\"regions\":[{\"region_id\":\"r1\",\"x1\":0.45,\"y1\":0.94,\"x2\":0.55,\"y2\":0.98,"
                 + "\"page_number_text\":\"1\",\"same_line_metadata\":\"\",\"on_line\":false,"
-                + "\"confidence\":0.99,\"safety_margin\":\"blank\"}],"
-                + "\"nearest_body_boundary\":{\"y\":0.88},\"evidence\":\"ok\"}", "missing field");
+                + "\"confidence\":0.99,\"safety_margin\":\"blank\","
+                + "\"nearest_body_boundary\":{\"y\":0.88}}],\"evidence\":\"ok\"}", "missing field");
+    }
+
+    @Test
+    public void parsesMandatoryPerRegionBodyBoundaryAndRejectsTheRemovedRootField() {
+        LocateResponse locate = ResponseParser.parseLocate("{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,\"status\":\"safe_to_erase\","
+                + "\"regions\":[{\"region_id\":\"r1\",\"x1\":0.45,\"y1\":0.94,\"x2\":0.55,\"y2\":0.98,"
+                + "\"page_number_text\":\"1\",\"same_line_metadata\":\"\",\"on_line\":false,\"confidence\":0.99,\"safety_margin\":\"blank\","
+                + "\"nearest_body_boundary\":{\"x\":null,\"y\":0.88,\"basis\":\"same footer lane\"}}],"
+                + "\"evidence\":\"ok\"}", "p1");
+
+        assertEquals(0.88, locate.regions.get(0).nearest_body_boundary.y, 0.0);
+        assertBadLocate("{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,\"status\":\"no_pagenum\","
+                + "\"regions\":[],\"nearest_body_boundary\":{\"x\":null,\"y\":0.80,\"basis\":\"removed\"},\"evidence\":\"x\"}",
+                "unknown");
     }
 
     @Test
@@ -121,8 +130,8 @@ public class ResponseParserTest {
         LocateResponse locate = ResponseParser.parseLocate("```json\n{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,\"status\":\"safe_to_erase\","
                 + "\"regions\":[{\"region_id\":\"r1\",\"x1\":0.45,\"y1\":0.94,\"x2\":0.55,\"y2\":0.98,"
                 + "\"page_number_text\":\"1\",\"same_line_metadata\":\"page only\",\"on_line\":false,"
-                + "\"confidence\":0.99,\"safety_margin\":\"blank\"}],"
-                + "\"nearest_body_boundary\":{\"x\":null,\"y\":0.88,\"basis\":\"java\"},"
+                + "\"confidence\":0.99,\"safety_margin\":\"blank\","
+                + "\"nearest_body_boundary\":{\"x\":null,\"y\":0.88,\"basis\":\"java\"}}],"
                 + "\"evidence\":\"ok\"}\n```", "p1");
 
         assertEquals("r1", locate.regions.get(0).region_id);
@@ -133,8 +142,8 @@ public class ResponseParserTest {
         String json = "{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,\"status\":\"safe_to_erase\","
                 + "\"regions\":[{\"region_id\":\"r1\",\"x1\":0.45,\"y1\":0.94,\"x2\":0.55,\"y2\":0.98,"
                 + "\"page_number_text\":\"1\",\"same_line_metadata\":\"page only\",\"on_line\":false,"
-                + "\"confidence\":0.99,\"safety_margin\":\"blank\"}],"
-                + "\"nearest_body_boundary\":{\"x\":null,\"y\":0.88,\"basis\":\"java\"},"
+                + "\"confidence\":0.99,\"safety_margin\":\"blank\","
+                + "\"nearest_body_boundary\":{\"x\":null,\"y\":0.88,\"basis\":\"java\"}}],"
                 + "\"evidence\":\"ok\"}";
 
         LocateResponse locate = ResponseParser.parseLocate("分析完成：\n" + json + "\n以上为结果。", "p1");
@@ -145,12 +154,12 @@ public class ResponseParserTest {
     @Test
     public void rejectsUnsafeLocateVerifyAuditAndStoresShortSafeRawSummary() {
         assertBadLocate("{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,\"status\":\"safe\",\"regions\":[],"
-                + "\"nearest_body_boundary\":{\"x\":null,\"y\":0.8,\"basis\":\"java\"},\"evidence\":\"x\"}", "status");
+                + "\"evidence\":\"x\"}", "status");
         assertBadLocate("{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,\"status\":\"safe_to_erase\","
                 + "\"regions\":[{\"region_id\":\"r1\",\"x1\":0.1,\"y1\":0.9,\"x2\":0.2,\"y2\":NaN,"
                 + "\"page_number_text\":\"1\",\"same_line_metadata\":\"\",\"on_line\":false,"
-                + "\"confidence\":0.99,\"safety_margin\":\"blank\"}],"
-                + "\"nearest_body_boundary\":{\"x\":null,\"y\":0.8,\"basis\":\"java\"},\"evidence\":\"x\"}", "strict JSON");
+                + "\"confidence\":0.99,\"safety_margin\":\"blank\","
+                + "\"nearest_body_boundary\":{\"x\":null,\"y\":0.8,\"basis\":\"java\"}}],\"evidence\":\"x\"}", "strict JSON");
         assertBadVerify("{\"page_id\":\"p1\",\"region_id\":\"r1\",\"decision\":\"erase\","
                 + "\"allowed_scope\":\"x\",\"evidence\":\"x\",\"refined_region\":null,"
                 + "\"refined_nearest_body_boundary\":null}", "decision");
@@ -173,22 +182,20 @@ public class ResponseParserTest {
     @Test
     public void requiresAValidDirectionOnEveryLocateResponse() {
         assertBadLocate("{\"page_id\":\"p1\",\"reading_rotation\":45,\"direction_confidence\":0.99,"
-                + "\"status\":\"manual_review\",\"regions\":[],"
-                + "\"nearest_body_boundary\":{\"basis\":\"uncertain\"},\"evidence\":\"direction only\"}",
+                + "\"status\":\"manual_review\",\"regions\":[],\"evidence\":\"direction only\"}",
                 "rotation");
         assertBadLocate("{\"page_id\":\"p1\",\"reading_rotation\":90,\"status\":\"manual_review\","
-                + "\"regions\":[],\"nearest_body_boundary\":{\"basis\":\"uncertain\"},"
-                + "\"evidence\":\"direction only\"}", "missing field");
+                + "\"regions\":[],\"evidence\":\"direction only\"}", "missing field");
     }
 
     @Test
     public void rejectsLocateStateAndRegionCombinationsThatCannotBeSafelyExecuted() {
         assertBadLocate("{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,"
                 + "\"status\":\"no_pagenum\",\"regions\":[{\"region_id\":\"r1\",\"x1\":0.4,\"y1\":0.9,\"x2\":0.6,\"y2\":0.95,"
-                + "\"page_number_text\":\"1\",\"same_line_metadata\":\"\",\"on_line\":false,\"confidence\":0.99,\"safety_margin\":\"blank\"}],"
-                + "\"nearest_body_boundary\":{\"x\":null,\"y\":0.8,\"basis\":\"body\"},\"evidence\":\"x\"}", "empty regions");
+                + "\"page_number_text\":\"1\",\"same_line_metadata\":\"\",\"on_line\":false,\"confidence\":0.99,\"safety_margin\":\"blank\","
+                + "\"nearest_body_boundary\":{\"x\":null,\"y\":0.8,\"basis\":\"body\"}}],\"evidence\":\"x\"}", "empty regions");
         assertBadLocate("{\"page_id\":\"p1\",\"reading_rotation\":90,\"direction_confidence\":0.99,"
-                + "\"status\":\"safe_to_erase\",\"regions\":[],\"nearest_body_boundary\":{\"x\":null,\"y\":null,\"basis\":\"rotation\"},\"evidence\":\"x\"}", "rotated locate");
+                + "\"status\":\"safe_to_erase\",\"regions\":[],\"evidence\":\"x\"}", "rotated locate");
     }
 
     @Test

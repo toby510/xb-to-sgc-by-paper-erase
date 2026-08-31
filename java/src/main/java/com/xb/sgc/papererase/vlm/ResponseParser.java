@@ -144,10 +144,8 @@ public final class ResponseParser {
 
     public static LocateResponse parseLocate(String raw, String expectedPageId) {
         JsonNode root = root(raw);
-        requireFields(root, "page_id", "reading_rotation", "direction_confidence", "status", "regions",
-                "nearest_body_boundary", "evidence");
-        rejectUnknown(root, "page_id", "reading_rotation", "direction_confidence", "status", "regions",
-                "nearest_body_boundary", "evidence");
+        requireFields(root, "page_id", "reading_rotation", "direction_confidence", "status", "regions", "evidence");
+        rejectUnknown(root, "page_id", "reading_rotation", "direction_confidence", "status", "regions", "evidence");
         LocateResponse response = new LocateResponse();
         response.page_id = requiredText(root, "page_id");
         requireEqual(response.page_id, expectedPageId, "page_id", raw);
@@ -162,9 +160,9 @@ public final class ResponseParser {
         Set<String> regionIds = new HashSet<String>();
         for (JsonNode item : array(root, "regions")) {
             requireFields(item, "region_id", "x1", "y1", "x2", "y2", "page_number_text",
-                    "same_line_metadata", "on_line", "confidence", "safety_margin");
+                    "same_line_metadata", "on_line", "confidence", "safety_margin", "nearest_body_boundary");
             rejectUnknown(item, "region_id", "x1", "y1", "x2", "y2", "page_number_text",
-                    "same_line_metadata", "on_line", "confidence", "safety_margin");
+                    "same_line_metadata", "on_line", "confidence", "safety_margin", "nearest_body_boundary");
             EraseRegion region = new EraseRegion();
             region.region_id = requiredText(item, "region_id");
             if (!regionIds.add(region.region_id)) {
@@ -182,9 +180,9 @@ public final class ResponseParser {
             region.on_line = requiredBoolean(item, "on_line");
             region.confidence = requiredFiniteUnit(item, "confidence", raw);
             region.safety_margin = requiredText(item, "safety_margin");
+            region.nearest_body_boundary = parseBoundary(item.path("nearest_body_boundary"), raw);
             response.regions.add(region);
         }
-        response.nearest_body_boundary = parseBoundary(root.path("nearest_body_boundary"), raw);
         // 未旋正图的候选坐标不能映射到最终擦除图，只允许 Java 旋正后重新定位。
         if (response.reading_rotation != 0
                 && ("safe_to_erase".equals(response.status) || !response.regions.isEmpty())) {
@@ -277,11 +275,10 @@ public final class ResponseParser {
     }
 
     private static BodyBoundary parseBoundary(JsonNode node, String raw) {
-        // 轴向坐标允许缺失或 null（见 locate-prompt-v20：底部/顶部目标只填 y，左侧/右侧只填 x，
-        // ROI 无清晰正文时两轴皆 null）。缺失字段等价于 null，只要求 basis 必填；否则 qwen 等
-        // 模型省略 null 轴字段会被误判为协议错误而整页误走 manual_review。
+        // 两个轴都必须显式出现；当前边缘无关的轴使用 null。这样 JSON shape 固定，调用方
+        // 不会把模型“漏字段”误当成“已判断该轴不存在正文边界”。
         rejectUnknown(node, "x", "y", "basis");
-        requireFields(node, "basis");
+        requireFields(node, "x", "y", "basis");
         BodyBoundary boundary = new BodyBoundary();
         if (node.has("x")) {
             boundary.x = nullableFiniteUnit(node, "x", raw);

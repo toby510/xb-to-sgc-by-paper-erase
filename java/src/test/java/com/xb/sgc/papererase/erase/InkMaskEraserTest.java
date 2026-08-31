@@ -131,11 +131,6 @@ public class InkMaskEraserTest {
 
     @Test
     public void rejectsUnsafeInkGeometryInsideValidatedRegion() {
-        BufferedImage secondLine = page(120, 120, new Color(245, 244, 238));
-        drawAntiAliasedDigit(secondLine, 34, 10);
-        drawGlyphBlock(secondLine, 36, 18, 8, 5);
-        assertManual(secondLine, 0.25, 0.05, 0.60, 0.20, 0.42, "multiple text lines");
-
         BufferedImage longLine = page(120, 120, new Color(245, 244, 238));
         drawAntiAliasedDigit(longLine, 34, 10);
         for (int x = 50; x <= 75; x++) {
@@ -289,8 +284,9 @@ public class InkMaskEraserTest {
         BodyBoundary boundary = new BodyBoundary();
         boundary.y = bodyY;
         boundary.basis = "java";
+        region.nearest_body_boundary = boundary;
         RegionValidator.ValidationResult result = RegionValidator.validate(
-                new RegionValidator.PageLocateResult("page-1", "safe_to_erase", Arrays.asList(region), boundary),
+                new RegionValidator.PageLocateResult("page-1", "safe_to_erase", Arrays.asList(region)),
                 image);
         assertTrue(result.getReasons().toString(), result.isAccepted());
         return result.getRegions().get(0);

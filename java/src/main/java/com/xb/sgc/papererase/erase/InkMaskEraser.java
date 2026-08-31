@@ -50,18 +50,23 @@ public final class InkMaskEraser {
         if (!hasApprovedPixel(mask, region)) {
             return EraseOutcome.manual(copy(source), new ApprovedMask(mask), "no target ink found");
         }
-        if (touchesRegionBoundary(mask, region)) {
+        // 局部 ROI 已按同一页码锚点复核的紧框可以贴住笔画：实际写入仍仅限框内掩码，
+        // 后续 PixelDiffGate 和全图 audit 会分别保证框外零改动与正文不变。其他候选仍要求
+        // 掩码不贴边，避免未精修的整页坐标切穿文字。
+        if (touchesRegionBoundary(mask, region) && !region.isCoordinateRescued()) {
             return EraseOutcome.manual(copy(source), new ApprovedMask(mask), "mask touches region boundary");
         }
-        String geometryReason = invalidInkGeometryReason(mask, region, coloredTargetVerified);
+        // 彩色授权只决定彩色像素能否成为“目标墨迹”，不能同时关闭长线、表格、多行等
+        // 几何保护；这些风险与颜色无关，必须始终失败关闭。
+        String geometryReason = invalidInkGeometryReason(mask, region);
         if (geometryReason != null) {
             return EraseOutcome.manual(copy(source), new ApprovedMask(mask), geometryReason);
         }
 
-        // 5.3 几何风险后进入整框重建：区域已经过语义、空白带、边界墨迹和文字几何门禁。
-        // 此时区域已经过“页码语义 + 空白带 + 边界墨迹 + 文字几何”全部批准。整框重建比
-        // 仅擦深色掩码更能去掉扫描页码的灰色抗锯齿残影；批准框外不改一像素。
-        boolean[][] approvedPixels = fullRegionMask(source, region);
+        // 最终写入掩码就是实际目标墨迹，而非批准矩形整框。这样即使上游候选框混入了
+        // 未被像素门禁识别的细线或正文，擦除器也不会把这些非目标像素重建为背景。
+        // extractMask 已将深色笔画、抗锯齿灰边及经 verify 授权的彩色目标纳入同一掩码。
+        boolean[][] approvedPixels = mask;
         BackgroundEstimator.Estimate estimate = BackgroundEstimator.estimateFromOuterRing(source, region);
         // 外环决定重建颜色；框内原始纸张纹理过复杂时，宁可纯白也不把不可靠的拟合带回框内。
         boolean whiteFallback = !estimate.isAccepted() || !BackgroundEstimator.estimate(source, region, mask).isAccepted();
@@ -133,7 +138,7 @@ public final class InkMaskEraser {
                 return true;
             }
             boolean[][] mask = extractMask(source, region, false);
-            String reason = invalidInkGeometryReason(mask, region, false);
+            String reason = invalidInkGeometryReason(mask, region);
             // 空框由流水线先走坐标精定位；其余形状异常都必须先让 VLM 看局部图，
             // 不能让 Java 把页码装饰、色块或同行元数据误判成正文表格。
             if (reason != null && !"no target ink found".equals(reason)) {
@@ -218,28 +223,6 @@ public final class InkMaskEraser {
     }
 
     /**
-     * 创建批准框整框写入掩码：RegionValidator 已证明该矩形安全，框外保持 false，
-     * 供 PixelDiffGate 做逐像素兜底。
-     *
-     * @param source 原图，用于确定掩码尺寸
-     * @param region 已批准的像素候选框
-     * @return 整图尺寸掩码，只有 region 内为 {@code true}
-     */
-    private static boolean[][] fullRegionMask(BufferedImage source, RegionValidator.PixelRegion region) {
-        /*
-         * 页码整框重建需要覆盖纸张和灰色抗锯齿残边，因此写入掩码是批准框全覆盖，而不是
-         * 仅覆盖深色墨迹。它绝不向 region 外扩，并由 PixelDiffGate 最终证明框外零变化。
-         */
-        boolean[][] approved = new boolean[source.getHeight()][source.getWidth()];
-        for (int y = region.getY(); y < region.getY() + region.getHeight(); y++) {
-            for (int x = region.getX(); x < region.getX() + region.getWidth(); x++) {
-                approved[y][x] = true;
-            }
-        }
-        return approved;
-    }
-
-    /**
      * 判断目标掩码是否触碰批准框边界。
      *
      * @param mask 整图尺寸的目标墨迹掩码
@@ -273,15 +256,13 @@ public final class InkMaskEraser {
      *
      * @param mask 目标墨迹掩码
      * @param region 候选框，用于计算相对面积和形状阈值
-     * @param visuallyConfirmedIndependentTarget 是否已经由局部视觉复核确认是独立非正文目标
      * @return {@code null} 表示几何形状可接受，否则返回稳定失败原因
      */
-    private static String invalidInkGeometryReason(boolean[][] mask, RegionValidator.PixelRegion region,
-                                                   boolean visuallyConfirmedIndependentTarget) {
+    private static String invalidInkGeometryReason(boolean[][] mask, RegionValidator.PixelRegion region) {
         /*
          * 对候选框内墨迹做几何风险审计，而不是判断“它像不像页码”。长横线/竖线、高覆盖率、
-         * 多个文字带和交叉线分别对应答题线、表格、正文块等高风险结构；未经过局部视觉
-         * 确认时全部拒绝，只有已确认的独立非正文目标才可放宽这些形状限制。
+         * 多个文字带和交叉线分别对应答题线、表格、正文块等高风险结构；无论视觉模型
+         * 对候选的语义判断如何，几何风险都必须独立通过，不能被颜色或语义授权关闭。
          */
         List<Component> components = components(mask, region);
         if (components.isEmpty()) {
@@ -290,71 +271,30 @@ public final class InkMaskEraser {
         int inkCount = 0;
         for (Component component : components) {
             inkCount += component.count;
-            if (!visuallyConfirmedIndependentTarget
-                    && component.width() >= Math.max(16, region.getWidth() * 0.45) && component.height() <= 3) {
+            if (component.width() >= Math.max(16, region.getWidth() * 0.45) && component.height() <= 3) {
                 return "long line component";
             }
-            if (!visuallyConfirmedIndependentTarget
-                    && component.height() >= Math.max(10, region.getHeight() * 0.70) && component.width() <= 3) {
+            if (component.height() >= Math.max(10, region.getHeight() * 0.70) && component.width() <= 3) {
                 return "long line component";
             }
-            if (!visuallyConfirmedIndependentTarget
-                    && (component.width() * component.height() >= region.getWidth() * region.getHeight() * 0.35
-                    || component.count >= region.getWidth() * region.getHeight() * 0.25)) {
+            if (component.width() * component.height() >= region.getWidth() * region.getHeight() * 0.35
+                    || component.count >= region.getWidth() * region.getHeight() * 0.25) {
                 return "ink coverage too high";
             }
         }
-        if (!visuallyConfirmedIndependentTarget && inkCount >= region.getWidth() * region.getHeight() * 0.28) {
+        if (inkCount >= region.getWidth() * region.getHeight() * 0.28) {
             return "ink coverage too high";
         }
-        if (!visuallyConfirmedIndependentTarget && hasLongHorizontalRun(mask, region)) {
+        if (hasLongHorizontalRun(mask, region)) {
             return "long line component";
         }
-        // 连通组件不能直接代表“文字行”：一个中文字符、括号或抗锯齿笔画可能被拆成多个
-        // 上下错开的组件。改以整行横向投影识别独立墨迹带：仅在候选框内存在两个被空白行
-        // 分隔的文字带时拒绝，避免把一行页码误当两行正文。
-        if (!visuallyConfirmedIndependentTarget && hasMultipleTextLineBands(mask, region)) {
-            return "multiple text lines";
-        }
-        if (!visuallyConfirmedIndependentTarget && hasCrossing(mask, region)) {
+        // “多个文字带”在扫描件中会被背透、字符断笔和轻微倾斜稳定误触发，无法单独证明
+        // 正文风险；是否属于非正文由 VLM 语义复核和擦后整页正文审计共同判定。长线、
+        // 表格交叉、高覆盖率等可由像素独立证明的风险仍在本层失败关闭。
+        if (hasCrossing(mask, region)) {
             return "table or crossing line";
         }
         return null;
-    }
-
-    private static boolean hasMultipleTextLineBands(boolean[][] mask, RegionValidator.PixelRegion region) {
-        /*
-         * 用横向投影把掩码分成文字带：一行中至少 2 个墨点才算有效，出现一整行空白即
-         * 结束当前带。两个及以上带意味着候选框可能包含多行正文，而不是单行页码。
-         */
-        int bands = 0;
-        boolean inBand = false;
-        int blankRows = 0;
-        for (int y = region.getY(); y < region.getY() + region.getHeight(); y++) {
-            int ink = 0;
-            for (int x = region.getX(); x < region.getX() + region.getWidth(); x++) {
-                if (mask[y][x]) {
-                    ink++;
-                }
-            }
-            // 单像素抗锯齿噪点不能单独形成一行；真正的字符行至少有两个墨迹像素。
-            if (ink >= 2) {
-                if (!inBand) {
-                    bands++;
-                    inBand = true;
-                }
-                blankRows = 0;
-            } else if (inBand) {
-                blankRows++;
-                // 横向投影跨整行字符：真正的单行页码不会在所有字符上同时出现空白行；
-                // 一行全空白已足以分隔两行，且能保留双行正文的拒绝能力。
-                if (blankRows >= 1) {
-                    inBand = false;
-                    blankRows = 0;
-                }
-            }
-        }
-        return bands > 1;
     }
 
     private static boolean hasLongHorizontalRun(boolean[][] mask, RegionValidator.PixelRegion region) {

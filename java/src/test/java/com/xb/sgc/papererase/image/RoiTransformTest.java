@@ -241,8 +241,9 @@ public class RoiTransformTest {
         region.x2 = 0.20;
         region.y2 = 0.08;
         region.confidence = 0.99;
+        region.nearest_body_boundary = boundary;
         return RegionValidator.validate(
-                new RegionValidator.PageLocateResult("page-1", "safe_to_erase", Arrays.asList(region), boundary),
+                new RegionValidator.PageLocateResult("page-1", "safe_to_erase", Arrays.asList(region)),
                 image).getRegions().get(0);
     }
 

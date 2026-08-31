@@ -19,4 +19,4 @@
 JSON：
 {"page_id":"exam:1","region_id":"r1","decision":"safe_to_erase|manual_review|no_pagenum","allowed_scope":"页码及明确同行非正文元数据|不允许擦除","evidence":"实际匹配的页码和同行文字、排除的无关线、与正文的空白带","refined_region":{"x1":0.12,"y1":0.60,"x2":0.88,"y2":0.82}}
 
-字段含义：`allowed_scope` 只描述本次允许擦除的目标；`evidence` 必须说明文字锚点、排除内容与空白带；`refined_region` 是当前 ROI 的 0..1 相对坐标，Java 会映射回原图。非 `safe_to_erase` 时 `refined_region` 必须为 null。
+字段含义：`allowed_scope` 只描述本次允许擦除的目标；`evidence` 必须说明文字锚点、排除内容与空白带；`refined_region` 是当前 ROI 的 0..1 相对坐标，由下游映射回整页。非 `safe_to_erase` 时 `refined_region` 必须为 null。

@@ -33,7 +33,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -210,7 +209,7 @@ public final class ExamPipeline {
 
         // 3. Java 正文保护门禁：VLM 坐标只是候选，通过确定性像素证据前绝不写图。
         RegionValidator.ValidationResult validation = RegionValidator.validate(
-                new RegionValidator.PageLocateResult(locate.page_id, locate.status, locate.regions, locate.nearest_body_boundary),
+                new RegionValidator.PageLocateResult(locate.page_id, locate.status, locate.regions),
                 normalizedImage);
         boolean refinedByVlm = false;
         if (!validation.isAccepted()) {
@@ -245,7 +244,7 @@ public final class ExamPipeline {
         // 首次定位已经通过空间门禁、但候选框本身没有任何可擦墨迹时，不能让 Java 沿边缘猜
         // 测页码。改由模型查看同一边缘带的高清图，重新给出局部坐标和正文边界；没有明确
         // 坐标就关闭失败。这针对的是“语义识别对、归一化坐标偏移”的模型已知失效模式。
-        if (hasEmptyTargetBox(normalizedImage, validation.getRegions())) {
+        if (!refinedByVlm && hasEmptyTargetBox(normalizedImage, validation.getRegions())) {
             // 3.3 空框救援：整页语义正确但框内无墨时，按同一边缘逐框局部重定位。
             /*
              * 局部模型把“空框”校回真实页码后，整页模型的全局正文边界可能恰好落在别的栏位，
@@ -264,27 +263,26 @@ public final class ExamPipeline {
         RiskGate.PageContext riskContext = RiskGate.PageContext.stable(page.getPageId())
                 .withReadingRotation(readingRotation)
                 .withPageSequenceIncomplete(exam.isPageSequenceIncomplete());
-        // locate 已在整页上完成“这是不是独立非正文页码行”的语义判定，且上面的
-        // RegionValidator 已在原图证明正文方向的空白带。色块、边框和复杂字形本身不能再
-        // 触发一个会把局部 no_pagenum 当作语义否决的 verify：局部 ROI 不含完整版式，确实会
-        // 漏看这类目标。局部 verify 只保留给真实风险（低置信度、同正文行、坐标救回等）。
         boolean hasCoordinateRescue = hasCoordinateRescue(validation.getRegions(), normalizedImage);
-        // 4. 风险复核：稳定低风险页走快速路径；旋转、冲突、救回坐标等风险进入 verify。
-        boolean requiresVerify = !refinedByVlm && (RiskGate.requiresLocalVerify(riskContext, validation) || hasOnLineRegion(locate.regions)
-                || hasCoordinateRescue);
+        boolean hasColoredTarget = InkMaskEraser.hasColoredPixels(normalizedImage, validation.getRegions());
+        // 坐标精修只修正几何位置，不能替代语义二检。彩色目标也必须经该 region 的 verify
+        // 明确确认后，才允许把彩色像素加入擦除掩码。
+        boolean requiresVerify = RiskGate.requiresLocalVerify(riskContext, validation) || hasOnLineRegion(locate.regions)
+                || hasCoordinateRescue || hasColoredTarget;
+        boolean localVerifyConfirmed = false;
         if (requiresVerify) {
-            PageOutcome denied = verifyThenMaybeManual(exam, page, original, normalizedImage, transforms, group, locate, pageImage,
-                    "verify_denied", context);
-            if (!"needs_recheck".equals(denied.getStatus())) {
-                return denied;
+            VerificationResult verified = verifyAndMap(exam, page, original, normalizedImage, transforms, group, locate, pageImage,
+                    context);
+            if (verified.denied != null) {
+                return verified.denied;
             }
+            locate = verified.locate;
+            validation = verified.validation;
+            localVerifyConfirmed = true;
         }
-        // 整页 locate 的 safe_to_erase 已是模型对完整独立目标行的语义确认；局部 verify
-        // 只会进一步提高坐标精度，不能成为彩色/图形目标的唯一语义授权。
-        boolean visuallyConfirmedIndependentTarget = true;
         return eraseAndAudit(exam, page, original, normalizedImage, transforms, group, locate, pageImage,
-                validation.getRegions(), visuallyConfirmedIndependentTarget, false, initialLocateRegions,
-                requiresVerify, refinedByVlm, context);
+                validation.getRegions(), hasColoredTarget && localVerifyConfirmed, false, initialLocateRegions,
+                localVerifyConfirmed, refinedByVlm, context);
     }
 
     /** 只接受真正无可见墨迹的页面；任何 RGB 通道低于 245 的像素都会保持原有人工门禁。 */
@@ -335,8 +333,7 @@ public final class ExamPipeline {
             trimmed.regions.add(RegionValidator.trimBodyFacingBlankPadding(copyRegion(region), image));
         }
         RegionValidator.ValidationResult validation = RegionValidator.validate(
-                new RegionValidator.PageLocateResult(trimmed.page_id, trimmed.status, trimmed.regions,
-                        trimmed.nearest_body_boundary), image);
+                new RegionValidator.PageLocateResult(trimmed.page_id, trimmed.status, trimmed.regions), image);
         return validation.isAccepted() ? new Refinement(trimmed, validation) : null;
     }
 
@@ -404,8 +401,12 @@ public final class ExamPipeline {
             // 模型继续锚在错误空白处，因此只扩展到同一物理边缘完整 20% 带，让模型按原有
             // page_number_text 锚点重新定位；映射守卫和 RegionValidator 仍决定是否可擦。
             EdgeRoi edgeRoi = fullEdgeRoi(page.getPageId(), originalRegion, image);
-            return edgeRoi == null ? null : refineAtRoi(exam, page, image, group, locate, pageImage, originalRegion, edgeRoi, context,
+            if (edgeRoi == null) {
+                return null;
+            }
+            Refinement refined = refineAtRoi(exam, page, image, group, locate, pageImage, originalRegion, edgeRoi, context,
                     "coordinate_refine", allowConflictingBoundaryReplacement);
+            return refined != null && !hasEmptyTargetBox(image, refined.validation.getRegions()) ? refined : null;
         }
 
         /*
@@ -419,8 +420,7 @@ public final class ExamPipeline {
             LocateResponse single = copyLocateWithoutRegions(locate);
             single.regions.add(originalRegion);
             RegionValidator.ValidationResult singleValidation = RegionValidator.validate(
-                    new RegionValidator.PageLocateResult(single.page_id, single.status, single.regions,
-                            single.nearest_body_boundary), image);
+                    new RegionValidator.PageLocateResult(single.page_id, single.status, single.regions), image);
             // 多框页面不能只因为“几何安全”就跳过精修：若该框内没有任何可擦墨迹，说明
             // 模型把文字语义识别对了、坐标却落到了相邻空白/分隔符。必须让高清边缘 ROI
             // 按页码字面量重测，不能把空框原样交给擦除器并在最后才失败。
@@ -436,17 +436,30 @@ public final class ExamPipeline {
             }
             // 每个 region 独立决定精修视野：仅已证明为空框的候选使用完整边缘带；其它
             // 验证拒绝情形仍保留原候选中心 ROI，避免扩大既有精修的可见范围。
+            BodyBoundary regionBoundary = originalRegion.nearest_body_boundary;
             EdgeRoi edgeRoi = emptyTargetBox
                     ? fullEdgeRoi(page.getPageId(), originalRegion, image)
                     : candidateCenteredRoi(page.getPageId(), originalRegion,
-                            locate.nearest_body_boundary, image);
+                            regionBoundary, image);
             if (edgeRoi == null) {
                 return null;
             }
             Refinement refined = refineAtRoi(exam, page, image, group, single, pageImage, originalRegion, edgeRoi, context,
                     "coordinate_refine", emptyTargetBox ? allowConflictingBoundaryReplacement
                             : allowsConflictingBoundaryReplacementAfterRefine(singleValidation));
-            if (refined == null) {
+            // 候选中心 ROI 只是首次定位给出的几何假设，可能完整落在相邻空白或非目标区域。
+            // 只有该 ROI 未给出可擦的安全精框时，才在同一物理边缘完整带内重测一次；语义锚点、
+            // 擦除范围和正文门禁均不变，也不会搜索页面其它边缘。
+            if (!emptyTargetBox && (refined == null || hasEmptyTargetBox(image, refined.validation.getRegions()))) {
+                EdgeRoi fallback = fullEdgeRoi(page.getPageId(), originalRegion, image);
+                if (fallback != null) {
+                    context.event("coordinate_refine", exam.getExamId(), page.getPageId(), EventStatus.RETRY.wireValue(),
+                            "candidate_roi_no_safe_anchor_fallback_to_same_edge", 0);
+                    refined = refineAtRoi(exam, page, image, group, single, pageImage, originalRegion, fallback, context,
+                            "coordinate_refine", allowsConflictingBoundaryReplacementAfterRefine(singleValidation));
+                }
+            }
+            if (refined == null || hasEmptyTargetBox(image, refined.validation.getRegions())) {
                 return null;
             }
             combined.regions.add(refined.locate.regions.get(0));
@@ -462,7 +475,6 @@ public final class ExamPipeline {
         copy.reading_rotation = source.reading_rotation;
         copy.direction_confidence = source.direction_confidence;
         copy.status = source.status;
-        copy.nearest_body_boundary = source.nearest_body_boundary;
         copy.evidence = source.evidence;
         return copy;
     }
@@ -478,9 +490,23 @@ public final class ExamPipeline {
         }
         if (locate.regions.size() == 1) {
             EraseRegion originalRegion = locate.regions.get(0);
-            EdgeRoi roi = candidateCenteredRoi(page.getPageId(), originalRegion, locate.nearest_body_boundary, image);
-            return refineAtRoi(exam, page, image, group, locate, pageImage, originalRegion, roi, context,
+            EdgeRoi roi = candidateCenteredRoi(page.getPageId(), originalRegion,
+                    originalRegion.nearest_body_boundary, image);
+            Refinement refined = roi == null ? null : refineAtRoi(exam, page, image, group, locate, pageImage, originalRegion, roi, context,
                     "audit_coordinate_refine", false);
+            if (refined != null && !hasEmptyTargetBox(image, refined.validation.getRegions())) {
+                return refined;
+            }
+            EdgeRoi fallback = fullEdgeRoi(page.getPageId(), originalRegion, image);
+            if (fallback == null) {
+                return null;
+            }
+            context.event(PipelineStage.AUDIT_COORDINATE_REFINE, exam.getExamId(), page.getPageId(), EventStatus.RETRY.wireValue(),
+                    "candidate_roi_no_safe_anchor_fallback_to_same_edge", 0);
+            Refinement fallbackRefined = refineAtRoi(exam, page, image, group, locate, pageImage, originalRegion, fallback, context,
+                    "audit_coordinate_refine", false);
+            return fallbackRefined != null && !hasEmptyTargetBox(image, fallbackRefined.validation.getRegions())
+                    ? fallbackRefined : null;
         }
 
         // 双页/双栏扫描的局部 ROI 可能同时看见多个页码，模型也可能把它们合并返回为一个
@@ -493,13 +519,22 @@ public final class ExamPipeline {
             LocateResponse single = copyLocateWithoutRegions(locate);
             single.regions.add(originalRegion);
             EdgeRoi roi = candidateCenteredRoi(page.getPageId(), originalRegion,
-                    locate.nearest_body_boundary, image);
+                    originalRegion.nearest_body_boundary, image);
             if (roi == null) {
                 return null;
             }
             Refinement refined = refineAtRoi(exam, page, image, group, single, pageImage,
                     originalRegion, roi, context, "audit_coordinate_refine", false);
-            if (refined == null) {
+            if (refined == null || hasEmptyTargetBox(image, refined.validation.getRegions())) {
+                EdgeRoi fallback = fullEdgeRoi(page.getPageId(), originalRegion, image);
+                if (fallback != null) {
+                    context.event(PipelineStage.AUDIT_COORDINATE_REFINE, exam.getExamId(), page.getPageId(), EventStatus.RETRY.wireValue(),
+                            "candidate_roi_no_safe_anchor_fallback_to_same_edge", 0);
+                    refined = refineAtRoi(exam, page, image, group, single, pageImage,
+                            originalRegion, fallback, context, "audit_coordinate_refine", false);
+                }
+            }
+            if (refined == null || hasEmptyTargetBox(image, refined.validation.getRegions())) {
                 return null;
             }
             combined.regions.add(refined.locate.regions.get(0));
@@ -535,8 +570,10 @@ public final class ExamPipeline {
         context.event(stage, exam.getExamId(), page.getPageId(), "completed", relocated.status + "; "
                         + shortText(relocated.evidence),
                 System.currentTimeMillis() - startedAt);
-        // 局部二检只校正页码框。正文边界是首次整页 locate 基于完整版式得出的证据，
-        // 不能被不含整页正文的放大 ROI 覆盖或要求其重复输出。
+        // 局部精修的候选框与正文边界必须来自同一张 ROI：整页边界可能落在双页扫描的另一栏，
+        // 不能再用它否决已经在当前 ROI 内重新测量的目标行。局部边界仍会回映射到原图并经过
+        // 同一套 8px 连续空白带与实质墨迹门禁；ROI 未给出对应方向边界时，只允许既有
+        // 像素空白带推断尝试证明安全，仍无法证明就失败关闭，不回退到其他 region 的边界。
         if (!"safe_to_erase".equals(relocated.status)) {
             context.event(stage, exam.getExamId(), page.getPageId(), "denied",
                     "unexpected_refinement_response status=" + relocated.status
@@ -544,14 +581,14 @@ public final class ExamPipeline {
             return null;
         }
         if (locate.regions.size() == 1) {
-            EraseRegion localRegion = uniquelyMatchPageNumberLiteral(relocated.regions, originalRegion);
-            if (localRegion == null) {
+            // 精修请求的 Contract 要求“一个 ROI 只返回当前一个候选”。这里不再解析
+            // page_number_text 的任何页码格式：模型负责语义，Java 只验证空间关系和像素安全。
+            if (relocated.regions.size() != 1) {
                 context.event(stage, exam.getExamId(), page.getPageId(), "denied",
-                        "no_unique_page_number_text_match; anchor=" + originalRegion.page_number_text
-                                + "; region_count=" + relocated.regions.size(), 0);
+                        "unexpected_refinement_region_count=" + relocated.regions.size(), 0);
                 return null;
             }
-            return validateMappedSingleRefinement(locate, originalRegion, localRegion, edgeRoi, image,
+            return validateMappedSingleRefinement(locate, originalRegion, relocated.regions.get(0), edgeRoi, image,
                     allowConflictingBoundaryReplacement, context, stage, exam, page, relocated);
         }
         if (relocated.regions.size() != locate.regions.size()) {
@@ -567,8 +604,7 @@ public final class ExamPipeline {
             }
             mappedLocate.evidence = locate.evidence + "; coordinate_relocated=" + relocated.evidence;
             RegionValidator.ValidationResult mappedValidation = RegionValidator.validate(
-                    new RegionValidator.PageLocateResult(mappedLocate.page_id, mappedLocate.status, mappedLocate.regions,
-                            mappedLocate.nearest_body_boundary), image);
+                    new RegionValidator.PageLocateResult(mappedLocate.page_id, mappedLocate.status, mappedLocate.regions), image);
             context.event(stage, exam.getExamId(), page.getPageId(),
                     mappedValidation.isAccepted() ? "mapped" : "rejected",
                     "region_count=" + mappedLocate.regions.size() + "; reasons=" + mappedValidation.getReasons(), 0);
@@ -576,53 +612,6 @@ public final class ExamPipeline {
         }
         return validateMappedSingleRefinement(locate, originalRegion, relocated.regions.get(0), edgeRoi, image,
                 allowConflictingBoundaryReplacement, context, stage, exam, page, relocated);
-    }
-
-    /**
-     * 局部模型有时会把同一页脚带的其他页码一并返回。只接受与当前原始候选可见页码字面量
-     * 唯一相同的框；不依赖返回顺序，也不以最近坐标猜测，防止双页扫描中左、右页码错配。
-     */
-    private EraseRegion uniquelyMatchPageNumberLiteral(List<EraseRegion> candidates, EraseRegion anchor) {
-        String expected = normalizedPageNumberLiteral(anchor.page_number_text);
-        if (expected.isEmpty()) {
-            return null;
-        }
-        EraseRegion matched = null;
-        for (EraseRegion candidate : candidates) {
-            String actual = normalizedPageNumberLiteral(candidate.page_number_text);
-            if (!expected.equals(actual) && !sameExplicitPageMarker(anchor.page_number_text, candidate.page_number_text)) {
-                continue;
-            }
-            if (matched != null) {
-                return null;
-            }
-            matched = candidate;
-        }
-        return matched;
-    }
-
-    /**
-     * 局部 ROI 往往只能读到长页脚中的“第X页”，而整页 Locate 的锚点还会包含试卷名、册别等
-     * 同行元数据。两者的完整文本不必相同；只在双方都明确写出且唯一相同的“第X页”标记时
-     * 视为同一页码。没有该标记（纯数字、罗马数字等）仍坚持完整字面量相等，避免弱化锚定。
-     */
-    private boolean sameExplicitPageMarker(String first, String second) {
-        String firstMarker = explicitPageMarker(first);
-        String secondMarker = explicitPageMarker(second);
-        return !firstMarker.isEmpty() && firstMarker.equals(secondMarker);
-    }
-
-    private String explicitPageMarker(String literal) {
-        String compact = normalizedPageNumberLiteral(literal);
-        int start = compact.indexOf("第");
-        int end = start < 0 ? -1 : compact.indexOf("页", start + 1);
-        return end > start + 1 ? compact.substring(start, end + 1) : "";
-    }
-
-    private String normalizedPageNumberLiteral(String literal) {
-        // 罗马页码（Ⅰ..Ⅻ 等）是合法可见页码锚点，不能在局部精修匹配时被当作标点剔除。
-        return literal == null ? "" : literal.replaceAll("[^0-9A-Za-z\\u2160-\\u2188\\u4e00-\\u9fff]", "")
-                .toLowerCase(Locale.ROOT);
     }
 
     private Refinement validateMappedSingleRefinement(LocateResponse locate, EraseRegion originalRegion,
@@ -634,38 +623,42 @@ public final class ExamPipeline {
         // 局部模型为抗锯齿/可读性通常会在朝正文一侧多给少量空白内边距。正文安全距离
         // 必须从实际目标墨迹计算：这里只删除获批框内已证明为空白的 padding，不扩框、不
         // 搜索新文字，再交给同一套像素门禁复核，因而不会降低正文保护。
-        refined = RegionValidator.trimBodyFacingBlankPadding(refined, image);
+        if (!"local_vlm_coordinate_refined".equals(refined.safety_margin)) {
+            refined = RegionValidator.trimBodyFacingBlankPadding(refined, image);
+        }
         LocateResponse refinedLocate = new LocateResponse();
         refinedLocate.page_id = locate.page_id;
         refinedLocate.reading_rotation = 0;
         refinedLocate.direction_confidence = locate.direction_confidence;
         refinedLocate.status = locate.status;
         refinedLocate.regions.add(refined);
-        refinedLocate.nearest_body_boundary = locate.nearest_body_boundary;
+        BodyBoundary localBoundary = localRegion.nearest_body_boundary;
+        BodyBoundary mappedBoundary = localBoundary == null ? null
+                : mapBoundary(localBoundary, edgeRoi.transform, image.getWidth(), image.getHeight());
+        refined.nearest_body_boundary = hasDirectionalBoundaryForRegion(refined, mappedBoundary)
+                ? mappedBoundary : null;
         refinedLocate.evidence = locate.evidence + "; coordinate_relocated=" + relocated.evidence;
         RegionValidator.ValidationResult validation = RegionValidator.validate(
-                new RegionValidator.PageLocateResult(refinedLocate.page_id, refinedLocate.status, refinedLocate.regions,
-                        refinedLocate.nearest_body_boundary), image);
-        if (!validation.isAccepted() && allowConflictingBoundaryReplacement
-                && isOnlyBodyGapConflict(validation)) {
-            EraseRegion trimmed = RegionValidator.trimBodyFacingBlankPadding(refined, image);
+                new RegionValidator.PageLocateResult(refinedLocate.page_id, refinedLocate.status, refinedLocate.regions), image);
+        if (!validation.isAccepted() && isOnlyBodyGapConflict(validation)) {
+            EraseRegion trimmed = "local_vlm_coordinate_refined".equals(refined.safety_margin)
+                    ? refined : RegionValidator.trimBodyFacingBlankPadding(refined, image);
             BodyBoundary effectiveBoundary = RegionValidator.replaceConflictingBodyBoundary(originalRegion, trimmed,
-                    locate.nearest_body_boundary, image);
+                    refined.nearest_body_boundary, image);
             if (effectiveBoundary != null) {
                 refined = trimmed;
+                refined.nearest_body_boundary = effectiveBoundary;
                 refinedLocate.regions.clear();
                 refinedLocate.regions.add(refined);
-                refinedLocate.nearest_body_boundary = effectiveBoundary;
                 refinedLocate.evidence = refinedLocate.evidence + "; conflicting_boundary_replaced=" + effectiveBoundary.basis;
                 validation = RegionValidator.validate(
-                        new RegionValidator.PageLocateResult(refinedLocate.page_id, refinedLocate.status, refinedLocate.regions,
-                                refinedLocate.nearest_body_boundary), image);
+                        new RegionValidator.PageLocateResult(refinedLocate.page_id, refinedLocate.status, refinedLocate.regions), image);
             }
         }
         context.event(stage, exam.getExamId(), page.getPageId(),
                 validation.isAccepted() ? "mapped" : "rejected",
                 "region=" + refined.x1 + "," + refined.y1 + "," + refined.x2 + "," + refined.y2
-                        + "; body=" + boundaryEvidence(refinedLocate.nearest_body_boundary)
+                        + "; body=" + boundaryEvidence(refined.nearest_body_boundary)
                         + "; reasons=" + validation.getReasons(), 0);
         return validation.isAccepted() ? new Refinement(refinedLocate, validation) : null;
     }
@@ -677,11 +670,25 @@ public final class ExamPipeline {
                 localRegion.x1, localRegion.y1, localRegion.x2, localRegion.y2);
         applyRoiMappingGuard(refined, rect, image.getWidth(), image.getHeight());
         refined.safety_margin = "local_vlm_coordinate_refined";
-        return RegionValidator.trimBodyFacingBlankPadding(refined, image);
+        return refined;
     }
 
     private String boundaryEvidence(BodyBoundary boundary) {
         return boundary == null ? "null" : boundary.x + "," + boundary.y;
+    }
+
+    /** 底/顶页脚只接受 y 边界，左/右页边只接受 x 边界；错误轴或空边界不能参与当前 region 校验。 */
+    private boolean hasDirectionalBoundaryForRegion(EraseRegion region, BodyBoundary boundary) {
+        if (region == null || boundary == null) {
+            return false;
+        }
+        if (region.y2 <= 0.20 || region.y1 >= 0.80) {
+            return boundary.y != null;
+        }
+        if (region.x2 <= 0.20 || region.x1 >= 0.80) {
+            return boundary.x != null;
+        }
+        return false;
     }
 
     private static String shortText(String value) {
@@ -764,6 +771,7 @@ public final class ExamPipeline {
         copy.on_line = source.on_line;
         copy.confidence = source.confidence;
         copy.safety_margin = source.safety_margin;
+        copy.nearest_body_boundary = source.nearest_body_boundary;
         return copy;
     }
 
@@ -786,82 +794,70 @@ public final class ExamPipeline {
         return false;
     }
 
-    private PageOutcome verifyThenMaybeManual(ExamInput exam, PageInput page, BufferedImage original, BufferedImage normalized,
-                                              PageTransforms transforms, PatternGroup group, LocateResponse locate,
-                                              VlmClient.PageImage pageImage, String deniedReason, RunContext context) {
+    /**
+     * 对每个最终候选执行 verify，并将 verify 返回的 ROI 相对精框映射回整图后重新走
+     * RegionValidator。Verify 的拒绝拥有真实否决权，不能被 locate 置信度覆盖。
+     */
+    private VerificationResult verifyAndMap(ExamInput exam, PageInput page, BufferedImage original, BufferedImage normalized,
+                                            PageTransforms transforms, PatternGroup group, LocateResponse locate,
+                                            VlmClient.PageImage pageImage, RunContext context) {
+        LocateResponse verifiedLocate = copyLocateWithoutRegions(locate);
         for (EraseRegion region : locate.regions) {
-            if (isSameLineMetadataOnly(region, locate.regions)) {
-                // 同一独立页脚带内的分隔符、版权标记等没有独立“页码”语义；把它单独送给
-                // verify 会必然得到 no_pagenum。只要它与主页码同基线，仍由原图像素门禁、
-                // 主页码 verify 和最终 audit 共同保护，不额外新增模型调用。
-                context.event(PipelineStage.VERIFY, exam.getExamId(), page.getPageId(), "skipped",
-                        "same_line_metadata:" + region.region_id, 0);
-                continue;
-            }
             long startedAt = System.currentTimeMillis();
             context.event(PipelineStage.VERIFY, exam.getExamId(), page.getPageId(), "started", region.region_id, 0);
+            RoiTransform transform = RoiTransform.fromNormalizedCandidate(
+                    normalized.getWidth(), normalized.getHeight(), region, region.nearest_body_boundary, 24);
             VerifyResponse verify = verifyWithSingleRetry(exam, page, pageImage, group, region,
-                    roi(page.getPageId(), region, locate.nearest_body_boundary, normalized), context, region.region_id);
+                    new VlmClient.RoiImage(page.getPageId(), region.region_id, crop(normalized, transform)), context, region.region_id);
             if (verify == null) {
-                return manual(page, original, normalized, transforms, "verify_error", group, locate);
+                return VerificationResult.denied(manual(page, original, normalized, transforms, "verify_error", group, locate));
             }
             context.event(PipelineStage.VERIFY, exam.getExamId(), page.getPageId(), "completed", verify.decision,
                     System.currentTimeMillis() - startedAt);
             if (!"safe_to_erase".equals(verify.decision)) {
-                if ("no_pagenum".equals(verify.decision) || "manual_review".equals(verify.decision)) {
-                    // ROI 只看到局部，可能因缩放、颜色或装饰漏读已经由整页 locate 识别的页码。
-                    // 对完整高置信 locate 且已通过 Java 像素门禁的候选，no_pagenum 仅表示局部未观察到，
-                    // 不能单独推翻整页语义；后续 PixelDiffGate 与 audit 三硬条件仍会失败关闭。
-                    if (hasHighConfidenceLocateEvidence(locate)) {
-                        context.event(PipelineStage.VERIFY, exam.getExamId(), page.getPageId(),
-                                "no_pagenum".equals(verify.decision) ? "no_pagenum_ignored" : "manual_review_ignored",
-                                "full_page_high_confidence_semantic_evidence:" + region.region_id, 0);
-                        continue;
-                    }
-                    return manual(page, original, normalized, transforms, "verify_target_not_found", group, locate);
-                }
-                return manual(page, original, normalized, transforms, deniedReason, group, locate);
+                return VerificationResult.denied(manual(page, original, normalized, transforms,
+                        "verify_target_not_found", group, locate));
+            }
+            if (verify.refined_region == null) {
+                return VerificationResult.denied(manual(page, original, normalized, transforms,
+                        "verify_protocol_inconsistent", group, locate));
+            }
+            EraseRegion mapped = mapVerifyRegion(region, verify.refined_region, transform, normalized);
+            RegionValidator.ValidationResult mappedValidation = RegionValidator.validate(
+                    new RegionValidator.PageLocateResult(verifiedLocate.page_id, verifiedLocate.status,
+                            Collections.singletonList(mapped)), normalized);
+            if (mappedValidation.isAccepted()) {
+                verifiedLocate.regions.add(mapped);
+            } else {
+                // verify 的 safe 决策已经独立确认“这行是非正文页码”；但其精框仍可能因
+                // 抗锯齿而贴住字边。原框此前已通过同一像素门禁，故只在精框也合格时替换；
+                // 否则保留原框，绝不为迁就 VLM 的紧框而放宽或自行扩框。
+                verifiedLocate.regions.add(copyRegion(region));
+                context.event(PipelineStage.VERIFY, exam.getExamId(), page.getPageId(), EventStatus.REJECTED,
+                        "mapped_refinement_rejected_original_geometry_retained:" + mappedValidation.getReasons(), 0);
             }
         }
-        return new PageOutcome(page.getPageId(), "needs_recheck", "verify_safe", original, normalized, normalized,
-                transforms, group, locate.regions, locate, null);
+        RegionValidator.ValidationResult validation = RegionValidator.validate(
+                new RegionValidator.PageLocateResult(verifiedLocate.page_id, verifiedLocate.status, verifiedLocate.regions), normalized);
+        if (!validation.isAccepted()) {
+            context.event(PipelineStage.VERIFY, exam.getExamId(), page.getPageId(), EventStatus.REJECTED,
+                    "mapped_verify_regions=" + verifiedLocate.regions.size() + "; reasons=" + validation.getReasons(), 0);
+            return VerificationResult.denied(manual(page, original, normalized, transforms,
+                    "verify_refined_validation_rejected", group, verifiedLocate));
+        }
+        return VerificationResult.accepted(verifiedLocate, validation);
     }
 
-    /** 只用于解释局部 no_pagenum 的范围：该方法不替代已在调用前完成的 RegionValidator 像素门禁。 */
-    private boolean hasHighConfidenceLocateEvidence(LocateResponse locate) {
-        if (locate == null || !"safe_to_erase".equals(locate.status) || locate.regions.isEmpty()) return false;
-        for (EraseRegion candidate : locate.regions) {
-            if (candidate.confidence < 0.97D || Double.isNaN(candidate.confidence)
-                    || Double.isInfinite(candidate.confidence)) return false;
+    private EraseRegion mapVerifyRegion(EraseRegion original, com.xb.sgc.papererase.model.ExamModels.LocalRegion local,
+                                        RoiTransform transform, BufferedImage image) {
+        if (local == null) {
+            throw new IllegalArgumentException("verify safe_to_erase must provide refined_region");
         }
-        return true;
-    }
-
-    /**
-     * 判断一个 region 是否只是与页码同一独立行的分隔符/元数据，而不是可单独复核的页码。
-     * 仅当它声明了同行元数据、文本本身没有数字或页码标志，且存在纵向重叠的主页码 region
-     * 时才跳过局部 verify；任何无法证明同基线关系的文字仍按原有严格流程复核。
-     */
-    private boolean isSameLineMetadataOnly(EraseRegion candidate, List<EraseRegion> regions) {
-        if (candidate.same_line_metadata == null || candidate.same_line_metadata.trim().isEmpty()
-                || hasPageNumberMarker(candidate.page_number_text)) {
-            return false;
-        }
-        for (EraseRegion peer : regions) {
-            if (peer == candidate || !hasPageNumberMarker(peer.page_number_text)) {
-                continue;
-            }
-            if (candidate.y1 < peer.y2 && peer.y1 < candidate.y2) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private boolean hasPageNumberMarker(String text) {
-        if (text == null) return false;
-        String value = text.toLowerCase();
-        return value.matches(".*[0-9０-９].*") || value.contains("第") || value.contains("页") || value.contains("page");
+        RoiTransform.PixelRect rect = transform.localRectToFullPixels(local.x1, local.y1, local.x2, local.y2);
+        EraseRegion mapped = copyRegion(original);
+        applyRoiMappingGuard(mapped, rect, image.getWidth(), image.getHeight());
+        mapped.safety_margin = "verify_coordinate_refined";
+        return RegionValidator.trimBodyFacingBlankPadding(mapped, image);
     }
 
     /**
@@ -924,8 +920,9 @@ public final class ExamPipeline {
         context.event(PipelineStage.AUDIT, exam.getExamId(), page.getPageId(), "started", null, 0);
         // 7. audit 视觉审计：对原图、擦除图和局部 ROI 同时复核正文与目标。
         VlmClient.PageImage erasedPageImage = new VlmClient.PageImage(page.getPageId(), candidate);
-        List<VlmClient.RoiImage> auditRois = auditRois(page.getPageId(), locate.regions,
-                locate.nearest_body_boundary, normalized, candidate);
+        // Audit 必须看到真正发生写入的最终 PixelRegion，而不是可能已被 trim/rescue/refine
+        // 过时的 VLM 粗框；ROI 额外保留固定上下文供模型判断正文与目标的相对关系。
+        List<VlmClient.RoiImage> auditRois = auditRois(page.getPageId(), pixelRegions, normalized, candidate);
         AuditResponse audit = vlm.audit(pageImage, erasedPageImage, locate.regions, auditRois);
         List<ExamOutcome.ApprovedRegion> approvedEvidence = approvedRegions(initialLocateRegions, locate, pixelRegions,
                 normalized, localVerifyConfirmed, vlmCoordinateRefined);
@@ -937,18 +934,18 @@ public final class ExamPipeline {
                 && audit.body_unchanged && audit.target_removed;
         if ("pass".equals(audit.decision) != auditHardConditionsPassed) {
             return new PageOutcome(page.getPageId(), "manual_review", "audit_protocol_inconsistent", original, normalized,
-                    candidate, transforms, group, locate.regions, locate, audit, approvedEvidence);
+                    normalized, transforms, group, locate.regions, locate, audit, approvedEvidence);
         }
         // 原始目标确认非正文、正文不变、目标确实消失是三项交付硬条件；背景色仅是质量告警。
         if (!audit.original_target_is_non_body) {
             // 语义判定为正文/不确定时不得以“坐标精修”尝试挽救，避免把正文当残留页码继续擦除。
             return new PageOutcome(page.getPageId(), "manual_review", "audit_original_target_is_body", original, normalized,
-                    candidate, transforms, group, locate.regions, locate, audit, approvedEvidence);
+                    normalized, transforms, group, locate.regions, locate, audit, approvedEvidence);
         }
         if (!audit.body_unchanged) {
             // 7.1 正文变化是绝对失败，不允许通过重试或色差降级放行。
             return new PageOutcome(page.getPageId(), "manual_review", "audit_failed", original, normalized,
-                    candidate, transforms, group, locate.regions, locate, audit, approvedEvidence);
+                    normalized, transforms, group, locate.regions, locate, audit, approvedEvidence);
         }
         if (!audit.target_removed) {
             // 7.2 仅目标残留可做一次局部坐标精修；正文变化不进入该分支。
@@ -962,12 +959,12 @@ public final class ExamPipeline {
                 }
             }
             return new PageOutcome(page.getPageId(), "manual_review", "audit_target_not_removed", original, normalized,
-                    candidate, transforms, group, locate.regions, locate, audit, approvedEvidence);
+                    normalized, transforms, group, locate.regions, locate, audit, approvedEvidence);
         }
         if (!"pass".equals(audit.decision)) {
             // Parser 已做真值表校验；此处仍先失败关闭，避免未来协议调整后背景色告警抢先放行。
             return new PageOutcome(page.getPageId(), "manual_review", "audit_failed", original, normalized,
-                    candidate, transforms, group, locate.regions, locate, audit, approvedEvidence);
+                    normalized, transforms, group, locate.regions, locate, audit, approvedEvidence);
         }
         if (!audit.background_acceptable) {
             // 7.3 背景色只记录告警，正文安全已满足即可交付擦除图。
@@ -1057,14 +1054,14 @@ public final class ExamPipeline {
         region.y2 = bottom / (double) height;
     }
 
-    private List<VlmClient.RoiImage> auditRois(String pageId, List<EraseRegion> regions,
-                                               BodyBoundary boundary, BufferedImage original, BufferedImage erased) {
+    private List<VlmClient.RoiImage> auditRois(String pageId, List<RegionValidator.PixelRegion> regions,
+                                               BufferedImage original, BufferedImage erased) {
         List<VlmClient.RoiImage> rois = new ArrayList<VlmClient.RoiImage>();
-        for (EraseRegion region : regions) {
-            RoiTransform transform = RoiTransform.fromNormalizedCandidate(
-                    original.getWidth(), original.getHeight(), region, boundary, 24);
-            rois.add(new VlmClient.RoiImage(pageId, region.region_id, crop(original, transform), "ORIGINAL"));
-            rois.add(new VlmClient.RoiImage(pageId, region.region_id, crop(erased, transform), "ERASED"));
+        for (RegionValidator.PixelRegion region : regions) {
+            RoiTransform transform = RoiTransform.fromCandidate(
+                    original.getWidth(), original.getHeight(), region, null, 24);
+            rois.add(new VlmClient.RoiImage(pageId, region.getRegionId(), crop(original, transform), "ORIGINAL"));
+            rois.add(new VlmClient.RoiImage(pageId, region.getRegionId(), crop(erased, transform), "ERASED"));
         }
         return rois;
     }
@@ -1169,6 +1166,28 @@ public final class ExamPipeline {
         Refinement(LocateResponse locate, RegionValidator.ValidationResult validation) {
             this.locate = locate;
             this.validation = validation;
+        }
+    }
+
+    /** verify 的安全结论只有在 ROI 坐标映射并通过整页像素门禁后才可继续擦除。 */
+    private static final class VerificationResult {
+        final PageOutcome denied;
+        final LocateResponse locate;
+        final RegionValidator.ValidationResult validation;
+
+        private VerificationResult(PageOutcome denied, LocateResponse locate,
+                                   RegionValidator.ValidationResult validation) {
+            this.denied = denied;
+            this.locate = locate;
+            this.validation = validation;
+        }
+
+        static VerificationResult denied(PageOutcome outcome) {
+            return new VerificationResult(outcome, null, null);
+        }
+
+        static VerificationResult accepted(LocateResponse locate, RegionValidator.ValidationResult validation) {
+            return new VerificationResult(null, locate, validation);
         }
     }
 

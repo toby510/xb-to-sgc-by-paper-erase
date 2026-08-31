@@ -213,8 +213,6 @@ public final class ExamModels {
         @JsonProperty(required = true)
         public List<EraseRegion> regions = new ArrayList<EraseRegion>();
         @JsonProperty(required = true)
-        public BodyBoundary nearest_body_boundary;
-        @JsonProperty(required = true)
         public String evidence;
     }
 
@@ -249,6 +247,12 @@ public final class ExamModels {
         public double confidence;
         @JsonProperty(required = true)
         public String safety_margin;
+        /**
+         * 与当前 region 位于同一版式投影的最近正文边界。多栏/双页扫描时每个 region 必须
+         * 独立携带；不存在页面级共享边界，也不得用其他 region 的边界回退。
+         */
+        @JsonProperty(required = true)
+        public BodyBoundary nearest_body_boundary;
     }
 
     /** 最近正文边界证据；x/y 只表示对应方向的正文侧边界。 */

@@ -191,6 +191,7 @@ public class RunWriter {
         run.put("dataset_roots", roots);
         run.put("mode", mode);
         run.put("provider_kind", config.getProviderKind());
+        run.put("vlm_contract", config.getContractPath());
         run.put("model", config.role("locate").getModel());
         run.put("planned_exam_count", plannedExamCount);
         run.put("planned_page_count", plannedPageCount);

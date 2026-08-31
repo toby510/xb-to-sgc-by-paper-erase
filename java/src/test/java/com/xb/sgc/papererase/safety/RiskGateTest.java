@@ -65,9 +65,10 @@ public class RiskGateTest {
         BodyBoundary boundary = new BodyBoundary();
         boundary.y = 0.16;
         boundary.basis = "java";
+        region.nearest_body_boundary = boundary;
 
         return RegionValidator.validate(
-                new RegionValidator.PageLocateResult(pageId, "safe_to_erase", Arrays.asList(region), boundary),
+                new RegionValidator.PageLocateResult(pageId, "safe_to_erase", Arrays.asList(region)),
                 image);
     }
 
