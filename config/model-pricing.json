@@ -1,0 +1,21 @@
+{
+  "currency": "CNY",
+  "unit": "per_million_tokens",
+  "models": {
+    "qwen3.8-max": {
+      "input_cny_per_million_tokens": 12.0,
+      "cached_input_cny_per_million_tokens": 1.5,
+      "output_cny_per_million_tokens": 36.0
+    },
+    "qwen3.7-plus": {
+      "input_cny_per_million_tokens": 2.0,
+      "cached_input_cny_per_million_tokens": 0.4,
+      "output_cny_per_million_tokens": 8.0
+    },
+    "doubao-seed-2-1-pro-260628": {
+      "input_cny_per_million_tokens": 6.0,
+      "cached_input_cny_per_million_tokens": 1.2,
+      "output_cny_per_million_tokens": 30.0
+    }
+  }
+}

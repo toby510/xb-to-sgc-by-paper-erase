@@ -7,6 +7,7 @@ import com.xb.sgc.papererase.model.ExamModels.PageInput;
 import com.xb.sgc.papererase.model.ExamModels.RejectedExam;
 import com.xb.sgc.papererase.pipeline.ExamOutcome;
 import com.xb.sgc.papererase.pipeline.ExamOutcome.PageOutcome;
+import com.xb.sgc.papererase.vlm.ModelPricing;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -31,6 +32,15 @@ import java.util.Map;
 public class ReportWriter {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final DecimalFormat PERCENT = new DecimalFormat("0.00%");
+    private final ModelPricing pricing;
+
+    public ReportWriter() {
+        this(null);
+    }
+
+    public ReportWriter(Path pricingConfig) {
+        this.pricing = pricingConfig == null ? null : ModelPricing.load(pricingConfig);
+    }
 
     public void writeRejections(List<RejectedExam> rejected, Path runDir) throws IOException {
         StringBuilder report = new StringBuilder();
@@ -111,6 +121,8 @@ public class ReportWriter {
         report.append("| 成功擦除或正确无页码且未伤正文 | ").append(passed).append('/').append(total)
                 .append(" | ").append(rate(passed, total)).append(" |\n");
 
+        appendUsageAndPerformance(report, RunMetrics.read(runDir, pricing));
+
         report.append("\n### 异常原因分布\n\n");
         appendAbnormalReasonDistribution(report, rows, total);
 
@@ -130,6 +142,63 @@ public class ReportWriter {
         }
         writeReport(runDir, report);
     }
+
+    /**
+     * 仅展示 run 级汇总和分布；每次 HTTP 尝试的 locate/verify/audit/重试明细保留在
+     * _vlm_usage.ndjson，避免把数百页的追溯数据塞进人工阅读的测试报告。
+     */
+    private void appendUsageAndPerformance(StringBuilder report, RunMetrics.Snapshot metrics) {
+        RunMetrics.UsageSummary usage = metrics.usage;
+        report.append("\n## Token、成本与性能\n\n");
+        report.append("### 模型调用汇总\n\n");
+        report.append("| 指标 | 结果 |\n| --- | ---: |\n");
+        report.append("| VLM 调用次数（含重试） | ").append(usage.callCount).append(" |\n");
+        report.append("| 有真实 usage 的调用 | ").append(usage.usageAvailableCallCount).append(" |\n");
+        report.append("| 输入 Token | ").append(number(usage.inputTokens)).append(" |\n");
+        report.append("| 输出 Token | ").append(number(usage.outputTokens)).append(" |\n");
+        report.append("| 推理 Token | ").append(number(usage.reasoningTokens)).append(" |\n");
+        report.append("| 总 Token | ").append(number(usage.totalTokens)).append(" |\n");
+        report.append("| 成本（CNY） | ").append(usage.hasCompleteCost() ? money(usage.costCny) : "未配置模型单价或 usage 不完整")
+                .append(" |\n");
+        report.append("\n明细追溯文件：`_vlm_usage.ndjson`（每次 locate / verify / audit / 重试各一行）。\n\n");
+
+        report.append("### 单张图片 Token 与成本分布\n\n");
+        report.append("| 指标 | 最小 | P50 | 平均 | P90 | 最大 |\n| --- | ---: | ---: | ---: | ---: | ---: |\n");
+        appendDistribution(report, "总 Token", metrics.pageTokenDistribution(), false);
+        appendDistribution(report, "成本（CNY）", metrics.pageCostDistribution(), true);
+
+        report.append("\n### 图片全流程与整卷耗时分布\n\n");
+        report.append("| 指标 | 最小 | P50 | 平均 | P90 | 最大 |\n| --- | ---: | ---: | ---: | ---: | ---: |\n");
+        appendDistribution(report, "图片全流程耗时", metrics.pageElapsedDistribution(), false, true);
+        appendDistribution(report, "整份试卷耗时", metrics.examElapsedDistribution(), false, true);
+    }
+
+    private void appendDistribution(StringBuilder report, String label, RunMetrics.Distribution distribution, boolean money) {
+        appendDistribution(report, label, distribution, money, false);
+    }
+
+    private void appendDistribution(StringBuilder report, String label, RunMetrics.Distribution distribution,
+                                    boolean money, boolean millis) {
+        if (distribution.count == 0) {
+            report.append("| ").append(label).append(" | 无数据 | 无数据 | 无数据 | 无数据 | 无数据 |\n");
+            return;
+        }
+        report.append("| ").append(label).append(" | ")
+                .append(metric(distribution.min, money, millis)).append(" | ")
+                .append(metric(distribution.p50, money, millis)).append(" | ")
+                .append(metric(distribution.average, money, millis)).append(" | ")
+                .append(metric(distribution.p90, money, millis)).append(" | ")
+                .append(metric(distribution.max, money, millis)).append(" |\n");
+    }
+
+    private String metric(double value, boolean money, boolean millis) {
+        if (money) return money(value);
+        if (millis) return new DecimalFormat("0.0s").format(value / 1000D);
+        return number(Math.round(value));
+    }
+
+    private String number(long value) { return new DecimalFormat("#,##0").format(value); }
+    private String money(double value) { return new DecimalFormat("0.0000").format(value); }
 
     private void appendAbnormalReasonDistribution(StringBuilder report, List<ReportRow> rows, int total) {
         Map<String, Integer> counts = new LinkedHashMap<String, Integer>();

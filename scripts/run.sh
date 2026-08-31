@@ -29,6 +29,7 @@ if [[ "${1:-}" == "echo" ]]; then
   echo "mvn -q -DskipTests exec:java -Dexec.mainClass=${MAIN_CLASS} -Dexec.args=\"run <test-root>\""
   echo "mvn -q -DskipTests exec:java -Dexec.mainClass=${MAIN_CLASS} -Dexec.args=\"gate <bad-root> <full-root>\""
   echo "mvn -q -DskipTests exec:java -Dexec.mainClass=${MAIN_CLASS} -Dexec.args=\"report <run-dir>\""
+  echo "mvn -q -DskipTests exec:java -Dexec.mainClass=${MAIN_CLASS} -Dexec.args=\"compare <run-dir-a> <run-dir-b> [run-dir-c]\""
   exit 0
 fi
 

@@ -75,6 +75,10 @@ public class RunWriterTest {
         assertTrue(report.contains("准确率"));
         assertTrue(report.contains("成功擦除或正确无页码且未伤正文"));
         assertTrue(report.contains("### 异常原因分布"));
+        assertTrue("测试报告应展示 token、成本和性能的汇总区块，不展开所有图片明细",
+                report.contains("## Token、成本与性能"));
+        assertTrue(report.contains("### 单张图片 Token 与成本分布"));
+        assertTrue(report.contains("### 图片全流程与整卷耗时分布"));
         assertTrue(report.contains("| risk | 1 |"));
         assertTrue(report.contains("1001_2_擦除后.png"));
         assertTrue(report.contains("<img src=\"../erased/语文/1001/1001_2_擦除后.png\">"));

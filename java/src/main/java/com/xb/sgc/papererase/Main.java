@@ -6,11 +6,13 @@ import com.xb.sgc.papererase.model.ExamModels.ExamInput;
 import com.xb.sgc.papererase.model.ExamModels.PageInput;
 import com.xb.sgc.papererase.model.ExamModels.ScanResult;
 import com.xb.sgc.papererase.output.ReportWriter;
+import com.xb.sgc.papererase.output.RunComparisonWriter;
 import com.xb.sgc.papererase.output.RunWriter;
 import com.xb.sgc.papererase.pipeline.ExamOutcome;
 import com.xb.sgc.papererase.pipeline.ExamPipeline;
 import com.xb.sgc.papererase.vlm.VlmClient;
 import com.xb.sgc.papererase.vlm.VlmConfig;
+import com.xb.sgc.papererase.vlm.VlmUsageFileSink;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -31,15 +33,27 @@ public final class Main {
 
     public static void main(String[] args) throws Exception {
         if (args.length < 2 || (!"run".equals(args[0]) && !"gate".equals(args[0]) && !"report".equals(args[0])
-                && !"resume".equals(args[0]))) {
+                && !"resume".equals(args[0]) && !"compare".equals(args[0]))) {
             System.err.println("Usage: Main run <test-root> | Main gate <bad-root> <full-root> "
-                    + "| Main report <run-dir> | Main resume <test-root> <run-dir>");
+                    + "| Main report <run-dir> | Main resume <test-root> <run-dir> "
+                    + "| Main compare <run-dir-a> <run-dir-b> [run-dir-c]");
             System.exit(2);
         }
+        Path skillRoot = findSkillRoot();
+        Path pricingConfig = skillRoot.resolve("config/model-pricing.json");
         if ("report".equals(args[0])) {
             Path runDir = Paths.get(args[1]);
-            new ReportWriter().writeFromRunDirectory(runDir);
+            new ReportWriter(pricingConfig).writeFromRunDirectory(runDir);
             System.out.println(runDir.resolve("测试报告").resolve("测试报告.md").toAbsolutePath().toString());
+            return;
+        }
+        if ("compare".equals(args[0])) {
+            if (args.length < 3 || args.length > 4) {
+                throw new IllegalArgumentException("Usage: Main compare <run-dir-a> <run-dir-b> [run-dir-c]");
+            }
+            List<Path> runs = new ArrayList<Path>();
+            for (int i = 1; i < args.length; i++) runs.add(Paths.get(args[i]));
+            System.out.println(new RunComparisonWriter(pricingConfig).write(runs).toAbsolutePath().toString());
             return;
         }
         if ("resume".equals(args[0])) {
@@ -51,10 +65,7 @@ public final class Main {
             resumeRun(Paths.get(args[1]), Paths.get(args[2]));
             return;
         }
-        Path skillRoot = findSkillRoot();
         VlmConfig config = VlmConfig.load(skillRoot.resolve("config/vlm-providers.json"));
-        // active 是唯一提供方开关；工厂按 kind 选择协议客户端，角色本身只决定提示词。
-        VlmClient vlm = VlmClient.create(config, skillRoot);
         List<ExamInput> exams;
         Path outputRoot;
         java.util.Map<String, Path> datasetRoots = new java.util.LinkedHashMap<String, Path>();
@@ -89,6 +100,9 @@ public final class Main {
                 new SimpleDateFormat("yyyyMMdd'T'HHmmss").format(new Date()));
         int plannedPages = 0;
         for (ExamInput exam : exams) plannedPages += exam.getPages().size();
+        // active 是唯一提供方开关；usage 文件是严格旁路，写入失败不会改变任何擦除结果。
+        VlmClient vlm = VlmClient.create(config, skillRoot,
+                new VlmUsageFileSink(runDir.resolve("_vlm_usage.ndjson"), skillRoot.resolve("config/model-pricing.json")));
         RunWriter.writeRunningRunJson(runDir, datasetRoots, args[0], config, exams.size(), plannedPages, skillRoot,
                 vlm.frozenPrompts());
         System.err.println("run_dir=" + runDir.toAbsolutePath());
@@ -110,7 +124,7 @@ public final class Main {
             outcomes.add(outcome);
             pages += exam.getPages().size();
         }
-        new ReportWriter().write(exams, outcomes, runDir);
+        new ReportWriter(pricingConfig).write(exams, outcomes, runDir);
         RunWriter.completeRunJson(runDir, exams.size(), pages);
         System.out.println(runDir.toAbsolutePath().toString());
     }
@@ -126,7 +140,8 @@ public final class Main {
         }
         Path skillRoot = findSkillRoot();
         VlmConfig config = VlmConfig.load(skillRoot.resolve("config/vlm-providers.json"));
-        VlmClient vlm = VlmClient.create(config, skillRoot);
+        VlmClient vlm = VlmClient.create(config, skillRoot,
+                new VlmUsageFileSink(runDir.resolve("_vlm_usage.ndjson"), skillRoot.resolve("config/model-pricing.json")));
         ScanResult scan = new ExamScanner().scanWithRejections(testRoot);
         if (!scan.getRejectedExams().isEmpty()) {
             throw new IllegalStateException("rejected exams present; cannot resume: "
@@ -152,7 +167,7 @@ public final class Main {
                     ExamPipeline.EventStatus.COMPLETED, null, 0);
             resumed++;
         }
-        new ReportWriter().writeFromRunDirectory(runDir);
+        new ReportWriter(skillRoot.resolve("config/model-pricing.json")).writeFromRunDirectory(runDir);
         int pages = 0;
         for (ExamInput exam : exams) {
             pages += exam.getPages().size();

@@ -25,6 +25,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -117,14 +118,22 @@ public interface VlmClient {
      * pattern 走一个平台而 audit 走另一个平台的不可追溯结果。
      */
     static VlmClient create(VlmConfig config, Path skillRoot) {
+        return create(config, skillRoot, VlmUsageSink.NOOP);
+    }
+
+    /**
+     * 创建业务客户端并可选接入旁路 usage 采集器。采集器不属于业务协议，任何采集故障均被
+     * 客户端吞掉，不能改变原有的请求、重试或失败关闭行为。
+     */
+    static VlmClient create(VlmConfig config, Path skillRoot, VlmUsageSink usageSink) {
         if (config == null || skillRoot == null) {
             throw new IllegalArgumentException("config and skillRoot are required");
         }
         if ("openai-compatible".equals(config.getProviderKind())) {
-            return new OpenAiCompatible(config, skillRoot);
+            return new OpenAiCompatible(config, skillRoot, usageSink);
         }
         if ("ark-responses".equals(config.getProviderKind())) {
-            return new ArkResponses(config, skillRoot);
+            return new ArkResponses(config, skillRoot, usageSink);
         }
         throw new IllegalStateException("unsupported VLM provider kind: " + config.getProviderKind());
     }
@@ -192,16 +201,63 @@ public interface VlmClient {
         return manifest.toString();
     }
 
+    /** 将请求中的整页/ROI 统一还原为可归集的页面 ID；不记录任何图片内容。 */
+    static List<String> requestPageIds(List<PageImage> pages, List<RoiImage> rois) {
+        LinkedHashSet<String> ids = new LinkedHashSet<String>();
+        if (pages != null) for (PageImage page : pages) if (page != null) ids.add(page.getPageId());
+        if (rois != null) for (RoiImage roi : rois) if (roi != null && roi.getPageId() != null) ids.add(roi.getPageId());
+        return new ArrayList<String>(ids);
+    }
+
+    /** ROI 的 region ID 只用于调用成本追溯，不携带模型文字、坐标或图片。 */
+    static List<String> requestRoiRegionIds(List<RoiImage> rois) {
+        LinkedHashSet<String> ids = new LinkedHashSet<String>();
+        if (rois != null) for (RoiImage roi : rois) if (roi != null) ids.add(roi.getRegionId());
+        return new ArrayList<String>(ids);
+    }
+
+    /** 观测写入是旁路能力；任何磁盘或配置异常都不得中断一次已存在的 VLM 调用。 */
+    static void recordUsage(VlmUsageSink sink, String providerKind, String model, String role, int attempt,
+                            List<PageImage> pages, List<RoiImage> rois, long elapsedMillis,
+                            VlmUsage usage, String errorType) {
+        try {
+            (sink == null ? VlmUsageSink.NOOP : sink).record(providerKind, model, role, attempt,
+                    requestPageIds(pages, rois), requestRoiRegionIds(rois), elapsedMillis,
+                    usage == null ? VlmUsage.unavailable() : usage, errorType);
+        } catch (RuntimeException ignored) {
+            // 旁路可观测性失败不改变主链路的既有成功/失败语义。
+        }
+    }
+
+    /** HTTP 层只增加 usage 携带，不改变业务解析到的文本内容。 */
+    final class HttpResponse {
+        final String text;
+        final VlmUsage usage;
+        final String model;
+
+        HttpResponse(String text, VlmUsage usage, String model) {
+            this.text = text;
+            this.usage = usage == null ? VlmUsage.unavailable() : usage;
+            this.model = model == null || model.trim().length() == 0 ? "unknown" : model;
+        }
+    }
+
     final class OpenAiCompatible implements VlmClient {
         private final VlmConfig config;
         private final Path skillRoot;
         private final ObjectMapper mapper = new ObjectMapper();
+        private final VlmUsageSink usageSink;
         /** 一次运行内冻结角色提示词，防止运行中编辑文件造成同一 run 混用版本。 */
         private final Map<String, String> prompts = new LinkedHashMap<String, String>();
 
         public OpenAiCompatible(VlmConfig config, Path skillRoot) {
+            this(config, skillRoot, VlmUsageSink.NOOP);
+        }
+
+        public OpenAiCompatible(VlmConfig config, Path skillRoot, VlmUsageSink usageSink) {
             this.config = config;
             this.skillRoot = skillRoot;
+            this.usageSink = usageSink == null ? VlmUsageSink.NOOP : usageSink;
             freezePrompts();
         }
 
@@ -289,10 +345,17 @@ public interface VlmClient {
             RuntimeException last = null;
             // 重试仅处理瞬时网络/服务异常；最终失败由上层按失败关闭转人工审核。
             for (int attempt = 0; attempt <= roleConfig.getRetries(); attempt++) {
+                long startedAt = System.currentTimeMillis();
                 try {
-                    return http(roleConfig, requestBody(roleConfig, instruction, pages, rois));
+                    HttpResponse response = http(roleConfig, requestBody(roleConfig, instruction, pages, rois));
+                    recordUsage(usageSink, "openai-compatible", response.model, role, attempt + 1,
+                            pages, rois, System.currentTimeMillis() - startedAt, response.usage, null);
+                    return response.text;
                 } catch (RuntimeException e) {
                     last = e;
+                    recordUsage(usageSink, "openai-compatible", roleConfig.getModel(), role, attempt + 1,
+                            pages, rois, System.currentTimeMillis() - startedAt, VlmUsage.unavailable(),
+                            e.getClass().getSimpleName());
                 }
             }
             throw last == null ? new RuntimeException(role + " VLM call failed") : last;
@@ -362,7 +425,7 @@ public interface VlmClient {
             return part;
         }
 
-        private String http(VlmConfig.RoleConfig role, String body) {
+        private HttpResponse http(VlmConfig.RoleConfig role, String body) {
             try {
                 HttpURLConnection conn = (HttpURLConnection) new URL(role.getEndpoint()).openConnection();
                 conn.setRequestMethod("POST");
@@ -383,7 +446,8 @@ public interface VlmClient {
                 // 兼容文本与内容数组两种 OpenAI 兼容响应，其他形态一律视为协议失败。
                 JsonNode content = root.path("choices").path(0).path("message").path("content");
                 if (content.isTextual()) {
-                    return content.asText();
+                    return new HttpResponse(content.asText(), VlmUsage.fromOpenAiCompatible(root),
+                            root.path("model").asText(role.getModel()));
                 }
                 if (content.isArray()) {
                     StringBuilder text = new StringBuilder();
@@ -392,7 +456,8 @@ public interface VlmClient {
                             text.append(part.path("text").asText());
                         }
                     }
-                    return text.toString();
+                    return new HttpResponse(text.toString(), VlmUsage.fromOpenAiCompatible(root),
+                            root.path("model").asText(role.getModel()));
                 }
                 throw new RuntimeException("VLM response choices content is missing");
             } catch (IOException e) {
@@ -433,12 +498,18 @@ public interface VlmClient {
         private final VlmConfig config;
         private final Path skillRoot;
         private final ObjectMapper mapper = new ObjectMapper();
+        private final VlmUsageSink usageSink;
         /** 一次运行内冻结角色提示词，防止运行中编辑文件造成同一 run 混用版本。 */
         private final Map<String, String> prompts = new LinkedHashMap<String, String>();
 
         public ArkResponses(VlmConfig config, Path skillRoot) {
+            this(config, skillRoot, VlmUsageSink.NOOP);
+        }
+
+        public ArkResponses(VlmConfig config, Path skillRoot, VlmUsageSink usageSink) {
             this.config = config;
             this.skillRoot = skillRoot;
+            this.usageSink = usageSink == null ? VlmUsageSink.NOOP : usageSink;
             freezePrompts();
         }
 
@@ -526,14 +597,20 @@ public interface VlmClient {
                 long startedAt = System.currentTimeMillis();
                 log(role, attempt, "started", pages.size(), rois.size(), 0, null);
                 try {
-                    String response = http(roleConfig, buildRequestBody(roleConfig.getModel(), readPrompt(roleConfig), instruction,
+                    HttpResponse response = http(roleConfig, buildRequestBody(roleConfig.getModel(), readPrompt(roleConfig), instruction,
                             pages, rois, roleConfig.getMaxOutputTokens(), roleConfig.getImageDetail(),
                             roleConfig.getThinkingType(), roleConfig.getReasoningEffort()));
-                    log(role, attempt, "completed", pages.size(), rois.size(), System.currentTimeMillis() - startedAt, null);
-                    return response;
+                    long elapsedMillis = System.currentTimeMillis() - startedAt;
+                    recordUsage(usageSink, "ark-responses", response.model, role, attempt + 1,
+                            pages, rois, elapsedMillis, response.usage, null);
+                    log(role, attempt, "completed", pages.size(), rois.size(), elapsedMillis, null);
+                    return response.text;
                 } catch (RuntimeException e) {
                     last = e;
-                    log(role, attempt, "failed", pages.size(), rois.size(), System.currentTimeMillis() - startedAt,
+                    long elapsedMillis = System.currentTimeMillis() - startedAt;
+                    recordUsage(usageSink, "ark-responses", roleConfig.getModel(), role, attempt + 1,
+                            pages, rois, elapsedMillis, VlmUsage.unavailable(), e.getClass().getSimpleName());
+                    log(role, attempt, "failed", pages.size(), rois.size(), elapsedMillis,
                             e.getClass().getSimpleName());
                 }
             }
@@ -617,7 +694,7 @@ public interface VlmClient {
             return part;
         }
 
-        private String http(VlmConfig.RoleConfig role, String body) {
+        private HttpResponse http(VlmConfig.RoleConfig role, String body) {
             try {
                 HttpURLConnection conn = (HttpURLConnection) new URL(role.getEndpoint()).openConnection();
                 conn.setRequestMethod("POST");
@@ -635,7 +712,8 @@ public interface VlmClient {
                 if (code < 200 || code >= 300) {
                     throw new RuntimeException("Ark HTTP " + code);
                 }
-                return responseText(root);
+                return new HttpResponse(responseText(root), VlmUsage.fromArkResponses(root),
+                        root.path("model").asText(role.getModel()));
             } catch (IOException e) {
                 throw new RuntimeException("Ark HTTP call failed", e);
             }

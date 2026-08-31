@@ -196,6 +196,19 @@ public class RunWriter {
         run.put("planned_exam_count", plannedExamCount);
         run.put("planned_page_count", plannedPageCount);
         run.put("code", gitMetadata(skillRoot));
+        Map<String, Object> usage = new LinkedHashMap<String, Object>();
+        usage.put("detail_file", "_vlm_usage.ndjson");
+        usage.put("semantics", "one line per VLM HTTP attempt; token fields are provider response usage only");
+        Path pricing = skillRoot.resolve("config/model-pricing.json");
+        if (Files.isRegularFile(pricing)) {
+            byte[] pricingContent = Files.readAllBytes(pricing);
+            Path pricingSnapshot = runDir.resolve("metadata").resolve("model-pricing.json");
+            Files.createDirectories(pricingSnapshot.getParent());
+            Files.write(pricingSnapshot, pricingContent);
+            usage.put("pricing_snapshot_path", runDir.relativize(pricingSnapshot).toString());
+            usage.put("pricing_sha256", sha256(pricingContent));
+        }
+        run.put("usage_observability", usage);
         Map<String, Object> prompts = new LinkedHashMap<String, Object>();
         for (String role : new String[]{"locate", "verify", "audit"}) {
             com.xb.sgc.papererase.vlm.VlmConfig.RoleConfig roleConfig = config.role(role);
