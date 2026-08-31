@@ -64,9 +64,24 @@ final class RunMetrics {
             JsonNode call;
             try { call = MAPPER.readTree(line); } catch (IOException ignored) { continue; }
             snapshot.usage.callCount++;
+            String role = call.path("role").asText("unknown");
+            String stageKey = role;
+            if ("locate".equals(role) && call.path("roi_region_ids").isArray()
+                    && call.path("roi_region_ids").size() > 0) {
+                stageKey = "locate-coordinate-refine";
+            } else if ("verify".equals(role)) {
+                stageKey = "verify-ROI";
+            }
+            StageMetric stage = snapshot.stageMetrics.get(stageKey);
+            if (stage == null) {
+                stage = new StageMetric(stageKey);
+                snapshot.stageMetrics.put(stageKey, stage);
+            }
+            stage.callCount++;
             boolean available = call.path("usage_available").asBoolean(false);
             if (available) {
                 snapshot.usage.usageAvailableCallCount++;
+                stage.usageAvailableCallCount++;
                 snapshot.usage.inputTokens += longValue(call, "input_tokens");
                 snapshot.usage.outputTokens += longValue(call, "output_tokens");
                 snapshot.usage.totalTokens += longValue(call, "total_tokens");
@@ -74,26 +89,39 @@ final class RunMetrics {
                 snapshot.usage.imageTokens += longValue(call, "image_tokens");
                 snapshot.usage.textTokens += longValue(call, "text_tokens");
                 snapshot.usage.reasoningTokens += longValue(call, "reasoning_tokens");
+                stage.inputTokens += longValue(call, "input_tokens");
+                stage.outputTokens += longValue(call, "output_tokens");
+                stage.totalTokens += longValue(call, "total_tokens");
             }
-            Double cost = pricing == null ? (call.hasNonNull("cost_cny") && call.path("cost_cny").isNumber()
+            // 没有真实 usage 的失败调用不能按 0 Token/0 元伪装为已知成本。
+            Double cost = !available ? null : (pricing == null ? (call.hasNonNull("cost_cny") && call.path("cost_cny").isNumber()
                     ? call.path("cost_cny").doubleValue() : null)
                     : pricing.costCny(call.path("model").asText(null), longValue(call, "input_tokens"),
-                    longValue(call, "cached_tokens"), longValue(call, "output_tokens"));
+                    longValue(call, "cached_tokens"), longValue(call, "output_tokens")));
             if (cost != null) {
                 snapshot.usage.knownCostCallCount++;
                 snapshot.usage.costCny += cost.doubleValue();
+                stage.knownCostCallCount++;
+                stage.costCny += cost.doubleValue();
             }
             List<String> pageIds = strings(call.path("page_ids"));
             if (pageIds.isEmpty()) continue;
             // 多页同调没有供应商级的逐图 token 拆分能力；均摊可保证总量不重复，并保留原始 call 供追溯。
             double divisor = pageIds.size();
             for (String pageId : pageIds) {
+                stage.pageIds.add(pageId);
                 PageMetric page = snapshot.pages.get(pageId);
                 if (page == null) {
                     page = new PageMetric(pageId);
                     snapshot.pages.put(pageId, page);
                 }
                 page.callCount++;
+                Integer roleCount = page.roleCalls.get(role);
+                page.roleCalls.put(role, roleCount == null ? 1 : roleCount + 1);
+                if (!stageKey.equals(role)) {
+                    Integer stageCount = page.roleCalls.get(stageKey);
+                    page.roleCalls.put(stageKey, stageCount == null ? 1 : stageCount + 1);
+                }
                 page.inputTokens += longValue(call, "input_tokens") / divisor;
                 page.outputTokens += longValue(call, "output_tokens") / divisor;
                 page.totalTokens += longValue(call, "total_tokens") / divisor;
@@ -106,11 +134,18 @@ final class RunMetrics {
 
     private static void readProgress(Path file, Snapshot snapshot) throws IOException {
         if (!Files.isRegularFile(file)) return;
+        Map<String, List<JsonNode>> eventsByPage = new LinkedHashMap<String, List<JsonNode>>();
         for (String line : Files.readAllLines(file, java.nio.charset.StandardCharsets.UTF_8)) {
             if (line.trim().length() == 0) continue;
             JsonNode event;
             try { event = MAPPER.readTree(line); } catch (IOException ignored) { continue; }
             long elapsed = longValue(event, "elapsed_ms");
+            String pageId = event.path("page_id").asText();
+            if (pageId.length() > 0) {
+                List<JsonNode> events = eventsByPage.get(pageId);
+                if (events == null) { events = new ArrayList<JsonNode>(); eventsByPage.put(pageId, events); }
+                events.add(event);
+            }
             if (elapsed <= 0) continue;
             String stage = event.path("stage").asText();
             if ("page".equals(stage) && event.path("page_id").asText().length() > 0) {
@@ -120,6 +155,8 @@ final class RunMetrics {
                 snapshot.examElapsedMillis.put(event.path("exam_id").asText(), elapsed);
             }
         }
+        snapshot.buildFlowPaths(eventsByPage);
+        snapshot.buildStageOutcomes(eventsByPage);
     }
 
     private static List<String> strings(JsonNode array) {
@@ -136,6 +173,11 @@ final class RunMetrics {
         final Map<String, PageMetric> pages = new LinkedHashMap<String, PageMetric>();
         final UsageSummary usage = new UsageSummary();
         final Map<String, Long> examElapsedMillis = new LinkedHashMap<String, Long>();
+        final Map<String, StageMetric> stageMetrics = new LinkedHashMap<String, StageMetric>();
+        final Map<String, StageOutcome> stageOutcomes = new LinkedHashMap<String, StageOutcome>();
+        final Map<String, Integer> flowPaths = new LinkedHashMap<String, Integer>();
+        final Map<String, Integer> flowTriggers = new LinkedHashMap<String, Integer>();
+        final Map<String, Integer> flowOutcomes = new LinkedHashMap<String, Integer>();
 
         /** 每个已落盘页面都参与；Java 直接判空而未调用 VLM 的页面真实消耗为 0 Token。 */
         Distribution pageTokenDistribution() { return Distribution.of(pageDoubles("totalTokens", false)); }
@@ -151,6 +193,40 @@ final class RunMetrics {
         }
 
         int pageCount() { return pages.size(); }
+        int usagePageCount() {
+            int count = 0;
+            for (PageMetric page : pages.values()) if (page.callCount > 0) count++;
+            return count;
+        }
+        int usageExamCount() {
+            java.util.Set<String> exams = new java.util.HashSet<String>();
+            for (PageMetric page : pages.values()) if (page.callCount > 0 && page.examId.length() > 0) exams.add(page.examId);
+            return exams.size();
+        }
+        double averageUsagePagesPerExam() {
+            return usageExamCount() == 0 ? 0D : (double) usagePageCount() / (double) usageExamCount();
+        }
+        Distribution examTokenDistribution() { return Distribution.of(examTotals(false)); }
+        Distribution examCostDistribution() {
+            return usage.hasCompleteCost() ? Distribution.of(examTotals(true)) : Distribution.of(java.util.Collections.<Double>emptyList());
+        }
+
+        private List<Double> examTotals(boolean cost) {
+            Map<String, Double> totals = new LinkedHashMap<String, Double>();
+            for (PageMetric page : pages.values()) {
+                if (page.callCount <= 0 || page.examId.length() == 0) continue;
+                Double current = totals.get(page.examId);
+                double value = cost ? page.costCny : page.totalTokens;
+                totals.put(page.examId, (current == null ? 0D : current.doubleValue()) + value);
+            }
+            return new ArrayList<Double>(totals.values());
+        }
+        int examCount() {
+            java.util.Set<String> exams = new java.util.HashSet<String>();
+            for (PageMetric page : pages.values()) if (page.examId.length() > 0) exams.add(page.examId);
+            return exams.size();
+        }
+        double averagePagesPerExam() { return examCount() == 0 ? 0D : (double) pageCount() / (double) examCount(); }
         int passedCount() {
             int count = 0;
             for (PageMetric page : pages.values()) if (page.isPassed()) count++;
@@ -165,6 +241,7 @@ final class RunMetrics {
         private List<Double> pageDoubles(String field, boolean costOnly) {
             List<Double> values = new ArrayList<Double>();
             for (PageMetric page : pages.values()) {
+                if (page.callCount <= 0) continue;
                 if (costOnly && !page.costComplete) continue;
                 values.add("costCny".equals(field) ? page.costCny : page.totalTokens);
             }
@@ -175,6 +252,138 @@ final class RunMetrics {
             for (PageMetric page : pages.values()) if (page.elapsedMillis > 0) values.add((double) page.elapsedMillis);
             return values;
         }
+
+        private void buildFlowPaths(Map<String, List<JsonNode>> eventsByPage) {
+            flowPaths.clear();
+            flowTriggers.clear();
+            flowOutcomes.clear();
+            for (PageMetric page : pages.values()) {
+                List<JsonNode> events = eventsByPage.get(page.pageId);
+                int locateCalls = 0;
+                int verifyCalls = 0;
+                int auditCalls = 0;
+                boolean normalizedLocate = false;
+                if (events != null) {
+                    for (JsonNode event : events) {
+                        String stage = event.path("stage").asText();
+                        if ("locate".equals(stage)) {
+                            if (!"started".equals(event.path("status").asText())) locateCalls++;
+                            if ("normalized".equals(event.path("reason").asText())) normalizedLocate = true;
+                        } else if ("verify".equals(stage) && !"started".equals(event.path("status").asText())) {
+                            verifyCalls++;
+                        } else if ("audit".equals(stage) && !"started".equals(event.path("status").asText())) {
+                            auditCalls++;
+                        }
+                    }
+                }
+                locateCalls = page.roleCalls.containsKey("locate") ? page.roleCalls.get("locate") : locateCalls;
+                verifyCalls = page.roleCalls.containsKey("verify") ? page.roleCalls.get("verify") : verifyCalls;
+                auditCalls = page.roleCalls.containsKey("audit") ? page.roleCalls.get("audit") : auditCalls;
+                if (normalizedLocate) increment(flowTriggers, "locate-旋转归一化后");
+                if (locateCalls > 1 && !normalizedLocate) {
+                    increment(flowTriggers, "locate重试");
+                    increment(flowOutcomes, page.isPassed() ? "locate重试后成功" : "locate重试后失败");
+                }
+                if (page.roleCalls.containsKey("locate-coordinate-refine")) increment(flowTriggers, "locate坐标精修");
+                if (verifyCalls > 0) {
+                    increment(flowTriggers, "ROI verify");
+                    increment(flowOutcomes, page.isPassed() ? "ROI verify后成功" : "ROI verify后失败");
+                }
+                if (auditCalls > 1) {
+                    increment(flowTriggers, "audit重试");
+                    increment(flowOutcomes, page.isPassed() ? "audit重试后成功" : "audit重试后失败");
+                }
+                String path;
+                if (auditCalls > 1) path = page.isPassed() ? "audit重试后成功" : "audit重试后失败";
+                else if (auditCalls == 1) path = page.isPassed() ? "audit首次通过" : "audit首次失败";
+                else if (verifyCalls > 0) path = page.isPassed() ? "ROI verify成功" : "ROI verify后失败";
+                else if (locateCalls > 1 && !normalizedLocate) path = page.isPassed() ? "locate重试后成功" : "locate重试后失败";
+                else if (page.status.indexOf("validation") >= 0) path = "Java门禁拒绝";
+                else if (page.isPassed()) path = "首次locate成功";
+                else path = "locate失败或无页码判断";
+                Integer count = flowPaths.get(path);
+                flowPaths.put(path, count == null ? 1 : count + 1);
+            }
+        }
+
+        private void buildStageOutcomes(Map<String, List<JsonNode>> eventsByPage) {
+            stageOutcomes.clear();
+            for (Map.Entry<String, List<JsonNode>> entry : eventsByPage.entrySet()) {
+                String pageId = entry.getKey();
+                List<JsonNode> events = entry.getValue();
+                recordLatest(stageOutcomes, "locate", pageId, latestResult(events, "locate", null));
+                if (hasReason(events, "locate", "normalized")) {
+                    PageMetric page = pages.get(pageId);
+                    recordLatest(stageOutcomes, "normalized", pageId, page != null && page.isPassed());
+                }
+                recordLatest(stageOutcomes, "verify", pageId, latestResult(events, "verify", null));
+                recordLatest(stageOutcomes, "audit", pageId, latestResult(events, "audit", null));
+            }
+            StageMetric refine = stageMetrics.get("locate-coordinate-refine");
+            if (refine != null) {
+                StageOutcome outcome = stageOutcomes.get("refine");
+                if (outcome == null) { outcome = new StageOutcome(); stageOutcomes.put("refine", outcome); }
+                for (String pageId : refine.pageIds) {
+                    PageMetric page = pages.get(pageId);
+                    outcome.entered.add(pageId);
+                    if (page != null && page.isPassed()) outcome.success.add(pageId);
+                    else outcome.failed.add(pageId);
+                }
+            }
+        }
+
+        private boolean hasReason(List<JsonNode> events, String stage, String reason) {
+            for (JsonNode event : events) {
+                if (stage.equals(event.path("stage").asText()) && reason.equals(event.path("reason").asText())) return true;
+            }
+            return false;
+        }
+
+        private Boolean latestResult(List<JsonNode> events, String stage, String requiredReason) {
+            Boolean result = null;
+            for (JsonNode event : events) {
+                if (!stage.equals(event.path("stage").asText()) || "started".equals(event.path("status").asText())) continue;
+                if (requiredReason != null && !requiredReason.equals(event.path("reason").asText())) continue;
+                String reason = event.path("reason").asText();
+                result = "safe_to_erase".equals(reason) || "no_pagenum".equals(reason) || "pass".equals(reason);
+            }
+            return result;
+        }
+
+        private void recordLatest(Map<String, StageOutcome> outcomes, String stage, String pageId, Boolean result) {
+            if (result == null) return;
+            StageOutcome outcome = outcomes.get(stage);
+            if (outcome == null) { outcome = new StageOutcome(); outcomes.put(stage, outcome); }
+            outcome.entered.add(pageId);
+            if (result.booleanValue()) outcome.success.add(pageId);
+            else outcome.failed.add(pageId);
+        }
+
+        private void increment(Map<String, Integer> counts, String key) {
+            Integer count = counts.get(key);
+            counts.put(key, count == null ? 1 : count + 1);
+        }
+    }
+
+    static final class StageMetric {
+        final String role;
+        int callCount;
+        int usageAvailableCallCount;
+        int knownCostCallCount;
+        final java.util.Set<String> pageIds = new java.util.LinkedHashSet<String>();
+        long inputTokens;
+        long outputTokens;
+        long totalTokens;
+        double costCny;
+        StageMetric(String role) { this.role = role; }
+        boolean hasCompleteCost() { return callCount > 0 && callCount == knownCostCallCount; }
+        int pageCount() { return pageIds.size(); }
+    }
+
+    static final class StageOutcome {
+        final java.util.Set<String> entered = new java.util.LinkedHashSet<String>();
+        final java.util.Set<String> success = new java.util.LinkedHashSet<String>();
+        final java.util.Set<String> failed = new java.util.LinkedHashSet<String>();
     }
 
     static final class UsageSummary {
@@ -201,6 +410,7 @@ final class RunMetrics {
         String status = "";
         boolean bodyDamaged;
         int callCount;
+        final Map<String, Integer> roleCalls = new LinkedHashMap<String, Integer>();
         double inputTokens;
         double outputTokens;
         double totalTokens;

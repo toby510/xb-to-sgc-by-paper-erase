@@ -66,6 +66,9 @@ public final class Main {
             return;
         }
         VlmConfig config = VlmConfig.load(skillRoot.resolve("config/vlm-providers.json"));
+        // 与旧版一致：扫描数据前即冻结本次 run 使用的提示词。usage 路径尚未创建时 sink 为 no-op。
+        VlmUsageFileSink usageSink = new VlmUsageFileSink(null, pricingConfig);
+        VlmClient vlm = VlmClient.create(config, skillRoot, usageSink);
         List<ExamInput> exams;
         Path outputRoot;
         java.util.Map<String, Path> datasetRoots = new java.util.LinkedHashMap<String, Path>();
@@ -101,8 +104,7 @@ public final class Main {
         int plannedPages = 0;
         for (ExamInput exam : exams) plannedPages += exam.getPages().size();
         // active 是唯一提供方开关；usage 文件是严格旁路，写入失败不会改变任何擦除结果。
-        VlmClient vlm = VlmClient.create(config, skillRoot,
-                new VlmUsageFileSink(runDir.resolve("_vlm_usage.ndjson"), skillRoot.resolve("config/model-pricing.json")));
+        usageSink.bind(runDir.resolve("_vlm_usage.ndjson"));
         RunWriter.writeRunningRunJson(runDir, datasetRoots, args[0], config, exams.size(), plannedPages, skillRoot,
                 vlm.frozenPrompts());
         System.err.println("run_dir=" + runDir.toAbsolutePath());

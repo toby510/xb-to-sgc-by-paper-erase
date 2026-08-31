@@ -160,12 +160,63 @@ public class ReportWriter {
         report.append("| 总 Token | ").append(number(usage.totalTokens)).append(" |\n");
         report.append("| 成本（CNY） | ").append(usage.hasCompleteCost() ? money(usage.costCny) : "未配置模型单价或 usage 不完整")
                 .append(" |\n");
+        report.append("| 有真实用量的试卷数 | ").append(metrics.usageExamCount()).append(" |\n");
+        report.append("| 平均页数/试卷（真实用量） | ").append(number(metrics.averageUsagePagesPerExam())).append(" |\n");
+        if (metrics.pageTokenDistribution().count > 0) {
+            report.append("| 平均 Token/试卷（平均页数×单页平均） | ")
+                    .append(number(Math.round(metrics.averageUsagePagesPerExam() * metrics.pageTokenDistribution().average))).append(" |\n");
+        } else {
+            report.append("| 平均 Token/试卷（平均页数×单页平均） | 无数据 |\n");
+        }
+        if (metrics.pageCostDistribution().count > 0) {
+            report.append("| 平均成本/试卷（平均页数×单页平均） | ")
+                    .append(money(metrics.averageUsagePagesPerExam() * metrics.pageCostDistribution().average)).append(" |\n");
+        } else {
+            report.append("| 平均成本/试卷（平均页数×单页平均） | 无真实用量或成本数据 |\n");
+        }
         report.append("\n明细追溯文件：`_vlm_usage.ndjson`（每次 locate / verify / audit / 重试各一行）。\n\n");
 
         report.append("### 单张图片 Token 与成本分布\n\n");
         report.append("| 指标 | 最小 | P50 | 平均 | P90 | 最大 |\n| --- | ---: | ---: | ---: | ---: | ---: |\n");
         appendDistribution(report, "总 Token", metrics.pageTokenDistribution(), false);
         appendDistribution(report, "成本（CNY）", metrics.pageCostDistribution(), true);
+
+        report.append("\n#### 试卷分布（有真实用量的试卷）\n\n");
+        report.append("| 指标 | 最小 | P50 | 平均 | P90 | 最大 |\n| --- | ---: | ---: | ---: | ---: | ---: |\n");
+        appendDistribution(report, "试卷总 Token", metrics.examTokenDistribution(), false);
+        appendDistribution(report, "试卷总成本（CNY）", metrics.examCostDistribution(), true);
+        report.append("\n> 试卷分布只统计存在真实 usage 的试卷；未调用 VLM 的空白页/空白试卷不参与 Token 和成本折算。\n");
+
+        report.append("\n### 阶段处理与资源\n\n");
+        report.append("| 阶段 | 进入 | 成功 | 失败 | 调用 | Token | 成本 |\n");
+        report.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+        for (RunMetrics.StageMetric stage : metrics.stageMetrics.values()) {
+            RunMetrics.StageOutcome outcome = metrics.stageOutcomes.get(stageReportKey(stage.role));
+            int entered = outcome == null ? stage.pageCount() : outcome.entered.size();
+            int success = outcome == null ? 0 : outcome.success.size();
+            int failed = outcome == null ? 0 : outcome.failed.size();
+            int denominator = metrics.usagePageCount();
+            report.append("| ").append(escape(stageDisplayName(stage.role))).append(" | ")
+                    .append(compactRatio(entered, denominator)).append(" | ")
+                    .append(compactRatio(success, denominator)).append(" | ")
+                    .append(compactRatio(failed, denominator)).append(" | ")
+                    .append(stage.callCount).append(" | ")
+                    .append(number(stage.totalTokens)).append("/").append(integerRate(stage.totalTokens, usage.totalTokens)).append(" | ");
+            if (stage.hasCompleteCost()) {
+                report.append(money(stage.costCny)).append("/").append(integerRate(stage.costCny, usage.costCny));
+            } else {
+                report.append("无数据");
+            }
+            report.append(" |\n");
+        }
+
+        report.append("\n### 重试与复核结果\n\n");
+        report.append("重试/复核比例的分母为有真实 usage 的图片数。\n\n");
+        report.append("| 环节 | 触发 | 成功 | 失败 |\n");
+        report.append("| --- | ---: | ---: | ---: |\n");
+        appendRetryRow(report, "locate 重试", "locate重试", "locate重试后成功", "locate重试后失败", metrics);
+        appendRetryRow(report, "ROI 安全复核（verify）", "ROI verify", "ROI verify后成功", "ROI verify后失败", metrics);
+        appendRetryRow(report, "audit 重试", "audit重试", "audit重试后成功", "audit重试后失败", metrics);
 
         report.append("\n### 图片全流程与整卷耗时分布\n\n");
         report.append("| 指标 | 最小 | P50 | 平均 | P90 | 最大 |\n| --- | ---: | ---: | ---: | ---: | ---: |\n");
@@ -198,6 +249,7 @@ public class ReportWriter {
     }
 
     private String number(long value) { return new DecimalFormat("#,##0").format(value); }
+    private String number(double value) { return new DecimalFormat("0.00").format(value); }
     private String money(double value) { return new DecimalFormat("0.0000").format(value); }
 
     private void appendAbnormalReasonDistribution(StringBuilder report, List<ReportRow> rows, int total) {
@@ -612,6 +664,62 @@ public class ReportWriter {
             return "0.00%";
         }
         return PERCENT.format((double) value / (double) total);
+    }
+
+    private String rate(long value, long total) {
+        if (total == 0L) return "0.00%";
+        return PERCENT.format((double) value / (double) total);
+    }
+
+    private String rate(double value, double total) {
+        if (total == 0D) return "0.00%";
+        return PERCENT.format(value / total);
+    }
+
+    private String compactRatio(int value, int total) {
+        if (total == 0) return value + "/0=0%";
+        return value + "/" + total + "=" + Math.round((double) value * 100D / total) + "%";
+    }
+
+    private String integerRate(long value, long total) {
+        if (total == 0L) return "0%";
+        return Math.round((double) value * 100D / total) + "%";
+    }
+
+    private String integerRate(double value, double total) {
+        if (total == 0D) return "0%";
+        return Math.round(value * 100D / total) + "%";
+    }
+
+    private String stageReportKey(String role) {
+        if ("locate-coordinate-refine".equals(role)) return "refine";
+        if ("verify-ROI".equals(role)) return "verify";
+        return role;
+    }
+
+    private String stageDisplayName(String role) {
+        if ("locate-coordinate-refine".equals(role)) return "坐标精修（refine）";
+        if ("verify-ROI".equals(role)) return "安全复核（verify）";
+        if ("locate".equals(role)) return "首次定位（locate）";
+        if ("audit".equals(role)) return "结果审计（audit）";
+        return role;
+    }
+
+    private void appendRetryRow(StringBuilder report, String label, String triggerKey,
+                                String successKey, String failureKey, RunMetrics.Snapshot metrics) {
+        int denominator = metrics.usagePageCount();
+        int trigger = count(metrics.flowTriggers, triggerKey);
+        int success = count(metrics.flowOutcomes, successKey);
+        int failure = count(metrics.flowOutcomes, failureKey);
+        report.append("| ").append(label).append(" | ")
+                .append(compactRatio(trigger, denominator)).append(" | ")
+                .append(compactRatio(success, denominator)).append(" | ")
+                .append(compactRatio(failure, denominator)).append(" |\n");
+    }
+
+    private int count(Map<String, Integer> values, String key) {
+        Integer value = values.get(key);
+        return value == null ? 0 : value.intValue();
     }
 
     private String now() {

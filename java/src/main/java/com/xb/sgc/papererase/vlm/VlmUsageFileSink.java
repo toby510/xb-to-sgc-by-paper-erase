@@ -13,7 +13,7 @@ import java.util.Map;
 
 /** 将每次真实 HTTP 调用的用量旁路落盘为 run 级 NDJSON，供报告和跨模型比较读取。 */
 public final class VlmUsageFileSink implements VlmUsageSink {
-    private final Path path;
+    private Path path;
     private final ModelPricing pricing;
     private final ObjectMapper mapper = new ObjectMapper();
     private long sequence;
@@ -23,10 +23,19 @@ public final class VlmUsageFileSink implements VlmUsageSink {
         this.pricing = ModelPricing.load(pricingPath);
     }
 
+    /**
+     * 先冻结提示词、后创建 run 目录时使用：目录准备好前采集为 no-op，不改变业务调用；绑定后才开始
+     * 写本次 run 的 usage 明细。这样保持旧版“扫描前冻结提示词”的时点。
+     */
+    public synchronized void bind(Path path) {
+        this.path = path;
+    }
+
     @Override
     public synchronized void record(String providerKind, String model, String role, int attempt, List<String> pageIds,
                                     List<String> roiRegionIds, long elapsedMillis, VlmUsage usage, String errorType) {
         try {
+            if (path == null) return;
             VlmUsage safeUsage = usage == null ? VlmUsage.unavailable() : usage;
             Double cost = pricing.costCny(model, safeUsage);
             Map<String, Object> line = new LinkedHashMap<String, Object>();

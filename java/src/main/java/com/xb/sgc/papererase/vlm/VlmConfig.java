@@ -40,6 +40,9 @@ public final class VlmConfig {
         int defaultRetries = root.path("defaults").path("network_retries").asInt(2);
         String contractPath = text(root.path("defaults").path("vlm_contract"));
         String active = text(root.path("active"));
+        // 仅本进程覆盖 provider，便于并发模型对比；不回写共享配置文件，也不影响其他运行。
+        String activeOverride = env.get("XB_PAPER_ERASE_PROVIDER");
+        if (!blank(activeOverride)) active = activeOverride.trim();
         JsonNode provider = root.path("providers").path(active);
         if (provider.isMissingNode()) {
             throw new IllegalStateException("active provider is missing");

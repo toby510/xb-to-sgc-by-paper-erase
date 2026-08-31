@@ -29,9 +29,9 @@ public class VlmConfigTest {
 
         VlmConfig config = VlmConfig.load(Paths.get("../config/vlm-providers.json"), env);
 
-        assertEquals("qwen3.8-max", config.role("locate").getModel());
-        assertEquals("qwen3.8-max", config.role("verify").getModel());
-        assertEquals("qwen3.8-max", config.role("audit").getModel());
+        assertEquals("qwen3.7-plus", config.role("locate").getModel());
+        assertEquals("qwen3.7-plus", config.role("verify").getModel());
+        assertEquals("qwen3.7-plus", config.role("audit").getModel());
         assertEquals(2, config.role("locate").getRetries());
         assertTrue(config.role("audit").getEndpoint().contains("/chat/completions"));
         assertFalse(config.role("locate").safeSummary().contains("locate-secret"));
@@ -66,15 +66,12 @@ public class VlmConfigTest {
     @Test
     public void selectsArkResponsesFromActiveProviderWithoutRoleProviderFields() throws Exception {
         String source = new String(Files.readAllBytes(Paths.get("../config/vlm-providers.json")), StandardCharsets.UTF_8);
-        Path arkConfig = Files.createTempFile("paper-erase-ark", ".json");
-        try {
-            Files.write(arkConfig, source.replace("\"active\": \"dashscope\"", "\"active\": \"ark\"")
-                    .getBytes(StandardCharsets.UTF_8));
-            Map<String, String> env = new HashMap<String, String>();
-            env.put("XB_PAPER_ERASE_ARK_API_KEY", "ark-secret");
-            env.put("MST_XB_AI_ARK_MODEL_ENDPOINT", "ep-ark-vision");
+        Map<String, String> env = new HashMap<String, String>();
+        env.put("XB_PAPER_ERASE_PROVIDER", "ark");
+        env.put("XB_PAPER_ERASE_ARK_API_KEY", "ark-secret");
+        env.put("MST_XB_AI_ARK_MODEL_ENDPOINT", "ep-ark-vision");
 
-            VlmConfig config = VlmConfig.load(arkConfig, env);
+        VlmConfig config = VlmConfig.load(Paths.get("../config/vlm-providers.json"), env);
             assertEquals("ark-responses", config.getProviderKind());
             assertEquals("ep-ark-vision", config.role("audit").getModel());
             assertTrue(config.role("audit").getEndpoint().endsWith("/responses"));
@@ -85,15 +82,12 @@ public class VlmConfigTest {
             Method maxOutput = VlmConfig.RoleConfig.class.getMethod("getMaxOutputTokens");
             Method detail = VlmConfig.RoleConfig.class.getMethod("getImageDetail");
             assertEquals(0, ((Integer) maxOutput.invoke(config.role("locate"))).intValue());
-            assertEquals("enabled", config.role("locate").getThinkingType());
-            assertEquals("medium", config.role("locate").getReasoningEffort());
+        assertEquals("disabled", config.role("locate").getThinkingType());
+            assertEquals(null, config.role("locate").getReasoningEffort());
             assertEquals("high", detail.invoke(config.role("locate")));
-            assertEquals(0, ((Integer) maxOutput.invoke(config.role("audit"))).intValue());
-            assertEquals("enabled", config.role("audit").getThinkingType());
-            assertEquals("medium", config.role("audit").getReasoningEffort());
-            assertEquals("high", detail.invoke(config.role("audit")));
-        } finally {
-            Files.deleteIfExists(arkConfig);
-        }
+        assertEquals(0, ((Integer) maxOutput.invoke(config.role("audit"))).intValue());
+        assertEquals("disabled", config.role("audit").getThinkingType());
+        assertEquals(null, config.role("audit").getReasoningEffort());
+        assertEquals("high", detail.invoke(config.role("audit")));
     }
 }
