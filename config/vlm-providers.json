@@ -36,13 +36,13 @@
       "api_key": ["MST_QWEN_API_KEY"],
       "model": {
         "env": "XB_PAPER_ERASE_QWEN_MODEL",
-        "default": "qwen3.8-max"
+        "default": "qwen3.8-flash"
       },
       "roles": {
         "locate": {
           "model": {
             "env": "XB_PAPER_ERASE_LOCATE_MODEL",
-            "default": "qwen3.8-max"
+            "default": "qwen3.8-flash"
           },
           "base_url": {
             "env": "XB_PAPER_ERASE_LOCATE_BASE_URL",
@@ -57,7 +57,7 @@
         "verify": {
           "model": {
             "env": "XB_PAPER_ERASE_VERIFY_MODEL",
-            "default": "qwen3.8-max"
+            "default": "qwen3.8-flash"
           },
           "base_url": {
             "env": "XB_PAPER_ERASE_VERIFY_BASE_URL",
@@ -72,7 +72,7 @@
         "audit": {
           "model": {
             "env": "XB_PAPER_ERASE_AUDIT_MODEL",
-            "default": "qwen3.8-max"
+            "default": "qwen3.8-flash"
           },
           "base_url": {
             "env": "XB_PAPER_ERASE_AUDIT_BASE_URL",

@@ -188,7 +188,7 @@ public class ReportWriter {
         report.append("\n> 试卷分布只统计存在真实 usage 的试卷；未调用 VLM 的空白页/空白试卷不参与 Token 和成本折算。\n");
 
         report.append("\n### 阶段处理与资源\n\n");
-        report.append("| 阶段 | 进入 | 成功 | 失败 | 调用 | Token | 成本 |\n");
+        report.append("| 阶段 | 进入 | 成功（占进入） | 失败（占进入） | 调用 | Token | 成本 |\n");
         report.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n");
         for (RunMetrics.StageMetric stage : metrics.stageMetrics.values()) {
             RunMetrics.StageOutcome outcome = metrics.stageOutcomes.get(stageReportKey(stage.role));
@@ -198,8 +198,8 @@ public class ReportWriter {
             int denominator = metrics.usagePageCount();
             report.append("| ").append(escape(stageDisplayName(stage.role))).append(" | ")
                     .append(compactRatio(entered, denominator)).append(" | ")
-                    .append(compactRatio(success, denominator)).append(" | ")
-                    .append(compactRatio(failed, denominator)).append(" | ")
+                    .append(compactRatio(success, entered)).append(" | ")
+                    .append(compactRatio(failed, entered)).append(" | ")
                     .append(stage.callCount).append(" | ")
                     .append(number(stage.totalTokens)).append("/").append(integerRate(stage.totalTokens, usage.totalTokens)).append(" | ");
             if (stage.hasCompleteCost()) {
@@ -211,8 +211,8 @@ public class ReportWriter {
         }
 
         report.append("\n### 重试与复核结果\n\n");
-        report.append("重试/复核比例的分母为有真实 usage 的图片数。\n\n");
-        report.append("| 环节 | 触发 | 成功 | 失败 |\n");
+        report.append("触发比例以有真实 usage 的图片数为分母；成功、失败比例以该环节实际触发图片数为分母。\n\n");
+        report.append("| 环节 | 触发 | 成功（占触发） | 失败（占触发） |\n");
         report.append("| --- | ---: | ---: | ---: |\n");
         appendRetryRow(report, "locate 重试", "locate重试", "locate重试后成功", "locate重试后失败", metrics);
         appendRetryRow(report, "ROI 安全复核（verify）", "ROI verify", "ROI verify后成功", "ROI verify后失败", metrics);
@@ -713,8 +713,8 @@ public class ReportWriter {
         int failure = count(metrics.flowOutcomes, failureKey);
         report.append("| ").append(label).append(" | ")
                 .append(compactRatio(trigger, denominator)).append(" | ")
-                .append(compactRatio(success, denominator)).append(" | ")
-                .append(compactRatio(failure, denominator)).append(" |\n");
+                .append(compactRatio(success, trigger)).append(" | ")
+                .append(compactRatio(failure, trigger)).append(" |\n");
     }
 
     private int count(Map<String, Integer> values, String key) {
