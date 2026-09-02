@@ -363,11 +363,17 @@ public interface VlmClient {
 
         private String requestBody(VlmConfig.RoleConfig role, String instruction,
                                    List<PageImage> pages, List<RoiImage> rois) {
-            return buildRequestBody(role.getModel(), readPrompt(role), instruction, pages, rois);
+            return buildRequestBody(role.getModel(), readPrompt(role), instruction, pages, rois,
+                    config.getMaxPreviewLongEdge());
         }
 
         public static String buildRequestBody(String model, String prompt, String instruction,
                                               List<PageImage> pages, List<RoiImage> rois) {
+            return buildRequestBody(model, prompt, instruction, pages, rois, 1536);
+        }
+
+        static String buildRequestBody(String model, String prompt, String instruction,
+                                       List<PageImage> pages, List<RoiImage> rois, int maxPreviewLongEdge) {
             try {
                 ObjectMapper mapper = new ObjectMapper();
                 List<Object> content = new ArrayList<Object>();
@@ -380,7 +386,7 @@ public interface VlmClient {
                     }
                     content.add(textPart(label));
                     // 必须是 image_url 多模态块；把 data URL 放进 text 会导致模型只看到字符串。
-                    content.add(imagePart(page.previewDataUrl()));
+                    content.add(imagePart(page.previewDataUrl(maxPreviewLongEdge)));
                 }
                 for (RoiImage roi : rois) {
                     String label = roi.getPageId() == null ? "" : "ROI_PAGE_ID: " + roi.getPageId() + "\n";
@@ -599,7 +605,8 @@ public interface VlmClient {
                 try {
                     HttpResponse response = http(roleConfig, buildRequestBody(roleConfig.getModel(), readPrompt(roleConfig), instruction,
                             pages, rois, roleConfig.getMaxOutputTokens(), roleConfig.getImageDetail(),
-                            roleConfig.getThinkingType(), roleConfig.getReasoningEffort()));
+                            roleConfig.getThinkingType(), roleConfig.getReasoningEffort(),
+                            config.getMaxPreviewLongEdge()));
                     long elapsedMillis = System.currentTimeMillis() - startedAt;
                     recordUsage(usageSink, "ark-responses", response.model, role, attempt + 1,
                             pages, rois, elapsedMillis, response.usage, null);
@@ -633,6 +640,14 @@ public interface VlmClient {
                                               List<PageImage> pages, List<RoiImage> rois,
                                               int maxOutputTokens, String imageDetail,
                                               String thinkingType, String reasoningEffort) {
+            return buildRequestBody(model, prompt, instruction, pages, rois, maxOutputTokens, imageDetail,
+                    thinkingType, reasoningEffort, 1536);
+        }
+
+        static String buildRequestBody(String model, String prompt, String instruction,
+                                       List<PageImage> pages, List<RoiImage> rois,
+                                       int maxOutputTokens, String imageDetail,
+                                       String thinkingType, String reasoningEffort, int maxPreviewLongEdge) {
             try {
                 ObjectMapper mapper = new ObjectMapper();
                 List<Object> content = new ArrayList<Object>();
@@ -643,7 +658,7 @@ public interface VlmClient {
                         label += "\nIMAGE_ROLE: " + page.getImageRole();
                     }
                     content.add(arkTextPart(label));
-                    content.add(arkImagePart(page.previewDataUrl(), imageDetail));
+                    content.add(arkImagePart(page.previewDataUrl(maxPreviewLongEdge), imageDetail));
                 }
                 for (RoiImage roi : rois) {
                     String label = roi.getPageId() == null ? "" : "ROI_PAGE_ID: " + roi.getPageId() + "\n";
@@ -806,7 +821,15 @@ public interface VlmClient {
         }
 
         public String previewDataUrl() {
-            return dataUrl(resize(image, 1536));
+            return previewDataUrl(1536);
+        }
+
+        /** 整页预览读取冻结的配置上限；ROI 仍由 {@link RoiImage} 保留原始局部清晰度。 */
+        public String previewDataUrl(int maxPreviewLongEdge) {
+            if (maxPreviewLongEdge <= 0) {
+                throw new IllegalArgumentException("maxPreviewLongEdge must be positive");
+            }
+            return dataUrl(resize(image, maxPreviewLongEdge));
         }
     }
 

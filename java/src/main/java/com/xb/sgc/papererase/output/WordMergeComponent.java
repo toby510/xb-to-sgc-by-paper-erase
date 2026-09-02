@@ -59,7 +59,7 @@ import java.util.List;
  *
  * 关键复刻点（与 cc python-docx 一致）：
  *   - PLACEHOLDER_LINES=5 钉第一行坐标
- *   - 图浮动：wp:anchor + behindDoc=1 + wrapNone + relativeHeight=251659264
+ *   - 图浮动：wp:anchor + behindDoc=0 + wrapNone + relativeHeight=251659264
  *   - positionH/V relativeFrom=margin posOffset=0（贴容器左上角）
  *   - 删除模板自带空段（避免首页空白）
  *   - 清空模板 footer page 字段
@@ -70,7 +70,7 @@ public class WordMergeComponent {
 
     private static final int PLACEHOLDER_LINES = 5;
     private static final int CALIBRATED_BREAK_COUNT = 59;
-    private static final long RELATIVE_HEIGHT_BEHIND = 251659264L;
+    private static final long PICTURE_RELATIVE_HEIGHT = 251659264L;
     private static final int PX_TO_EMU = 9525;
     /** line=240 twips = 12pt = 152400 EMU（OOXML 1pt=12700 EMU） */
     private static final long LINE_HEIGHT_EMU = 152400L;
@@ -193,8 +193,8 @@ public class WordMergeComponent {
         anchor.setDistL(0L);
         anchor.setDistR(0L);
         anchor.setSimplePosAttr(Boolean.FALSE);
-        anchor.setRelativeHeight(RELATIVE_HEIGHT_BEHIND);
-        anchor.setBehindDoc(true);
+        anchor.setRelativeHeight(PICTURE_RELATIVE_HEIGHT);
+        anchor.setBehindDoc(false);
         anchor.setLocked(false);
         anchor.setLayoutInCell(true);
         anchor.setAllowOverlap(false);
@@ -610,8 +610,8 @@ public class WordMergeComponent {
         anchor.setDistL(0L);
         anchor.setDistR(0L);
         anchor.setSimplePosAttr(Boolean.FALSE);
-        anchor.setRelativeHeight(RELATIVE_HEIGHT_BEHIND);
-        anchor.setBehindDoc(true);            // 衬于文字下方（恢复旧版环绕）
+        anchor.setRelativeHeight(PICTURE_RELATIVE_HEIGHT);
+        anchor.setBehindDoc(false);           // 浮于文字上方（In Front of Text）
         anchor.setLocked(false);
         anchor.setLayoutInCell(true);
         anchor.setAllowOverlap(false);
@@ -642,7 +642,7 @@ public class WordMergeComponent {
         effectExtent.setR(0L); effectExtent.setB(0L);
         anchor.setEffectExtent(effectExtent);
 
-        // 旧版环绕：衬于文字下方 + 无环绕
+        // 浮于文字上方：位于文字前方 + 无环绕
         anchor.setWrapNone(new CTWrapNone());
 
         CTNonVisualDrawingProps docPr = new CTNonVisualDrawingProps();

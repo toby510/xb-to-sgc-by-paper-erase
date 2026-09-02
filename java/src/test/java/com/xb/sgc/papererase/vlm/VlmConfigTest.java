@@ -29,9 +29,9 @@ public class VlmConfigTest {
 
         VlmConfig config = VlmConfig.load(Paths.get("../config/vlm-providers.json"), env);
 
-        assertEquals("qwen3.7-plus", config.role("locate").getModel());
-        assertEquals("qwen3.7-plus", config.role("verify").getModel());
-        assertEquals("qwen3.7-plus", config.role("audit").getModel());
+        assertEquals("qwen3.8-max", config.role("locate").getModel());
+        assertEquals("qwen3.8-max", config.role("verify").getModel());
+        assertEquals("qwen3.8-max", config.role("audit").getModel());
         assertEquals(2, config.role("locate").getRetries());
         assertTrue(config.role("audit").getEndpoint().contains("/chat/completions"));
         assertFalse(config.role("locate").safeSummary().contains("locate-secret"));

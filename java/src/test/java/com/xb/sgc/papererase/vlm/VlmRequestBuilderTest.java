@@ -6,7 +6,11 @@ import org.junit.Test;
 
 import java.awt.Color;
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
 import java.util.Arrays;
+import java.util.Base64;
+
+import javax.imageio.ImageIO;
 
 import com.xb.sgc.papererase.model.ExamModels.EraseRegion;
 import com.xb.sgc.papererase.model.ExamModels.LocateWindow;
@@ -110,6 +114,17 @@ public class VlmRequestBuilderTest {
                 assertFalse(part.path("text").asText().contains("base64,"));
             }
         }
+    }
+
+    @Test
+    public void pagePreviewUsesConfiguredLongEdge() throws Exception {
+        BufferedImage original = new BufferedImage(2000, 1000, BufferedImage.TYPE_INT_RGB);
+        String dataUrl = new VlmClient.PageImage("p1", original).previewDataUrl(1280);
+        byte[] bytes = Base64.getDecoder().decode(dataUrl.substring(dataUrl.indexOf(',') + 1));
+        BufferedImage preview = ImageIO.read(new ByteArrayInputStream(bytes));
+
+        assertEquals(1280, preview.getWidth());
+        assertEquals(640, preview.getHeight());
     }
 
     private void assertTextPart(JsonNode content, int index, String expected) {
