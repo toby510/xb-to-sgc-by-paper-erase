@@ -8,6 +8,7 @@ import com.xb.sgc.papererase.model.ExamModels.ScanResult;
 import com.xb.sgc.papererase.output.ReportWriter;
 import com.xb.sgc.papererase.output.RunComparisonWriter;
 import com.xb.sgc.papererase.output.RunWriter;
+import com.xb.sgc.papererase.output.WordOutputConfig;
 import com.xb.sgc.papererase.pipeline.ExamOutcome;
 import com.xb.sgc.papererase.pipeline.ExamPipeline;
 import com.xb.sgc.papererase.vlm.VlmClient;
@@ -36,7 +37,8 @@ public final class Main {
                 && !"resume".equals(args[0]) && !"compare".equals(args[0]))) {
             System.err.println("Usage: Main run <test-root> | Main gate <bad-root> <full-root> "
                     + "| Main report <run-dir> | Main resume <test-root> <run-dir> "
-                    + "| Main compare <run-dir-a> <run-dir-b> [run-dir-c]");
+                    + "| Main compare <run-dir-a> <run-dir-b> [run-dir-c]; "
+                    + "run/gate/resume 可追加 --with-qrcode true|false 和 --qrcode-width-cm 4.0-5.6（默认 true、5.6）");
             System.exit(2);
         }
         Path skillRoot = findSkillRoot();
@@ -56,13 +58,10 @@ public final class Main {
             System.out.println(new RunComparisonWriter(pricingConfig).write(runs).toAbsolutePath().toString());
             return;
         }
+        WordOutputConfig wordOutputConfig = WordOutputConfig.load(skillRoot.resolve("config/word-template.json"));
         if ("resume".equals(args[0])) {
-            if (args.length != 3) {
-                System.err.println("Usage: Main resume <test-root> <run-dir>");
-                System.exit(2);
-                return;
-            }
-            resumeRun(Paths.get(args[1]), Paths.get(args[2]));
+            QrcodeOptions qrcode = qrcodeOptions(args, 3, wordOutputConfig);
+            resumeRun(Paths.get(args[1]), Paths.get(args[2]), qrcode);
             return;
         }
         VlmConfig config = VlmConfig.load(skillRoot.resolve("config/vlm-providers.json"));
@@ -71,8 +70,10 @@ public final class Main {
         VlmClient vlm = VlmClient.create(config, skillRoot, usageSink);
         List<ExamInput> exams;
         Path outputRoot;
+        QrcodeOptions qrcode;
         java.util.Map<String, Path> datasetRoots = new java.util.LinkedHashMap<String, Path>();
         if ("run".equals(args[0])) {
+            qrcode = qrcodeOptions(args, 2, wordOutputConfig);
             Path testRoot = Paths.get(args[1]);
             ScanResult scan = new ExamScanner().scanWithRejections(testRoot);
             if (!scan.getRejectedExams().isEmpty()) {
@@ -87,11 +88,7 @@ public final class Main {
             outputRoot = testRoot;
             datasetRoots.put("test_root", testRoot);
         } else {
-            if (args.length != 3) {
-                System.err.println("Usage: Main gate <bad-root> <full-root>");
-                System.exit(2);
-                return;
-            }
+            qrcode = qrcodeOptions(args, 3, wordOutputConfig);
             Path badRoot = Paths.get(args[1]);
             Path fullRoot = Paths.get(args[2]);
             exams = new GateDatasetSelector().select(badRoot, fullRoot);
@@ -111,7 +108,8 @@ public final class Main {
         System.err.println("progress_file=" + runDir.resolve("_progress.ndjson").toAbsolutePath());
         List<ExamOutcome> outcomes = new ArrayList<ExamOutcome>();
         ExamPipeline pipeline = new ExamPipeline(vlm);
-        RunWriter runWriter = new RunWriter();
+        RunWriter runWriter = new RunWriter(qrcode.withQrcode, qrcode.widthEmu, qrcode.shortLink,
+                qrcode.textLine1, qrcode.textLine2);
         int pages = 0;
         for (ExamInput exam : exams) {
             ExamPipeline.RunContext context = new ExamPipeline.RunContext(runDir);
@@ -136,7 +134,7 @@ public final class Main {
      * consensus + Word 齐备），只处理剩余试卷并写入同一 run 目录，最后从产物重建完整报告。
      * 被系统终止的 run（run.json=completed 前）可通过该命令继续，不重复消耗已完成卷的模型额度。
      */
-    private static void resumeRun(Path testRoot, Path runDir) throws Exception {
+    private static void resumeRun(Path testRoot, Path runDir, QrcodeOptions qrcode) throws Exception {
         if (!Files.isRegularFile(runDir.resolve("run.json"))) {
             throw new IllegalStateException("not a run dir, missing run.json: " + runDir);
         }
@@ -151,7 +149,8 @@ public final class Main {
         }
         List<ExamInput> exams = scan.getExams();
         ExamPipeline pipeline = new ExamPipeline(vlm);
-        RunWriter runWriter = new RunWriter();
+        RunWriter runWriter = new RunWriter(qrcode.withQrcode, qrcode.widthEmu, qrcode.shortLink,
+                qrcode.textLine1, qrcode.textLine2);
         int resumed = 0;
         int skipped = 0;
         for (ExamInput exam : exams) {
@@ -199,6 +198,60 @@ public final class Main {
             return stream.iterator().hasNext();
         } catch (IOException e) {
             return false;
+        }
+    }
+
+    /**
+     * 解析首页二维码参数。二维码以页面绝对坐标独立锚定；宽度只改变自身宽高，
+     * 不读取或影响正文图片的位置与尺寸。
+     */
+    private static QrcodeOptions qrcodeOptions(String[] args, int requiredArgs, WordOutputConfig defaults) {
+        if ((args.length - requiredArgs) % 2 != 0) {
+            throw new IllegalArgumentException("二维码参数必须按“名称 值”成对传入");
+        }
+        boolean withQrcode = defaults.isQrcodeEnabled();
+        double widthCm = (double) defaults.getQrcodeWidthEmu() / WordOutputConfig.EMU_PER_CM;
+        boolean hasWithQrcode = false;
+        boolean hasWidth = false;
+        for (int i = requiredArgs; i < args.length; i += 2) {
+            String key = args[i];
+            String value = args[i + 1];
+            if ("--with-qrcode".equals(key) && !hasWithQrcode) {
+                if (!"true".equalsIgnoreCase(value) && !"false".equalsIgnoreCase(value)) {
+                    throw new IllegalArgumentException("二维码开关只能是 true 或 false");
+                }
+                withQrcode = Boolean.parseBoolean(value);
+                hasWithQrcode = true;
+            } else if ("--qrcode-width-cm".equals(key) && !hasWidth) {
+                try {
+                    widthCm = Double.parseDouble(value);
+                } catch (NumberFormatException e) {
+                    throw new IllegalArgumentException("二维码宽度必须是 4.0 到 5.6 之间的数字", e);
+                }
+                WordOutputConfig.qrcodeWidthEmu(widthCm);
+                hasWidth = true;
+            } else {
+                throw new IllegalArgumentException("二维码参数仅支持 --with-qrcode true|false、--qrcode-width-cm 4.0-5.6");
+            }
+        }
+        return new QrcodeOptions(withQrcode, WordOutputConfig.qrcodeWidthEmu(widthCm), defaults.getQrcodeShortLink(),
+                defaults.getQrcodeTextLine1(), defaults.getQrcodeTextLine2());
+    }
+
+    private static final class QrcodeOptions {
+        private final boolean withQrcode;
+        private final long widthEmu;
+        private final String shortLink;
+        private final String textLine1;
+        private final String textLine2;
+
+        private QrcodeOptions(boolean withQrcode, long widthEmu, String shortLink,
+                              String textLine1, String textLine2) {
+            this.withQrcode = withQrcode;
+            this.widthEmu = widthEmu;
+            this.shortLink = shortLink;
+            this.textLine1 = textLine1;
+            this.textLine2 = textLine2;
         }
     }
 

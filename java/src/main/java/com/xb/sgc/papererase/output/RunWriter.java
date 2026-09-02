@@ -27,6 +27,45 @@ import java.util.Map;
 public class RunWriter {
     private final ObjectMapper mapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
     private final WordMergeComponent word = new WordMergeComponent();
+    private final boolean withQrcode;
+    private final long qrcodeWidthEmu;
+    private final String qrcodeShortLink;
+    private final String qrcodeTextLine1;
+    private final String qrcodeTextLine2;
+
+    /** 默认在两份合成 Word 的首页添加二维码横幅。 */
+    public RunWriter() {
+        this(WordOutputConfig.defaults());
+    }
+
+    public RunWriter(boolean withQrcode) {
+        this(withQrcode, WordOutputConfig.defaults().getQrcodeWidthEmu(), WordOutputConfig.DEFAULT_QRCODE_SHORT_LINK,
+                WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_1, WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_2);
+    }
+
+    public RunWriter(boolean withQrcode, long qrcodeWidthEmu) {
+        this(withQrcode, qrcodeWidthEmu, WordOutputConfig.DEFAULT_QRCODE_SHORT_LINK,
+                WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_1, WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_2);
+    }
+
+    public RunWriter(WordOutputConfig config) {
+        this(config.isQrcodeEnabled(), config.getQrcodeWidthEmu(), config.getQrcodeShortLink(),
+                config.getQrcodeTextLine1(), config.getQrcodeTextLine2());
+    }
+
+    public RunWriter(boolean withQrcode, long qrcodeWidthEmu, String qrcodeShortLink) {
+        this(withQrcode, qrcodeWidthEmu, qrcodeShortLink, WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_1,
+                WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_2);
+    }
+
+    public RunWriter(boolean withQrcode, long qrcodeWidthEmu, String qrcodeShortLink,
+                     String qrcodeTextLine1, String qrcodeTextLine2) {
+        this.withQrcode = withQrcode;
+        this.qrcodeWidthEmu = qrcodeWidthEmu;
+        this.qrcodeShortLink = qrcodeShortLink;
+        this.qrcodeTextLine1 = qrcodeTextLine1;
+        this.qrcodeTextLine2 = qrcodeTextLine2;
+    }
 
     public static Path createRunDir(Path testRoot, String model, String timestamp) throws IOException {
         String safeModel = model == null || model.trim().isEmpty() ? "unknown-model" : model.replaceAll("[/\\\\:]", "_");
@@ -84,8 +123,10 @@ public class RunWriter {
         boolean hasManualReview = hasManualReview(outcome);
         Path erasedWord = wordDir.resolve(input.getExamId() + (hasManualReview
                 ? "_擦除后_待人工审核.docx" : "_擦除后.docx"));
-        word.merge(originalWordPages, originalWord);
-        word.merge(erasedWordPages, erasedWord);
+        word.merge(originalWordPages, originalWord, withQrcode, qrcodeWidthEmu, qrcodeShortLink,
+                qrcodeTextLine1, qrcodeTextLine2);
+        word.merge(erasedWordPages, erasedWord, withQrcode, qrcodeWidthEmu, qrcodeShortLink,
+                qrcodeTextLine1, qrcodeTextLine2);
         copySourceDocuments(input, wordDir, originalWord.getFileName().toString(), erasedWord.getFileName().toString());
     }
 

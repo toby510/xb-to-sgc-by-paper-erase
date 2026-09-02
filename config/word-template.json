@@ -20,5 +20,12 @@
     "container_width": 6120130,
     "container_height": 9180195
   },
-  "aspect_ratio": 0.6667
+  "aspect_ratio": 0.6667,
+  "qrcode": {
+    "enabled": true,
+    "width_cm": 4.8,
+    "short_link": "https://t.ewt360.com/bmIbma",
+    "text_line_1": "打开升学e网通app",
+    "text_line_2": "扫码查看试题和解析"
+  }
 }

@@ -1,7 +1,7 @@
 {
   "active": "dashscope",
   "defaults": {
-    "max_preview_long_edge": 1024,
+    "max_preview_long_edge": 1152,
     "network_retries": 2,
     "fail_closed": true,
     "vlm_contract": "references/00-协议/VLM-CONTRACT-v1.md"

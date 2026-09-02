@@ -26,8 +26,9 @@ fi
 export PATH="${JAVA_HOME}/bin:${PATH}"
 
 if [[ "${1:-}" == "echo" ]]; then
-  echo "mvn -q -DskipTests exec:java -Dexec.mainClass=${MAIN_CLASS} -Dexec.args=\"run <test-root>\""
-  echo "mvn -q -DskipTests exec:java -Dexec.mainClass=${MAIN_CLASS} -Dexec.args=\"gate <bad-root> <full-root>\""
+  echo "mvn -q -DskipTests exec:java -Dexec.mainClass=${MAIN_CLASS} -Dexec.args=\"run <test-root> [--with-qrcode true|false] [--qrcode-width-cm 4.0-5.6]\""
+  echo "mvn -q -DskipTests exec:java -Dexec.mainClass=${MAIN_CLASS} -Dexec.args=\"gate <bad-root> <full-root> [--with-qrcode true|false] [--qrcode-width-cm 4.0-5.6]\""
+  echo "mvn -q -DskipTests exec:java -Dexec.mainClass=${MAIN_CLASS} -Dexec.args=\"resume <test-root> <run-dir> [--with-qrcode true|false] [--qrcode-width-cm 4.0-5.6]\""
   echo "mvn -q -DskipTests exec:java -Dexec.mainClass=${MAIN_CLASS} -Dexec.args=\"report <run-dir>\""
   echo "mvn -q -DskipTests exec:java -Dexec.mainClass=${MAIN_CLASS} -Dexec.args=\"compare <run-dir-a> <run-dir-b> [run-dir-c]\""
   exit 0

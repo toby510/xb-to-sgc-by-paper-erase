@@ -28,8 +28,8 @@ public class WordMergeComponentTest {
         Path erasedWord = dir.resolve("exam_擦除后.docx");
 
         WordMergeComponent component = new WordMergeComponent();
-        component.merge(Arrays.asList(originalOne, originalTwo), originalWord);
-        component.merge(Arrays.asList(erasedOne, manualPreviewTwo), erasedWord);
+        component.merge(Arrays.asList(originalOne, originalTwo), originalWord, false);
+        component.merge(Arrays.asList(erasedOne, manualPreviewTwo), erasedWord, false);
 
         assertEquals(2, mediaCount(originalWord));
         assertEquals(2, mediaCount(erasedWord));
@@ -42,6 +42,22 @@ public class WordMergeComponentTest {
         List<String> imageTargets = imageTargets(erasedWord);
         assertEquals(Color.GREEN.getRGB(), firstPixel(erasedWord, imageTargets.get(0)));
         assertEquals(Color.RED.getRGB(), firstPixel(erasedWord, imageTargets.get(1)));
+    }
+
+    @Test
+    public void addsOneHomepageQrBannerByDefaultWithoutChangingSourceImageMedia() throws Exception {
+        Path dir = Files.createTempDirectory("word-qrcode-");
+        Path source = png(dir.resolve("p1_原图.png"), Color.CYAN);
+        Path word = dir.resolve("exam_原图.docx");
+
+        new WordMergeComponent().merge(Arrays.asList(source), word, true, 1_728_000L);
+
+        assertEquals("一张试卷图 + 一张首页二维码横幅", 2, mediaCount(word));
+        String documentXml = entry(word, "word/document.xml");
+        assertEquals("二维码与原图都是浮动对象，且仅出现在首页", 2, count(documentXml, "<wp:anchor"));
+        assertEquals("二维码横幅按指定宽度等比例缩放", 1,
+                count(documentXml, "<wp:extent cx=\"1728000\" cy=\"771429\""));
+        assertEquals("原图媒体内容保持不变", Color.CYAN.getRGB(), firstPixel(word, imageTargets(word).get(0)));
     }
 
     private static Path png(Path path, Color color) throws Exception {
