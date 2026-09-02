@@ -88,7 +88,7 @@ description: 当用户要按“整份试卷”而不是单张图片去除页码�
   - 全量明细：异常在前、正常在后，按 `word_output` 文件夹顺序做学科分组，每页均展示原图与 `_擦除后.png`；
   - 报告图片直接使用原尺寸 `<img src="...">` 内嵌，不包点击跳转链接，不做缩略图。
 - 已有 run 目录只需要重新生成报告时，使用 `Main report <run-dir>` 或 `scripts/run.sh report <run-dir>`；该模式只读取现有产物，不重新调用 VLM。
-- 合成 Word 的二维码独立配置在 `config/word-template.json` 的 `qrcode`：`enabled` 为默认开关、`width_cm` 为等比例横幅宽度（4.0–5.6，默认 4.8）、`short_link` 为二维码内容、`text_line_1`/`text_line_2` 为横幅文案。`run`、`gate`、`resume` 可用 `--with-qrcode true|false`、`--qrcode-width-cm 4.0-5.6` 临时覆盖开关和宽度；二维码固定页面顶部和右边距，不参与试卷图片的缩放、定位或分页。
+- 合成 Word 的二维码独立配置在 `config/word-template.json` 的 `qrcode`：`enabled` 为默认开关、`width_cm` 为等比例横幅宽度（4.0–5.6，默认 4.8）、`right_inset_cm` 为固定右边距（默认 1.5）、`short_link` 为二维码内容、`text_line_1`/`text_line_2` 为横幅文案。`run`、`gate`、`resume` 可用 `--with-qrcode true|false`、`--qrcode-width-cm 4.0-5.6` 临时覆盖开关和宽度；二维码固定页面顶部和右边距，不参与试卷图片的缩放、定位或分页。
 
 ## 测试与交付
 

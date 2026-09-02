@@ -24,6 +24,8 @@
   "qrcode": {
     "enabled": true,
     "width_cm": 4.8,
+    "right_inset_cm": 1.5,
+    "top_inset_cm": 0.3,
     "short_link": "https://t.ewt360.com/bmIbma",
     "text_line_1": "打开升学e网通app",
     "text_line_2": "扫码查看试题和解析"

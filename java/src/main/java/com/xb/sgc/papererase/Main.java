@@ -109,7 +109,7 @@ public final class Main {
         List<ExamOutcome> outcomes = new ArrayList<ExamOutcome>();
         ExamPipeline pipeline = new ExamPipeline(vlm);
         RunWriter runWriter = new RunWriter(qrcode.withQrcode, qrcode.widthEmu, qrcode.shortLink,
-                qrcode.textLine1, qrcode.textLine2);
+                qrcode.textLine1, qrcode.textLine2, qrcode.rightInsetEmu, qrcode.topInsetEmu);
         int pages = 0;
         for (ExamInput exam : exams) {
             ExamPipeline.RunContext context = new ExamPipeline.RunContext(runDir);
@@ -150,7 +150,7 @@ public final class Main {
         List<ExamInput> exams = scan.getExams();
         ExamPipeline pipeline = new ExamPipeline(vlm);
         RunWriter runWriter = new RunWriter(qrcode.withQrcode, qrcode.widthEmu, qrcode.shortLink,
-                qrcode.textLine1, qrcode.textLine2);
+                qrcode.textLine1, qrcode.textLine2, qrcode.rightInsetEmu, qrcode.topInsetEmu);
         int resumed = 0;
         int skipped = 0;
         for (ExamInput exam : exams) {
@@ -235,7 +235,8 @@ public final class Main {
             }
         }
         return new QrcodeOptions(withQrcode, WordOutputConfig.qrcodeWidthEmu(widthCm), defaults.getQrcodeShortLink(),
-                defaults.getQrcodeTextLine1(), defaults.getQrcodeTextLine2());
+                defaults.getQrcodeTextLine1(), defaults.getQrcodeTextLine2(), defaults.getQrcodeRightInsetEmu(),
+                defaults.getQrcodeTopInsetEmu());
     }
 
     private static final class QrcodeOptions {
@@ -244,14 +245,18 @@ public final class Main {
         private final String shortLink;
         private final String textLine1;
         private final String textLine2;
+        private final long rightInsetEmu;
+        private final long topInsetEmu;
 
         private QrcodeOptions(boolean withQrcode, long widthEmu, String shortLink,
-                              String textLine1, String textLine2) {
+                              String textLine1, String textLine2, long rightInsetEmu, long topInsetEmu) {
             this.withQrcode = withQrcode;
             this.widthEmu = widthEmu;
             this.shortLink = shortLink;
             this.textLine1 = textLine1;
             this.textLine2 = textLine2;
+            this.rightInsetEmu = rightInsetEmu;
+            this.topInsetEmu = topInsetEmu;
         }
     }
 

@@ -32,6 +32,8 @@ public class RunWriter {
     private final String qrcodeShortLink;
     private final String qrcodeTextLine1;
     private final String qrcodeTextLine2;
+    private final long qrcodeRightInsetEmu;
+    private final long qrcodeTopInsetEmu;
 
     /** 默认在两份合成 Word 的首页添加二维码横幅。 */
     public RunWriter() {
@@ -40,31 +42,38 @@ public class RunWriter {
 
     public RunWriter(boolean withQrcode) {
         this(withQrcode, WordOutputConfig.defaults().getQrcodeWidthEmu(), WordOutputConfig.DEFAULT_QRCODE_SHORT_LINK,
-                WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_1, WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_2);
+                WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_1, WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_2,
+                WordOutputConfig.defaults().getQrcodeRightInsetEmu(), WordOutputConfig.defaults().getQrcodeTopInsetEmu());
     }
 
     public RunWriter(boolean withQrcode, long qrcodeWidthEmu) {
         this(withQrcode, qrcodeWidthEmu, WordOutputConfig.DEFAULT_QRCODE_SHORT_LINK,
-                WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_1, WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_2);
+                WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_1, WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_2,
+                WordOutputConfig.defaults().getQrcodeRightInsetEmu(), WordOutputConfig.defaults().getQrcodeTopInsetEmu());
     }
 
     public RunWriter(WordOutputConfig config) {
         this(config.isQrcodeEnabled(), config.getQrcodeWidthEmu(), config.getQrcodeShortLink(),
-                config.getQrcodeTextLine1(), config.getQrcodeTextLine2());
+                config.getQrcodeTextLine1(), config.getQrcodeTextLine2(), config.getQrcodeRightInsetEmu(),
+                config.getQrcodeTopInsetEmu());
     }
 
     public RunWriter(boolean withQrcode, long qrcodeWidthEmu, String qrcodeShortLink) {
         this(withQrcode, qrcodeWidthEmu, qrcodeShortLink, WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_1,
-                WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_2);
+                WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_2, WordOutputConfig.defaults().getQrcodeRightInsetEmu(),
+                WordOutputConfig.defaults().getQrcodeTopInsetEmu());
     }
 
     public RunWriter(boolean withQrcode, long qrcodeWidthEmu, String qrcodeShortLink,
-                     String qrcodeTextLine1, String qrcodeTextLine2) {
+                     String qrcodeTextLine1, String qrcodeTextLine2, long qrcodeRightInsetEmu,
+                     long qrcodeTopInsetEmu) {
         this.withQrcode = withQrcode;
         this.qrcodeWidthEmu = qrcodeWidthEmu;
         this.qrcodeShortLink = qrcodeShortLink;
         this.qrcodeTextLine1 = qrcodeTextLine1;
         this.qrcodeTextLine2 = qrcodeTextLine2;
+        this.qrcodeRightInsetEmu = qrcodeRightInsetEmu;
+        this.qrcodeTopInsetEmu = qrcodeTopInsetEmu;
     }
 
     public static Path createRunDir(Path testRoot, String model, String timestamp) throws IOException {
@@ -124,9 +133,9 @@ public class RunWriter {
         Path erasedWord = wordDir.resolve(input.getExamId() + (hasManualReview
                 ? "_擦除后_待人工审核.docx" : "_擦除后.docx"));
         word.merge(originalWordPages, originalWord, withQrcode, qrcodeWidthEmu, qrcodeShortLink,
-                qrcodeTextLine1, qrcodeTextLine2);
+                qrcodeTextLine1, qrcodeTextLine2, qrcodeRightInsetEmu, qrcodeTopInsetEmu);
         word.merge(erasedWordPages, erasedWord, withQrcode, qrcodeWidthEmu, qrcodeShortLink,
-                qrcodeTextLine1, qrcodeTextLine2);
+                qrcodeTextLine1, qrcodeTextLine2, qrcodeRightInsetEmu, qrcodeTopInsetEmu);
         copySourceDocuments(input, wordDir, originalWord.getFileName().toString(), erasedWord.getFileName().toString());
     }
 

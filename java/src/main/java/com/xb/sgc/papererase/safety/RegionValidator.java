@@ -828,6 +828,7 @@ public final class RegionValidator {
         return null;
     }
 
+
     /**
      * 检查候选框与正文边界之间的像素安全带。
      *

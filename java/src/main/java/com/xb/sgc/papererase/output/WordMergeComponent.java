@@ -75,9 +75,6 @@ public class WordMergeComponent {
     private static final int PX_TO_EMU = 9525;
     /** 横幅原始比例为 5.6cm × 2.5cm；实际宽度从 word-template.json 的厘米配置读取。 */
     private static final double QR_BANNER_ASPECT_RATIO = 2.5D / 5.6D;
-    /** 以 A4 页面右侧留 1.3cm，页面顶部 = 0；横幅完整落在页眉与正文图片之前。 */
-    private static final long QR_RIGHT_INSET_EMU = 468_000L;
-    private static final long QR_TOP_EMU = 0L;
     /** line=240 twips = 12pt = 152400 EMU（OOXML 1pt=12700 EMU） */
     private static final long LINE_HEIGHT_EMU = 152400L;
 
@@ -130,7 +127,8 @@ public class WordMergeComponent {
     public void merge(List<Path> imagePaths, Path output, boolean withQrcode) throws Exception {
         merge(imagePaths, output, withQrcode, WordOutputConfig.defaults().getQrcodeWidthEmu(),
                 WordOutputConfig.DEFAULT_QRCODE_SHORT_LINK, WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_1,
-                WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_2);
+                WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_2, WordOutputConfig.defaults().getQrcodeRightInsetEmu(),
+                WordOutputConfig.defaults().getQrcodeTopInsetEmu());
     }
 
     /**
@@ -143,7 +141,8 @@ public class WordMergeComponent {
      */
     public void merge(List<Path> imagePaths, Path output, boolean withQrcode, long qrcodeWidthEmu) throws Exception {
         merge(imagePaths, output, withQrcode, qrcodeWidthEmu, WordOutputConfig.DEFAULT_QRCODE_SHORT_LINK,
-                WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_1, WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_2);
+                WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_1, WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_2,
+                WordOutputConfig.defaults().getQrcodeRightInsetEmu(), WordOutputConfig.defaults().getQrcodeTopInsetEmu());
     }
 
     /**
@@ -153,11 +152,13 @@ public class WordMergeComponent {
     public void merge(List<Path> imagePaths, Path output, boolean withQrcode, long qrcodeWidthEmu,
                       String qrcodeShortLink) throws Exception {
         merge(imagePaths, output, withQrcode, qrcodeWidthEmu, qrcodeShortLink,
-                WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_1, WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_2);
+                WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_1, WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_2,
+                WordOutputConfig.defaults().getQrcodeRightInsetEmu(), WordOutputConfig.defaults().getQrcodeTopInsetEmu());
     }
 
     public void merge(List<Path> imagePaths, Path output, boolean withQrcode, long qrcodeWidthEmu,
-                      String qrcodeShortLink, String qrcodeTextLine1, String qrcodeTextLine2) throws Exception {
+                      String qrcodeShortLink, String qrcodeTextLine1, String qrcodeTextLine2,
+                      long qrcodeRightInsetEmu, long qrcodeTopInsetEmu) throws Exception {
         if (qrcodeWidthEmu <= 0) {
             throw new IllegalArgumentException("二维码宽度必须大于 0");
         }
@@ -166,7 +167,8 @@ public class WordMergeComponent {
             pages.add(new String[]{"unused", imagePath.toAbsolutePath().toString()});
         }
         mergeOneAlignedTemplateCalibrated(pages, output.toAbsolutePath().toString(), CALIBRATED_BREAK_COUNT,
-                withQrcode, qrcodeWidthEmu, qrcodeShortLink, qrcodeTextLine1, qrcodeTextLine2);
+                withQrcode, qrcodeWidthEmu, qrcodeShortLink, qrcodeTextLine1, qrcodeTextLine2,
+                qrcodeRightInsetEmu, qrcodeTopInsetEmu);
     }
 
     private static String defaultTemplatePath() {
@@ -420,13 +422,15 @@ public class WordMergeComponent {
             throws Exception {
         mergeOneAlignedTemplateCalibrated(pages, outPath, calibratedBreakCount, false,
                 WordOutputConfig.defaults().getQrcodeWidthEmu(), WordOutputConfig.DEFAULT_QRCODE_SHORT_LINK,
-                WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_1, WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_2);
+                WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_1, WordOutputConfig.DEFAULT_QRCODE_TEXT_LINE_2,
+                WordOutputConfig.defaults().getQrcodeRightInsetEmu(), WordOutputConfig.defaults().getQrcodeTopInsetEmu());
     }
 
     private void mergeOneAlignedTemplateCalibrated(List<String[]> pages, String outPath, int calibratedBreakCount,
                                                     boolean withQrcode, long qrcodeWidthEmu,
                                                     String qrcodeShortLink, String qrcodeTextLine1,
-                                                    String qrcodeTextLine2) throws Exception {
+                                                    String qrcodeTextLine2, long qrcodeRightInsetEmu,
+                                                    long qrcodeTopInsetEmu) throws Exception {
         validateAlignedGeometry();
         if (calibratedBreakCount <= 0) {
             throw new IllegalArgumentException("calibratedBreakCount 必须大于 0");
@@ -462,7 +466,8 @@ public class WordMergeComponent {
                 long[] displaySize = computeAlignedDisplaySize(image);
                 long horizontalOffset = (pageWidthEmu - displaySize[0]) / 2;
                 appendCalibratedImagePage(mainPart, imagePath, displaySize[0], displaySize[1], horizontalOffset,
-                        calibratedBreakCount, hasNextPage, pageIndex == 0 ? qrcodeBanner : null, qrcodeWidthEmu);
+                        calibratedBreakCount, hasNextPage, pageIndex == 0 ? qrcodeBanner : null, qrcodeWidthEmu,
+                        qrcodeRightInsetEmu, qrcodeTopInsetEmu);
             }
             savePackage(wordMLPackage, outPath);
         } finally {
@@ -507,20 +512,30 @@ public class WordMergeComponent {
     }
 
     /**
-     * 追加一张正常图片页。图片锚点和占位换行必须位于同一个段落：Word 根据锚点段落决定图片
+     * 追加一张正常图片页。试卷图片锚点和占位换行必须位于同一个段落：Word 根据锚点段落决定图片
      * 所在页；若拆成“换行段落 + 图片段落”，图片段落会被换行推到下一页，首张图前就会出现空白页。
      */
     private void appendCalibratedImagePage(MainDocumentPart mainPart, String imagePath,
                                            long displayWidth, long displayHeight, long horizontalOffset,
                                            int calibratedBreakCount, boolean hasNextPage, Path qrcodeBanner,
-                                           long qrcodeWidthEmu) throws Exception {
+                                           long qrcodeWidthEmu, long qrcodeRightInsetEmu,
+                                           long qrcodeTopInsetEmu) throws Exception {
+        // 二维码必须使用独立的首页锚点段落。若与试卷图片共用 pageParagraph，Word 会把两个
+        // 浮动对象都绑定到末尾的分页填充行，二维码可能被带到首页页脚或第二页。该段落只有
+        // 1 twip 高度，不参与正文图片的排版与分页计算。
+        if (qrcodeBanner != null) {
+            P qrcodeParagraph = newAnchorOnlyP();
+            R qrcodeRun = new R();
+            qrcodeRun.getRunContent().add(createQrCodeBannerAnchor(mainPart, qrcodeBanner, qrcodeWidthEmu,
+                    qrcodeRightInsetEmu, qrcodeTopInsetEmu));
+            qrcodeParagraph.getParagraphContent().add(qrcodeRun);
+            mainPart.addObject(qrcodeParagraph);
+        }
+
         P pageParagraph = newExactLineP();
         R imageRun = new R();
         imageRun.getRunContent().add(createAlignedPictureAnchor(mainPart, imagePath, displayWidth, displayHeight,
                 horizontalOffset, headerOffsetEmu));
-        if (qrcodeBanner != null) {
-            imageRun.getRunContent().add(createQrCodeBannerAnchor(mainPart, qrcodeBanner, qrcodeWidthEmu));
-        }
         pageParagraph.getParagraphContent().add(imageRun);
         // 普通换行只承担“占满当前页”的职责，不承担显式分页职责。
         appendLineBreakFillers(pageParagraph, pageBreakCount(calibratedBreakCount, hasNextPage));
@@ -528,11 +543,12 @@ public class WordMergeComponent {
     }
 
     /** 首页二维码锚定在页面绝对右上位置，层级高于试卷图片；不会改变试卷图片锚点本身。 */
-    private Drawing createQrCodeBannerAnchor(MainDocumentPart mainPart, Path qrcodeBanner, long qrcodeWidthEmu) throws Exception {
+    private Drawing createQrCodeBannerAnchor(MainDocumentPart mainPart, Path qrcodeBanner, long qrcodeWidthEmu,
+                                             long qrcodeRightInsetEmu, long qrcodeTopInsetEmu) throws Exception {
         long qrcodeHeightEmu = Math.round(qrcodeWidthEmu * QR_BANNER_ASPECT_RATIO);
-        long xOffset = pageWidthEmu - QR_RIGHT_INSET_EMU - qrcodeWidthEmu;
+        long xOffset = pageWidthEmu - qrcodeRightInsetEmu - qrcodeWidthEmu;
         Drawing drawing = createAlignedPictureAnchor(mainPart, qrcodeBanner.toAbsolutePath().toString(),
-                qrcodeWidthEmu, qrcodeHeightEmu, xOffset, QR_TOP_EMU);
+                qrcodeWidthEmu, qrcodeHeightEmu, xOffset, qrcodeTopInsetEmu);
         Anchor anchor = (Anchor) drawing.getAnchorOrInline().get(0);
         anchor.setRelativeHeight(PICTURE_RELATIVE_HEIGHT + 1L);
         anchor.setAllowOverlap(true);
@@ -911,6 +927,25 @@ public class WordMergeComponent {
         spacing.setBefore(BigInteger.ZERO);
         spacing.setAfter(BigInteger.ZERO);
         spacing.setLine(BigInteger.valueOf(240));
+        spacing.setLineRule(org.docx4j.wml.STLineSpacingRule.EXACT);
+        ppr.setSpacing(spacing);
+        p.setPPr(ppr);
+        return p;
+    }
+
+    /**
+     * 仅承载首页二维码浮动锚点的零占位段落。
+     *
+     * <p>二维码采用页面绝对坐标，不需要也不能参与试卷图片的换行填充；这里将普通段落高度压缩为
+     * 1 twip，既让 Word 将锚点明确归属第一页，又不会改变正文图片的视觉位置或后续分页。</p>
+     */
+    private P newAnchorOnlyP() {
+        P p = new P();
+        PPr ppr = new PPr();
+        org.docx4j.wml.PPrBase.Spacing spacing = new org.docx4j.wml.PPrBase.Spacing();
+        spacing.setBefore(BigInteger.ZERO);
+        spacing.setAfter(BigInteger.ZERO);
+        spacing.setLine(BigInteger.ONE);
         spacing.setLineRule(org.docx4j.wml.STLineSpacingRule.EXACT);
         ppr.setSpacing(spacing);
         p.setPPr(ppr);

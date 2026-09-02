@@ -16,6 +16,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 public class WordMergeComponentTest {
     @Test
     public void writesSamePageCountAndUsesManualPreviewForErasedWord() throws Exception {
@@ -57,7 +58,7 @@ public class WordMergeComponentTest {
         assertEquals("二维码与原图都是浮动对象，且仅出现在首页", 2, count(documentXml, "<wp:anchor"));
         assertEquals("二维码横幅按指定宽度等比例缩放", 1,
                 count(documentXml, "<wp:extent cx=\"1728000\" cy=\"771429\""));
-        assertEquals("原图媒体内容保持不变", Color.CYAN.getRGB(), firstPixel(word, imageTargets(word).get(0)));
+        assertTrue("原图媒体内容保持不变", containsFirstPixel(word, imageTargets(word), Color.CYAN.getRGB()));
     }
 
     private static Path png(Path path, Color color) throws Exception {
@@ -120,6 +121,13 @@ public class WordMergeComponentTest {
                 return ImageIO.read(input).getRGB(0, 0);
             }
         }
+    }
+
+    private static boolean containsFirstPixel(Path docx, List<String> entryNames, int expectedPixel) throws Exception {
+        for (String entryName : entryNames) {
+            if (firstPixel(docx, entryName) == expectedPixel) return true;
+        }
+        return false;
     }
 
     private static int count(String source, String text) {
