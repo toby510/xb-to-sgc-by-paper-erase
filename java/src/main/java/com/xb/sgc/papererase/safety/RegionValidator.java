@@ -317,6 +317,7 @@ public final class RegionValidator {
         int backgroundLum = BackgroundEstimator.medianLightLuminance(image, region);
         final int padding = 2;
         if (edge == Edge.BOTTOM) {
+            //todo @me:找出从top开始往下的第一条实质墨迹行，也就是从top开始往下收缩，前提是没有末级，并保留 2px 抗锯齿余量
             int firstInk = firstTargetInkRow(image, left, top, right, bottom, backgroundLum, true);
             if (firstInk >= top) top = Math.max(region.getY(), firstInk - padding);
         } else if (edge == Edge.TOP) {
@@ -923,7 +924,7 @@ public final class RegionValidator {
      */
 
     /**
-     * todo @toby 目的：VLM给的坐标框把页码区域框住了，要往外扩，保证不伤正文且框住页码
+     * todo @toby 目的：只向正文方向扩候选框，把 VLM 漏在框外、但仍与页码连续的笔画收回来。
      * 沿页码目标的连续墨迹方向补回候选框外、但仍属于同一页码行的抗锯齿/残笔。
      *
      * <p>典型场景是：VLM 已经找对页码，但归一化坐标把页码最外侧一两列笔画落在框外。
@@ -1264,12 +1265,14 @@ public final class RegionValidator {
         int right = region.getX() + region.getWidth() - 1;
         int bottom = region.getY() + region.getHeight() - 1;
         for (int x = region.getX(); x <= right; x++) {
+            //todo @me:上下两条边检测是否有墨迹
             if (isConservativeMark(image.getRGB(x, region.getY()), backgroundLum)
                     || isConservativeMark(image.getRGB(x, bottom), backgroundLum)) {
                 return true;
             }
         }
         for (int y = region.getY(); y <= bottom; y++) {
+            //todo @me:左右两条边检测是否有墨迹
             if (isConservativeMark(image.getRGB(region.getX(), y), backgroundLum)
                     || isConservativeMark(image.getRGB(right, y), backgroundLum)) {
                 return true;

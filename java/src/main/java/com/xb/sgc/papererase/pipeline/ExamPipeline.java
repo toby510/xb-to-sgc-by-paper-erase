@@ -439,8 +439,7 @@ public final class ExamPipeline {
             BodyBoundary regionBoundary = originalRegion.nearest_body_boundary;
             EdgeRoi edgeRoi = emptyTargetBox
                     ? fullEdgeRoi(page.getPageId(), originalRegion, image)
-                    : candidateCenteredRoi(page.getPageId(), originalRegion,
-                            regionBoundary, image);
+                    : candidateCenteredRoi(page.getPageId(), originalRegion, regionBoundary, image);
             if (edgeRoi == null) {
                 return null;
             }
@@ -710,6 +709,7 @@ public final class ExamPipeline {
         } else {
             return null;
         }
+        //todo @me:以bottom为例，直接取最底下页面20%区域作为ROI
         RoiTransform transform = RoiTransform.fromEdge(image.getWidth(), image.getHeight(), edge, null, 0);
         // 与候选中心 ROI 保持同一视觉测量条件：边缘带仍映射回未经处理的原图，但送检图先
         // 提升文字/背景反差并放大。否则整幅 20% 页脚带中的小号页码会在模型看来过小，虽能

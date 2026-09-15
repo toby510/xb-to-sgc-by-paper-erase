@@ -162,7 +162,7 @@ public final class RoiTransform {
     }
 
     /**
-     * 合并 VLM 候选框与 pattern 粗窗口后生成 ROI。候选框可能整体偏移，合并只扩大模型可见范围，
+     * 合并 VLM 候选框与 pattern 粗窗口后生成 ROI。候选框可能整体偏移，合并只扩大模型可见范围，todo @me:原来的region四周加上2*min(款，高)，即最小regions的款或高的2贝，而且要包含正文坐标
      * 不改变最终擦除框；正文边界仍只用于最终安全门禁。
      *
      * @param fullWidth 整图宽度
@@ -218,6 +218,7 @@ public final class RoiTransform {
                     ? (long) Math.floor(bodyBoundary.y * fullHeight) - marginPixels : fullHeight * 4L / 5L;
             rejectIntOverflow(top);
             int clampedTop = clampToInt(top, 0, fullHeight - 1);
+            //todo @me:以bottom为例，直接取最底下页面20%区域作为ROI。20%=fullHeight * 4L / 5L
             return new RoiTransform(0, clampedTop, fullWidth, fullHeight - clampedTop, fullWidth, fullHeight);
         }
         if (edge == PageEdge.LEFT) {
