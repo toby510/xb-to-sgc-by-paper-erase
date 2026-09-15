@@ -121,6 +121,7 @@ public final class RegionValidator {
             if (boundaryReason != null && isMissingDirectionalBoundary(edge, boundary)) {
                 // 模型有时只给出精确页码框而漏报正文边界。仅在朝正文方向紧邻 16px 都是
                 // 连续无墨带时，才把该带末端作为保守边界；没有这份像素证据仍失败关闭。
+                //todo me:【正文坐标不返回如何处理？】目的是往正文方向扩充16px的空白带，替代模型缺失的边界，返回新的边界；没有16px空白带则返回null（edge=bottom为例）
                 boundary = inferBoundaryFromBlankBand(edge, pixelRegion, image);
                 if (boundary == null) {
                     reasons.add(boundaryReason);
@@ -131,7 +132,7 @@ public final class RegionValidator {
                 continue;
             }
             // 3.6 正文安全带：从候选框朝正文方向扫描至少 8px 连续无实质墨迹，抵抗边界幻觉
-            //todo me：目标是判断空白带：1）是否<=8px，小于则返回“body blank gap is insufficient”；2）否则看安全的空白带是否有墨迹，没有返回null表示安全，有则返回"body blank gap contains ink"
+            //todo me：【空白带是否合法校验】目标是判断空白带：1）是否<=8px，小于则返回“body blank gap is insufficient”；2）否则看安全的空白带是否有墨迹，没有返回null表示安全，有则返回"body blank gap contains ink"
             String gapReason = invalidPixelGapReason(edge, pixelRegion, boundary, image);
             if ("body blank gap contains ink".equals(gapReason) && !isLocallyConfirmedTightBox(region)) {
                 /*
@@ -170,6 +171,7 @@ public final class RegionValidator {
             // 带有可验证的空白边界；无法在有硬上限的自适应扫描内找到空白，宁可拒绝也不
             // 把相邻文字或正文吞进擦除范围。
             if (maskTouchesCandidateBox(image, pixelRegion) && !isLocallyConfirmedTightBox(region)) {
+                //todo me:【页码框墨迹贴边-扩展到空白边界】页码框墨迹贴边，尝试向空白侧扩到安全边界；如果扩展后仍然有墨迹或者触碰到正文框，则拒绝
                 PixelRegion expanded = expandToBlankBoundary(edge, pixelRegion, boundary, image);
                 String expandedGapReason = expanded == null ? null
                         : invalidPixelGapReason(edge, expanded, boundary, image);

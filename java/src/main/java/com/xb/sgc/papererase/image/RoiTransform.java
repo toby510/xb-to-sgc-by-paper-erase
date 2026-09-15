@@ -129,12 +129,16 @@ public final class RoiTransform {
         long candidateTop = (long) Math.floor(candidate.y1 * fullHeight);
         long candidateRight = (long) Math.ceil(candidate.x2 * fullWidth);
         long candidateBottom = (long) Math.ceil(candidate.y2 * fullHeight);
+
+        //todo me: 候选四周均匀外扩 marginPixels ──
         long left = candidateLeft - marginPixels;
         long top = candidateTop - marginPixels;
         long right = candidateRight + marginPixels;
         long bottom = candidateBottom + marginPixels;
         rejectIntOverflow(left, top, right, bottom);
 
+        
+        //todo me:y 方向正文边界朝正文侧再扩，保证ROI包含正文坐标（bottom为例）
         if (bodyBoundary != null && bodyBoundary.y != null) {
             long bodyY = (long) Math.ceil(bodyBoundary.y * fullHeight);
             if (bodyY >= candidateBottom) {
@@ -162,7 +166,7 @@ public final class RoiTransform {
     }
 
     /**
-     * 合并 VLM 候选框与 pattern 粗窗口后生成 ROI。候选框可能整体偏移，合并只扩大模型可见范围，todo @me:原来的region四周加上2*min(款，高)，即最小regions的款或高的2贝，而且要包含正文坐标
+     * 合并 VLM 候选框与 pattern 粗窗口后生成 ROI。候选框可能整体偏移，合并只扩大模型可见范围，todo @me:原来的region四周加上2*min(款，高)，即最小regions的宽或高的2倍，而且要包含正文坐标
      * 不改变最终擦除框；正文边界仍只用于最终安全门禁。
      *
      * @param fullWidth 整图宽度

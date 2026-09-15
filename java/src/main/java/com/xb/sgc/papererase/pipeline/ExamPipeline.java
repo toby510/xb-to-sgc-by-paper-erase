@@ -396,6 +396,7 @@ public final class ExamPipeline {
                                              VlmClient.PageImage pageImage, RunContext context,
                                              boolean allowConflictingBoundaryReplacement) {
         if (locate.regions.size() == 1) {
+            //todo me:单region走20%边缘带精修（20%底部+高对比+放大3倍）
             EraseRegion originalRegion = locate.regions.get(0);
             // 空框已由 hasEmptyTargetBox 证明：原候选没有可擦墨迹。此时候选中心 ROI 会把
             // 模型继续锚在错误空白处，因此只扩展到同一物理边缘完整 20% 带，让模型按原有
@@ -438,7 +439,9 @@ public final class ExamPipeline {
             // 验证拒绝情形仍保留原候选中心 ROI，避免扩大既有精修的可见范围。
             BodyBoundary regionBoundary = originalRegion.nearest_body_boundary;
             EdgeRoi edgeRoi = emptyTargetBox
+                    //todo me:已通过校验但无墨，即空框则20%边缘带精修+高对比+放大3倍）
                     ? fullEdgeRoi(page.getPageId(), originalRegion, image)
+                    //todo me:【候选框为中心四周扩2*min(region宽/高)】同时包含正文坐标+高对比度/扩大3倍
                     : candidateCenteredRoi(page.getPageId(), originalRegion, regionBoundary, image);
             if (edgeRoi == null) {
                 return null;
@@ -449,6 +452,10 @@ public final class ExamPipeline {
             // 候选中心 ROI 只是首次定位给出的几何假设，可能完整落在相邻空白或非目标区域。
             // 只有该 ROI 未给出可擦的安全精框时，才在同一物理边缘完整带内重测一次；语义锚点、
             // 擦除范围和正文门禁均不变，也不会搜索页面其它边缘。
+            //todo me:候选中心_ROI精修失败时，如果还是空框再次触发20%边缘带重试。
+            // 1-!emptyTargetBox表示上面已经走过候选中心_ROI的精修，即candidateCenteredRoi已执行
+            // 2-refined==null,表示candidateCenteredRoi后模型“连一个可用的局部框都没给出来”，说明失败了
+            // 3-hasEmptyTargetBox表示candidateCenteredRoi的结果还是空框，则再用边缘带20%精修一下
             if (!emptyTargetBox && (refined == null || hasEmptyTargetBox(image, refined.validation.getRegions()))) {
                 EdgeRoi fallback = fullEdgeRoi(page.getPageId(), originalRegion, image);
                 if (fallback != null) {
@@ -696,6 +703,14 @@ public final class ExamPipeline {
         return compact.substring(0, Math.min(240, compact.length()));
     }
 
+    /**
+     * 取完整的边界带作为 ROI，避免局部候选框落在相邻空白或非目标区域。ROI 放大不改变坐标系。
+     * todo me:换一个视野（整条 20% 边缘带）+ 给出首次的字面量锚点，让模型在边缘带内重新挑字形位置
+     * @param pageId
+     * @param region
+     * @param image
+     * @return
+     */
     private EdgeRoi fullEdgeRoi(String pageId, EraseRegion region, BufferedImage image) {
         RoiTransform.PageEdge edge;
         if (region.y2 <= 0.20) {
@@ -714,6 +729,7 @@ public final class ExamPipeline {
         // 与候选中心 ROI 保持同一视觉测量条件：边缘带仍映射回未经处理的原图，但送检图先
         // 提升文字/背景反差并放大。否则整幅 20% 页脚带中的小号页码会在模型看来过小，虽能
         // 读出语义却容易把坐标落在相邻空白处。
+        //todo me:【取20%底部后，再提升文字/背景反差并放大3倍】
         BufferedImage enlarged = coordinateGrid(enlarge(inkContrast(crop(image, transform)), 3));
         return new EdgeRoi(transform, new VlmClient.RoiImage(pageId, region.region_id, enlarged));
     }
