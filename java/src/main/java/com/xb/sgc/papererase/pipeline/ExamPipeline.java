@@ -20,8 +20,6 @@ import com.xb.sgc.papererase.vlm.VlmClient;
 
 import javax.imageio.ImageIO;
 import java.awt.Graphics2D;
-import java.awt.Color;
-import java.awt.Font;
 import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
 import java.io.BufferedWriter;
@@ -230,7 +228,7 @@ public final class ExamPipeline {
             // 模型已给出明确页码语义但像素框/正文边界未过门禁时，先让模型在完整边缘高清图
             // 中重测；绝不由 Java 放宽规则或自行移动候选框。
             Refinement refinement = shouldRefineRejected(validation) ?
-                    refineEmptyTargetBox(exam, page, normalizedImage, group, locate, pageImage, context,
+                    refineLocateGeometry(exam, page, normalizedImage, group, locate, pageImage, context,
                             allowsConflictingBoundaryReplacementAfterRefine(validation)) : null;
             if (refinement == null) {
                 return manual(page, original, normalizedImage, transforms, "validation_rejected", group, locate);
@@ -251,7 +249,7 @@ public final class ExamPipeline {
              * 进而与精框产生表面冲突。这里允许 refineAtRoi 内既有的 16px 投影空白带规则
              * 处理该冲突；它仍要求同边、投影重叠、框内有墨和完整空白带，不能放宽普通定位。
              */
-            Refinement refinement = refineEmptyTargetBox(exam, page, normalizedImage, group, locate, pageImage, context, true);
+            Refinement refinement = refineLocateGeometry(exam, page, normalizedImage, group, locate, pageImage, context, true);
             if (refinement == null) {
                 return manual(page, original, normalizedImage, transforms, "coordinate_refine_denied", group, locate);
             }
@@ -271,6 +269,7 @@ public final class ExamPipeline {
                 || hasCoordinateRescue || hasColoredTarget;
         boolean localVerifyConfirmed = false;
         if (requiresVerify) {
+            //todo me:唯一走verify链路的地方
             VerificationResult verified = verifyAndMap(exam, page, original, normalizedImage, transforms, group, locate, pageImage,
                     context);
             if (verified.denied != null) {
@@ -392,15 +391,28 @@ public final class ExamPipeline {
         return false;
     }
 
-    private Refinement refineEmptyTargetBox(ExamInput exam, PageInput page, BufferedImage image, PatternGroup group, LocateResponse locate,
-                                             VlmClient.PageImage pageImage, RunContext context,
-                                             boolean allowConflictingBoundaryReplacement) {
+    /**
+     * 重新locate以实现几何坐标精修
+     *
+     * @param exam
+     * @param page
+     * @param image
+     * @param group
+     * @param locate
+     * @param pageImage
+     * @param context
+     * @param allowConflictingBoundaryReplacement
+     * @return
+     */
+    private Refinement refineLocateGeometry(ExamInput exam, PageInput page, BufferedImage image, PatternGroup group, LocateResponse locate,
+                                            VlmClient.PageImage pageImage, RunContext context,
+                                            boolean allowConflictingBoundaryReplacement) {
         if (locate.regions.size() == 1) {
             //todo me:单region走20%边缘带精修（20%底部+高对比+放大3倍）
             EraseRegion originalRegion = locate.regions.get(0);
-            // 空框已由 hasEmptyTargetBox 证明：原候选没有可擦墨迹。此时候选中心 ROI 会把
-            // 模型继续锚在错误空白处，因此只扩展到同一物理边缘完整 20% 带，让模型按原有
-            // page_number_text 锚点重新定位；映射守卫和 RegionValidator 仍决定是否可擦。
+            // 单 region 需要坐标精修时，原候选既可能为空框，也可能只是几何位置不安全。
+            // 为避免继续受原候选坐标偏差影响，直接使用同一物理边缘的完整 ROI 重新定位。
+            // VLM只负责重新测量坐标，映射守卫和 RegionValidator 仍决定最终是否采用。
             EdgeRoi edgeRoi = fullEdgeRoi(page.getPageId(), originalRegion, image);
             if (edgeRoi == null) {
                 return null;
@@ -435,6 +447,11 @@ public final class ExamPipeline {
             if (!singleValidation.isAccepted() && !shouldRefineRejected(singleValidation)) {
                 return null;
             }
+
+            //todo me:以后看代码时就记：
+            //candidateCenteredROI 的前提是：“我大致相信第一次坐标位置，只想高清重新量一下”。
+            //fullEdgeROI 的前提是：“我已经不能相信第一次坐标中心了，但仍相信它属于这个物理边缘和这个语义目标”。
+
             // 每个 region 独立决定精修视野：仅已证明为空框的候选使用完整边缘带；其它
             // 验证拒绝情形仍保留原候选中心 ROI，避免扩大既有精修的可见范围。
             BodyBoundary regionBoundary = originalRegion.nearest_body_boundary;
@@ -821,6 +838,8 @@ public final class ExamPipeline {
         for (EraseRegion region : locate.regions) {
             long startedAt = System.currentTimeMillis();
             context.event(PipelineStage.VERIFY, exam.getExamId(), page.getPageId(), "started", region.region_id, 0);
+
+            //todo me:同样是ROI，但跟locate区别：ROI从候选中心扩margin，但是不放大、没有高对比度、marginPixels=24
             RoiTransform transform = RoiTransform.fromNormalizedCandidate(
                     normalized.getWidth(), normalized.getHeight(), region, region.nearest_body_boundary, 24);
             VerifyResponse verify = verifyWithSingleRetry(exam, page, pageImage, group, region,
@@ -830,6 +849,8 @@ public final class ExamPipeline {
             }
             context.event(PipelineStage.VERIFY, exam.getExamId(), page.getPageId(), "completed", verify.decision,
                     System.currentTimeMillis() - startedAt);
+
+            //todo me: verify具有真正的否决权。
             if (!"safe_to_erase".equals(verify.decision)) {
                 return VerificationResult.denied(manual(page, original, normalized, transforms,
                         "verify_target_not_found", group, locate));
@@ -838,6 +859,7 @@ public final class ExamPipeline {
                 return VerificationResult.denied(manual(page, original, normalized, transforms,
                         "verify_protocol_inconsistent", group, locate));
             }
+            //todo me: 把 ROI 坐标映射回整图
             EraseRegion mapped = mapVerifyRegion(region, verify.refined_region, transform, normalized);
             RegionValidator.ValidationResult mappedValidation = RegionValidator.validate(
                     new RegionValidator.PageLocateResult(verifiedLocate.page_id, verifiedLocate.status,

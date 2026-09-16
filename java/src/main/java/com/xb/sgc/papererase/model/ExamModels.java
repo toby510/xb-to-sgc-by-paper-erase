@@ -280,8 +280,10 @@ public final class ExamModels {
         @JsonProperty(required = true)
         public String evidence;
         /**
-         * 仅在首次定位框没有覆盖任何墨迹时由局部二检返回。坐标以本次 ROI 为 0..1
-         * 坐标系；普通安全复核可以为 null，避免把局部坐标误当成整页坐标使用。
+         * Verify 对当前 ROI 中确认安全的目标行重新测量得到的局部归一化框。
+         * decision=safe_to_erase 时必须存在；
+         * 非 safe 决策时必须为 null。
+         * 坐标仅属于当前 ROI，必须映射回整图后重新经过 RegionValidator。
          */
         public LocalRegion refined_region;
         /** 局部二检确认的最近正文边界，坐标同样属于 ROI；无精定位时必须为 null。 */
