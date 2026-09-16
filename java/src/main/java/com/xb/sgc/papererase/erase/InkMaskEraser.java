@@ -46,18 +46,24 @@ public final class InkMaskEraser {
             return EraseOutcome.manual(copy(source), new ApprovedMask(source.getWidth(), source.getHeight()), nonTargetReason);
         }
         // 5.2.2 目标掩码：把页码深色和抗锯齿灰色纳入候选，掩码数组仍与整图同坐标系。
+        //todo me:图片所有像素点掩码处理，候选框外全部为 false
         boolean[][] mask = extractMask(source, region, coloredTargetVerified);
+
+        //todo me:候选框内没有墨迹
         if (!hasApprovedPixel(mask, region)) {
             return EraseOutcome.manual(copy(source), new ApprovedMask(mask), "no target ink found");
         }
         // 局部 ROI 已按同一页码锚点复核的紧框可以贴住笔画：实际写入仍仅限框内掩码，
         // 后续 PixelDiffGate 和全图 audit 会分别保证框外零改动与正文不变。其他候选仍要求
         // 掩码不贴边，避免未精修的整页坐标切穿文字。
+        //todo me:边框有墨迹&&未精修，返回人工审核
         if (touchesRegionBoundary(mask, region) && !region.isCoordinateRescued()) {
             return EraseOutcome.manual(copy(source), new ApprovedMask(mask), "mask touches region boundary");
         }
         // 彩色授权只决定彩色像素能否成为“目标墨迹”，不能同时关闭长线、表格、多行等
         // 几何保护；这些风险与颜色无关，必须始终失败关闭。
+
+        //todo me:几何检测，框内有长线、表格、多行等，返回人工审核
         String geometryReason = invalidInkGeometryReason(mask, region);
         if (geometryReason != null) {
             return EraseOutcome.manual(copy(source), new ApprovedMask(mask), geometryReason);
@@ -67,19 +73,25 @@ public final class InkMaskEraser {
         // 未被像素门禁识别的细线或正文，擦除器也不会把这些非目标像素重建为背景。
         // extractMask 已将深色笔画、抗锯齿灰边及经 verify 授权的彩色目标纳入同一掩码。
         boolean[][] approvedPixels = mask;
+
+        //todo me:擦除背景色预估
         BackgroundEstimator.Estimate estimate = BackgroundEstimator.estimateFromOuterRing(source, region);
         // 外环决定重建颜色；框内原始纸张纹理过复杂时，宁可纯白也不把不可靠的拟合带回框内。
         boolean whiteFallback = !estimate.isAccepted() || !BackgroundEstimator.estimate(source, region, mask).isAccepted();
 
         BufferedImage candidate = copy(source);
+
+        //todo me:真正擦除地方
         for (int y = region.getY(); y < region.getY() + region.getHeight(); y++) {
             for (int x = region.getX(); x < region.getX() + region.getWidth(); x++) {
+                //todo me：允许擦除才进行擦除
                 if (approvedPixels[y][x]) {
                     candidate.setRGB(x, y, whiteFallback ? whiteAt(source, x, y) : estimate.argbAt(x, y));
                 }
             }
         }
         ApprovedMask approvedMask = ApprovedMask.fromApprovedBox(region, source.getWidth(), source.getHeight(), approvedPixels);
+        //todo me:逐像素证明候选图只在批准掩码内发生变化：掩码外任何一个像素变化都立即失败。
         // 6.1 PixelDiffGate：写回后逐像素复核，防止算法或颜色模型改动越界伤正文。
         PixelDiffGate.GateResult diff = PixelDiffGate.check(source, candidate, approvedMask);
         if (!diff.isPassed()) {
@@ -239,11 +251,13 @@ public final class InkMaskEraser {
         int right = region.getX() + region.getWidth() - 1;
         int bottom = region.getY() + region.getHeight() - 1;
         for (int x = left; x <= right; x++) {
+            //todo me:上、下边框是否有像素
             if (mask[top][x] || mask[bottom][x]) {
                 return true;
             }
         }
         for (int y = top; y <= bottom; y++) {
+            //todo me:左、右边框是否有像素
             if (mask[y][left] || mask[y][right]) {
                 return true;
             }

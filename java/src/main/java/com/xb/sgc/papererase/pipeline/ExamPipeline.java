@@ -506,8 +506,8 @@ public final class ExamPipeline {
      * 审计仅发现残字时，对每个已批准候选分别做一次放大精定位；正文异常绝不进入本分支。
      * 双页扫描的两个页码必须独立映射和验证，任一精修失败仍整页失败关闭。
      */
-    private Refinement refineAfterAudit(ExamInput exam, PageInput page, BufferedImage image, PatternGroup group,
-                                        LocateResponse locate, VlmClient.PageImage pageImage, RunContext context) {
+    private Refinement roiRelocateAfterAudit(ExamInput exam, PageInput page, BufferedImage image, PatternGroup group,
+                                             LocateResponse locate, VlmClient.PageImage pageImage, RunContext context) {
         if (locate.regions.isEmpty()) {
             return null;
         }
@@ -955,12 +955,15 @@ public final class ExamPipeline {
         context.event(PipelineStage.ERASE, exam.getExamId(), page.getPageId(), "completed", "region_count=" + pixelRegions.size(), 0);
         // 6. 像素完整性：擦除器内部已执行 PixelDiffGate，任何批准掩码外变化都会回退原图。
         long auditStartedAt = System.currentTimeMillis();
+
         context.event(PipelineStage.AUDIT, exam.getExamId(), page.getPageId(), "started", null, 0);
         // 7. audit 视觉审计：对原图、擦除图和局部 ROI 同时复核正文与目标。
         VlmClient.PageImage erasedPageImage = new VlmClient.PageImage(page.getPageId(), candidate);
         // Audit 必须看到真正发生写入的最终 PixelRegion，而不是可能已被 trim/rescue/refine
         // 过时的 VLM 粗框；ROI 额外保留固定上下文供模型判断正文与目标的相对关系。
         List<VlmClient.RoiImage> auditRois = auditRois(page.getPageId(), pixelRegions, normalized, candidate);
+
+        //todo me:擦除后审计（核心逻辑）：送给大模型的图片有：原图/擦除后图、扩充24px的每个region对应的原图ROI以及擦除后的ROI（每个region一个）
         AuditResponse audit = vlm.audit(pageImage, erasedPageImage, locate.regions, auditRois);
         List<ExamOutcome.ApprovedRegion> approvedEvidence = approvedRegions(initialLocateRegions, locate, pixelRegions,
                 normalized, localVerifyConfirmed, vlmCoordinateRefined);
@@ -988,7 +991,7 @@ public final class ExamPipeline {
         if (!audit.target_removed) {
             // 7.2 仅目标残留可做一次局部坐标精修；正文变化不进入该分支。
             if (!auditRetried) {
-                Refinement refinement = refineAfterAudit(exam, page, normalized, group, locate, pageImage, context);
+                Refinement refinement = roiRelocateAfterAudit(exam, page, normalized, group, locate, pageImage, context);
                 if (refinement != null) {
                     context.event(PipelineStage.AUDIT_COORDINATE_REFINE, exam.getExamId(), page.getPageId(), "accepted", "target_residual", 0);
                     return eraseAndAudit(exam, page, original, normalized, transforms, group, refinement.locate, pageImage,
