@@ -134,19 +134,26 @@ public final class RegionValidator {
             // 3.6 正文安全带：从候选框朝正文方向扫描至少 8px 连续无实质墨迹，抵抗边界幻觉
             //todo me：【空白带是否合法校验】目标是判断空白带：1）是否<=8px，小于则返回“body blank gap is insufficient”；2）否则看安全的空白带是否有墨迹，没有返回null表示安全，有则返回"body blank gap contains ink"
             String gapReason = invalidPixelGapReason(edge, pixelRegion, boundary, image);
+
+            //todo me :isLocallyConfirmedTightBox=ROI VLM 已经看过局部高清图，并重新测量过目标框；此时如果 8px 安全带仍然含墨，不再让 Java 自己继续“猜坐标”，而应该让硬门禁直接处理。
             if ("body blank gap contains ink".equals(gapReason) && !isLocallyConfirmedTightBox(region)) {
+
+                //todo me:到这里表示空白带内有墨迹，但是还是要分情况分析：
+                //1）如果候选框离有墨迹，空白带离的墨迹可能是页码没有框完漏出去的，java侧再向四周扩一个像素白边可能就能挽回
+                //2）如果候选框离无墨迹，空白带离的无墨迹可能就是页码
+
                 /*
                  * VLM 坐标是语义定位，常把页码最外侧一两列抗锯齿笔画排除在框外。不能把
                  * 这类“与框内页码连通”的残笔直接当正文，也不能无条件放宽安全带：只把
                  * 连通分量向正文方向扩一像素白边，再重新验证 8px 的真实无墨安全带。
                  */
                 pixelRegion = hasConservativeInk(image, pixelRegion)
-                        //todo me:【页码框有墨迹-扩连通域】页码框四条线内框住墨迹了，要向四周扩一个像素白边
+                        //todo me:【框基本找对只是太小-扩连通域】页码框超正文方向框住墨迹了，从原框 top 向页面内部逐行向上扫描，最多扫 24～32px，连续两条空白扫描线就停（bottom为例）
                         ? expandConnectedTargetInk(edge, pixelRegion, boundary, image)
-                        //todo me:【页码框无墨迹-安全空白带8px内寻找页码框】
+                        //todo me:【页码框无墨迹-框可能整个偏了落在空白处-安全空白带8px内寻找页码框】
                         : rescueEmptyModelBox(edge, pixelRegion, bodyLimit(edge, boundary, image), image);
 
-                //todo me:修复页码框后再次验证空白带是否满足
+                //todo me:修复页码框后再次验证空白带是否满足，不满足直接拒绝（扩完页码以后，再往正文方向看依然有文字结构。这时候就不能继续猜了，返回拒绝
                 gapReason = invalidPixelGapReason(edge, pixelRegion, boundary, image);
             }
             if (gapReason != null) {
@@ -868,6 +875,7 @@ public final class RegionValidator {
             // BOTTOM：页面纵向示意：B(上) | G=[top-8,top) | C(下)。
             int bodyY = (int) Math.ceil(boundary.y * image.getHeight());
             if (region.getY() - bodyY < MIN_BODY_GAP_PIXELS) {
+                //todo me:候选框离正文太近了，不安全，上层会进行RoiRelocate重新定位
                 return "body blank gap is insufficient";
             }
             /*
@@ -877,7 +885,8 @@ public final class RegionValidator {
              * 即候选框正上方 8px 横条；x2/y2 为 exclusive 边界。
              */
             return hasBlockingForeground(image, region, region.getX(), region.getY() - MIN_BODY_GAP_PIXELS, right, region.getY())
-                    ? "body blank gap contains ink" : null;
+                    ? "body blank gap contains ink"  // todo me:候选框离正文满足8px安全带，但是安全带有墨迹，比如有黑点，可能疑似正文，需要上层RoiRelocate重新定位
+                    : null;
         }
         if (edge == Edge.LEFT) {
             // LEFT：页面横向示意：C(左) | G=[right,right+8) | B(右)。
@@ -1005,6 +1014,7 @@ public final class RegionValidator {
                 if (edge == Edge.LEFT) right = scanRight;
                 if (edge == Edge.RIGHT) left = scanLeft;
             } else if (++blankLines >= 2) {
+                //todo me:连续两条空白扫描线就停止扩展，避免把正文边界附近的浅影或噪点误纳入候选框。
                 // 两条连续空白线把目标和更内侧内容隔开，立即停止，避免继续靠近正文。
                 break;
             }
@@ -1049,6 +1059,7 @@ public final class RegionValidator {
         // 以原候选框估计局部背景亮度，避免把纸张底色或扫描阴影当成目标墨迹。
         int backgroundLum = BackgroundEstimator.medianLightLuminance(image, region);
         // 扫描走廊内每一个像素；这里仅收集像素证据，不修改图片，也不直接授权擦除。
+        //todo me:corridor=正文坐标+向下8px，所以现在扫描走廊是从corridor往下走到眼眶的bottom(容易误解)
         for (int y = corridor.top; y < corridor.bottom; y++) {
             for (int x = corridor.left; x < corridor.right; x++) {
                 // 只有符合“可擦除墨迹”规则的像素才参与包围盒计算，浅影和普通背景被排除。
@@ -1226,6 +1237,7 @@ public final class RegionValidator {
     }
 
     /** 局部 ROI 已确认页码锚点的紧框只影响残字率；掩码外零改动与全图审计仍是硬门禁。 */
+    //todo me:ROI VLM 已经看过局部高清图，并重新测量过目标框；此时如果 8px 安全带仍然含墨，不再让 Java 自己继续“猜坐标”，而应该让硬门禁直接处理。
     private static boolean isLocallyConfirmedTightBox(EraseRegion region) {
         return region != null && "local_vlm_coordinate_refined".equals(region.safety_margin);
     }
