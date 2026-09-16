@@ -228,7 +228,7 @@ public final class ExamPipeline {
             // 模型已给出明确页码语义但像素框/正文边界未过门禁时，先让模型在完整边缘高清图
             // 中重测；绝不由 Java 放宽规则或自行移动候选框。
             Refinement refinement = shouldRefineRejected(validation) ?
-                    refineLocateGeometry(exam, page, normalizedImage, group, locate, pageImage, context,
+                    roiLocateGeometry(exam, page, normalizedImage, group, locate, pageImage, context,
                             allowsConflictingBoundaryReplacementAfterRefine(validation)) : null;
             if (refinement == null) {
                 return manual(page, original, normalizedImage, transforms, "validation_rejected", group, locate);
@@ -249,7 +249,7 @@ public final class ExamPipeline {
              * 进而与精框产生表面冲突。这里允许 refineAtRoi 内既有的 16px 投影空白带规则
              * 处理该冲突；它仍要求同边、投影重叠、框内有墨和完整空白带，不能放宽普通定位。
              */
-            Refinement refinement = refineLocateGeometry(exam, page, normalizedImage, group, locate, pageImage, context, true);
+            Refinement refinement = roiLocateGeometry(exam, page, normalizedImage, group, locate, pageImage, context, true);
             if (refinement == null) {
                 return manual(page, original, normalizedImage, transforms, "coordinate_refine_denied", group, locate);
             }
@@ -404,9 +404,9 @@ public final class ExamPipeline {
      * @param allowConflictingBoundaryReplacement
      * @return
      */
-    private Refinement refineLocateGeometry(ExamInput exam, PageInput page, BufferedImage image, PatternGroup group, LocateResponse locate,
-                                            VlmClient.PageImage pageImage, RunContext context,
-                                            boolean allowConflictingBoundaryReplacement) {
+    private Refinement roiLocateGeometry(ExamInput exam, PageInput page, BufferedImage image, PatternGroup group, LocateResponse locate,
+                                         VlmClient.PageImage pageImage, RunContext context,
+                                         boolean allowConflictingBoundaryReplacement) {
         if (locate.regions.size() == 1) {
             //todo me:单region走20%边缘带精修（20%底部+高对比+放大3倍）
             EraseRegion originalRegion = locate.regions.get(0);
