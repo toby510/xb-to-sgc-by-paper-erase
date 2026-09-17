@@ -88,11 +88,9 @@ public class RunWriter {
 
     public void writeExam(ExamInput input, ExamOutcome outcome, Path runDir) throws Exception {
         Path erasedDir = runDir.resolve("erased").resolve(input.getSubject()).resolve(input.getExamId());
-        Path consensusDir = runDir.resolve("consensus").resolve(input.getSubject()).resolve(input.getExamId());
         Path wordDir = runDir.resolve("word_output").resolve(input.getSubject()).resolve(input.getExamId());
         Path badExamDir = runDir.resolve("bad").resolve(input.getSubject()).resolve(input.getExamId());
         Files.createDirectories(erasedDir);
-        Files.createDirectories(consensusDir);
         Files.createDirectories(wordDir);
         deleteRecursively(badExamDir);
 
@@ -127,7 +125,6 @@ public class RunWriter {
             appendAudit(runDir.resolve("_audit.ndjson"), input, page, pageOutcome);
         }
 
-        mapper.writeValue(consensusDir.resolve("exam_consensus.json").toFile(), outcome.getConsensus());
         Path originalWord = wordDir.resolve(input.getExamId() + "_原图.docx");
         boolean hasManualReview = hasManualReview(outcome);
         Path erasedWord = wordDir.resolve(input.getExamId() + (hasManualReview
@@ -242,6 +239,7 @@ public class RunWriter {
         run.put("mode", mode);
         run.put("provider_kind", config.getProviderKind());
         run.put("vlm_contract", config.getContractPath());
+        run.put("min_body_gap_pixels", config.getMinBodyGapPixels());
         run.put("model", config.role("locate").getModel());
         run.put("planned_exam_count", plannedExamCount);
         run.put("planned_page_count", plannedPageCount);

@@ -3,7 +3,6 @@ package com.xb.sgc.papererase.pipeline;
 import com.xb.sgc.papererase.model.ExamModels.AuditResponse;
 import com.xb.sgc.papererase.model.ExamModels.EraseRegion;
 import com.xb.sgc.papererase.model.ExamModels.LocateResponse;
-import com.xb.sgc.papererase.model.ExamModels.PatternGroup;
 
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
@@ -11,7 +10,7 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * 试卷处理结果对象：汇总整卷状态、pattern 共性、逐页结果、擦除图和审计证据。
+ * 试卷处理结果对象：汇总整卷状态、逐页结果、擦除图和审计证据。
  * status/reason 是报告与人工审核入口，PageOutcome 内的原图永远是失败关闭时的回退基准。
  */
 public final class ExamOutcome {
@@ -19,14 +18,12 @@ public final class ExamOutcome {
     private final String status;
     private final String reason;
     private final List<PageOutcome> pages;
-    private final List<PatternGroup> consensus;
 
-    public ExamOutcome(String examId, String status, String reason, List<PageOutcome> pages, List<PatternGroup> consensus) {
+    public ExamOutcome(String examId, String status, String reason, List<PageOutcome> pages) {
         this.examId = examId;
         this.status = status;
         this.reason = reason;
         this.pages = Collections.unmodifiableList(new ArrayList<PageOutcome>(pages));
-        this.consensus = Collections.unmodifiableList(new ArrayList<PatternGroup>(consensus));
     }
 
     public String getExamId() {
@@ -45,9 +42,6 @@ public final class ExamOutcome {
         return pages;
     }
 
-    public List<PatternGroup> getConsensus() {
-        return consensus;
-    }
 
     /** writeExam 落盘成功后由 Main 逐卷调用，释放本卷所有页大图，避免全量累积超堆。 */
     public void releaseImages() {
@@ -102,14 +96,13 @@ public final class ExamOutcome {
         private BufferedImage normalized;
         private BufferedImage candidate;
         private final PageTransforms transforms;
-        private final PatternGroup consensus;
         private final List<EraseRegion> regions;
         private final LocateResponse locate;
         private final AuditResponse audit;
         private List<ApprovedRegion> approvedRegions;
 
         public PageOutcome(String pageId, String status, String reason, BufferedImage original, BufferedImage normalized,
-                           BufferedImage candidate, PageTransforms transforms, PatternGroup consensus,
+                           BufferedImage candidate, PageTransforms transforms,
                            List<EraseRegion> regions, LocateResponse locate, AuditResponse audit) {
             this.pageId = pageId;
             this.status = status;
@@ -118,7 +111,6 @@ public final class ExamOutcome {
             this.normalized = normalized;
             this.candidate = candidate;
             this.transforms = transforms;
-            this.consensus = consensus;
             this.regions = regions == null
                     ? Collections.<EraseRegion>emptyList()
                     : Collections.unmodifiableList(new ArrayList<EraseRegion>(regions));
@@ -128,10 +120,10 @@ public final class ExamOutcome {
         }
 
         public PageOutcome(String pageId, String status, String reason, BufferedImage original, BufferedImage normalized,
-                           BufferedImage candidate, PageTransforms transforms, PatternGroup consensus,
+                           BufferedImage candidate, PageTransforms transforms,
                            List<EraseRegion> regions, LocateResponse locate, AuditResponse audit,
                            List<ApprovedRegion> approvedRegions) {
-            this(pageId, status, reason, original, normalized, candidate, transforms, consensus, regions, locate, audit);
+            this(pageId, status, reason, original, normalized, candidate, transforms, regions, locate, audit);
             this.approvedRegions = approvedRegions == null ? Collections.<ApprovedRegion>emptyList()
                     : Collections.unmodifiableList(new ArrayList<ApprovedRegion>(approvedRegions));
         }
@@ -171,9 +163,6 @@ public final class ExamOutcome {
             return transforms;
         }
 
-        public PatternGroup getConsensus() {
-            return consensus;
-        }
 
         public List<EraseRegion> getRegions() {
             return regions;

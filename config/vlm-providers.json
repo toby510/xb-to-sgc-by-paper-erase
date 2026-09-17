@@ -2,6 +2,8 @@
   "active": "dashscope",
   "defaults": {
     "max_preview_long_edge": 1536,
+    "min_body_gap_pixels": 5,
+    "min_body_gap_pixels说明": "候选框与正文之间必须被像素证明的最小无墨空白带宽度（像素），合法区间 3-24；不配置或 <=0 时使用保守默认值 8。调大更保守（更易转人工），调小则放行真实空白带只有 5-7px 的紧框。只影响安全带判定，不改变 VLM 坐标来源与擦除写入范围。",
     "network_retries": 2,
     "fail_closed": true,
     "vlm_contract": "references/00-协议/VLM-CONTRACT-v1.md"
@@ -17,13 +19,13 @@
       "说明": "局部安全复核：仅确认或细化候选独立页眉/页脚目标行的 ROI，目标包含页码及明确同行非正文元数据；专门处理低置信度、旋转和正文过近等风险页面。",
       "输入": "候选区域 ROI（带 PAGE_ID、ROI_PAGE_ID、ROI_REGION_ID）。",
       "调用时机": "只有 RiskGate 判定为高风险，或需要确认无页码时才调用，避免每页重复消耗。",
-      "prompt": "references/03-局部安全复核/verify-prompt-v19.md"
+      "prompt": "references/03-局部安全复核/verify-prompt-v20.md"
     },
     "audit": {
       "说明": "擦除结果审计：对比擦除前后，确认正文未变、页码及获批同行非正文元数据组成的目标行已消失，并独立评估背景色。",
       "输入": "同一页的 ORIGINAL、ERASED 两张图及所有相关 ROI。",
       "调用时机": "每张实际发生过像素擦除的页面完成后；正文或目标判断失败即回退人工审核。",
-      "prompt": "references/04-擦除结果审计/audit-prompt-v11.md"
+      "prompt": "references/04-擦除结果审计/audit-prompt-v12.md"
     }
   },
   "providers": {

@@ -9,7 +9,7 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * 全链路数据契约：承载输入页面、pattern/locate/verify/audit 响应、候选框、正文边界和状态。
+ * 全链路数据契约：承载输入页面、locate/verify/audit 响应、候选框、正文边界和状态。
  * 归一化坐标用于 VLM 协议，PixelRegion 的像素坐标用于 Java 校验与擦除；两者不可混用。
  */
 public final class ExamModels {
@@ -133,68 +133,6 @@ public final class ExamModels {
         public Path getImagePath() {
             return imagePath;
         }
-    }
-
-    /** 1-pattern 返回的整卷共性与页面分类。 */
-    @JsonIgnoreProperties(ignoreUnknown = false)
-    public static final class PatternResponse {
-        @JsonProperty(required = true)
-        public List<PageDirection> page_directions = new ArrayList<PageDirection>();
-        @JsonProperty(required = true)
-        public List<PatternGroup> pattern_groups = new ArrayList<PatternGroup>();
-        @JsonProperty(required = true)
-        public List<String> heterogeneous_page_ids = new ArrayList<String>();
-        @JsonProperty(required = true)
-        public List<String> no_pagenum_page_ids = new ArrayList<String>();
-        @JsonProperty(required = true)
-        public List<String> ungrouped_page_ids = new ArrayList<String>();
-    }
-
-    /** pattern 为每页提供的阅读方向；方向不可信时禁止坐标换算。 */
-    @JsonIgnoreProperties(ignoreUnknown = false)
-    public static final class PageDirection {
-        @JsonProperty(required = true)
-        public String page_id;
-        @JsonProperty(required = true)
-        public int reading_rotation;
-        @JsonProperty(required = true)
-        public double confidence;
-    }
-
-    /** 同一页码版式的共性分组及其粗定位窗口。 */
-    @JsonIgnoreProperties(ignoreUnknown = false)
-    public static final class PatternGroup {
-        @JsonProperty(required = true)
-        public String group_id;
-        @JsonProperty(required = true)
-        public String edge;
-        @JsonProperty(required = true)
-        public String alignment;
-        @JsonProperty(required = true)
-        public String layout_description;
-        @JsonProperty(required = true)
-        public List<String> page_ids = new ArrayList<String>();
-        @JsonProperty(required = true)
-        public double confidence;
-        @JsonProperty(required = true)
-        public LocateWindow locate_window;
-    }
-
-    /** pattern 给 locate 的宽松工作窗口；坐标属于 Java 旋正后的页面，不可直接擦除。 */
-    @JsonIgnoreProperties(ignoreUnknown = false)
-    public static final class LocateWindow {
-        /** 归一化粗窗口左上角 X；仅用于裁 ROI，不是擦除框。 */
-        @JsonProperty(required = true)
-        public double x1;
-        /** 归一化粗窗口左上角 Y；仅用于裁 ROI，不是擦除框。 */
-        @JsonProperty(required = true)
-        public double y1;
-        /** 归一化粗窗口右下角 X；右边界按 exclusive 语义使用。 */
-        @JsonProperty(required = true)
-        public double x2;
-        /** 归一化粗窗口右下角 Y；下边界按 exclusive 语义使用。 */
-        @JsonProperty(required = true)
-        public double y2;
     }
 
     /** 2-locate 的整页语义结果及候选擦除框。 */

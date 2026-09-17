@@ -12,10 +12,6 @@ import com.xb.sgc.papererase.model.ExamModels.AuditResponse;
 import com.xb.sgc.papererase.model.ExamModels.BodyBoundary;
 import com.xb.sgc.papererase.model.ExamModels.EraseRegion;
 import com.xb.sgc.papererase.model.ExamModels.LocateResponse;
-import com.xb.sgc.papererase.model.ExamModels.LocateWindow;
-import com.xb.sgc.papererase.model.ExamModels.PageDirection;
-import com.xb.sgc.papererase.model.ExamModels.PatternGroup;
-import com.xb.sgc.papererase.model.ExamModels.PatternResponse;
 import com.xb.sgc.papererase.model.ExamModels.VerifyResponse;
 
 import java.io.IOException;
@@ -25,7 +21,7 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * VLM 协议解析器：把四个角色的原始 JSON 转换为强约束业务对象，并校验 page_id、状态和字段。
+ * VLM 协议解析器：把 locate/verify/audit 三个角色的原始 JSON 转换为强约束业务对象，并校验 page_id、状态和字段。
  * 解析失败必须失败关闭，禁止调用方拿不完整坐标继续擦除。
  */
 public final class ResponseParser {
@@ -36,113 +32,15 @@ public final class ResponseParser {
     private ResponseParser() {
     }
 
-    public static PatternResponse parsePattern(String raw, List<String> expectedPageIds) {
-        JsonNode root = root(raw);
-        requireFields(root, "page_directions", "pattern_groups", "heterogeneous_page_ids",
-                "no_pagenum_page_ids", "ungrouped_page_ids");
-        rejectUnknown(root, "page_directions", "pattern_groups", "heterogeneous_page_ids",
-                "no_pagenum_page_ids", "ungrouped_page_ids");
-        PatternResponse response = new PatternResponse();
-        Set<String> seenDirections = new HashSet<String>();
-        for (JsonNode item : array(root, "page_directions")) {
-            requireFields(item, "page_id", "reading_rotation", "confidence");
-            rejectUnknown(item, "page_id", "reading_rotation", "confidence");
-            PageDirection direction = new PageDirection();
-            direction.page_id = requiredText(item, "page_id");
-            if (!seenDirections.add(direction.page_id)) {
-                throw bad("duplicate page_id: " + direction.page_id, raw);
-            }
-            direction.reading_rotation = requiredInt(item, "reading_rotation");
-            if (!(direction.reading_rotation == 0 || direction.reading_rotation == 90
-                    || direction.reading_rotation == 180 || direction.reading_rotation == 270)) {
-                throw bad("reading rotation must be 0/90/180/270", raw);
-            }
-            direction.confidence = requiredFiniteUnit(item, "confidence", raw);
-            response.page_directions.add(direction);
-        }
-        Set<String> expected = new HashSet<String>(expectedPageIds);
-        if (!seenDirections.equals(expected)) {
-            throw bad("pattern batch page ids must match exactly", raw);
-        }
-        for (JsonNode item : array(root, "pattern_groups")) {
-            requireFields(item, "group_id", "edge", "alignment", "layout_description", "page_ids", "confidence", "locate_window");
-            rejectUnknown(item, "group_id", "edge", "alignment", "layout_description", "page_ids", "confidence", "locate_window");
-            PatternGroup group = new PatternGroup();
-            group.group_id = requiredText(item, "group_id");
-            group.edge = enumText(item, "edge", "bottom", "top", "left", "right", "mixed");
-            group.alignment = enumText(item, "alignment", "left", "center", "right", "spread", "unknown");
-            group.layout_description = requiredText(item, "layout_description");
-            for (JsonNode pageId : array(item, "page_ids")) {
-                String id = pageId.asText();
-                if (!expected.contains(id)) {
-                    throw bad("pattern group contains page outside batch: " + id, raw);
-                }
-                group.page_ids.add(id);
-            }
-            group.confidence = requiredFiniteUnit(item, "confidence", raw);
-            group.locate_window = parseLocateWindow(item.path("locate_window"), raw);
-            response.pattern_groups.add(group);
-        }
-        copyStringArray(root, "heterogeneous_page_ids", response.heterogeneous_page_ids, expected, raw);
-        copyStringArray(root, "no_pagenum_page_ids", response.no_pagenum_page_ids, expected, raw);
-        copyStringArray(root, "ungrouped_page_ids", response.ungrouped_page_ids, expected, raw);
-        requireExactPatternClassification(response, expected, raw);
-        return response;
-    }
-
-    /**
-     * 解析 pattern 的归一化粗窗口。这里只做协议和正面积校验，不把粗窗口当成擦除坐标。
-     *
-     * @param node JSON locate_window 节点
-     * @param raw 原始响应，用于构造可追溯错误
-     * @return 合法的 0..1 归一化矩形
-     */
-    private static LocateWindow parseLocateWindow(JsonNode node, String raw) {
-        requireFields(node, "x1", "y1", "x2", "y2");
-        rejectUnknown(node, "x1", "y1", "x2", "y2");
-        LocateWindow window = new LocateWindow();
-        window.x1 = requiredFiniteUnit(node, "x1", raw);
-        window.y1 = requiredFiniteUnit(node, "y1", raw);
-        window.x2 = requiredFiniteUnit(node, "x2", raw);
-        window.y2 = requiredFiniteUnit(node, "y2", raw);
-        if (window.x1 >= window.x2 || window.y1 >= window.y2) {
-            throw bad("locate_window must have positive area", raw);
-        }
-        return window;
-    }
-
-    private static void requireExactPatternClassification(PatternResponse response, Set<String> expected, String raw) {
-        Set<String> seen = new HashSet<String>();
-        for (PatternGroup group : response.pattern_groups) {
-            for (String pageId : group.page_ids) {
-                if (!expected.contains(pageId)) {
-                    throw bad("unknown page_id in pattern classification: " + pageId, raw);
-                }
-                if (!seen.add(pageId)) {
-                    throw bad("page_ids must be classified exactly once", raw);
-                }
-            }
-        }
-        addClassified(response.heterogeneous_page_ids, expected, seen, raw);
-        addClassified(response.no_pagenum_page_ids, expected, seen, raw);
-        addClassified(response.ungrouped_page_ids, expected, seen, raw);
-        if (!seen.equals(expected)) {
-            throw bad("page_ids must be classified exactly once", raw);
-        }
-    }
-
-    private static void addClassified(List<String> pageIds, Set<String> expected, Set<String> seen, String raw) {
-        for (String pageId : pageIds) {
-            if (!expected.contains(pageId)) {
-                throw bad("unknown page_id in pattern classification: " + pageId, raw);
-            }
-            if (!seen.add(pageId)) {
-                throw bad("page_ids must be classified exactly once", raw);
-            }
-        }
-    }
-
     public static LocateResponse parseLocate(String raw, String expectedPageId) {
+        try {
+            return parseLocateObject(raw, expectedPageId);
+        } catch (ParseException failure) {
+            throw withRawSummary(failure, raw);
+        }
+    }
+
+    private static LocateResponse parseLocateObject(String raw, String expectedPageId) {
         JsonNode root = root(raw);
         requireFields(root, "page_id", "reading_rotation", "direction_confidence", "status", "regions", "evidence");
         rejectUnknown(root, "page_id", "reading_rotation", "direction_confidence", "status", "regions", "evidence");
@@ -199,6 +97,14 @@ public final class ResponseParser {
     }
 
     public static VerifyResponse parseVerify(String raw, String expectedPageId, String expectedRegionId) {
+        try {
+            return parseVerifyObject(raw, expectedPageId, expectedRegionId);
+        } catch (ParseException failure) {
+            throw withRawSummary(failure, raw);
+        }
+    }
+
+    private static VerifyResponse parseVerifyObject(String raw, String expectedPageId, String expectedRegionId) {
         JsonNode root = root(raw);
         requireFields(root, "page_id", "region_id", "decision", "allowed_scope", "evidence", "refined_region");
         rejectUnknown(root, "page_id", "region_id", "decision", "allowed_scope", "evidence", "refined_region", "refined_nearest_body_boundary");
@@ -250,6 +156,14 @@ public final class ResponseParser {
     }
 
     public static AuditResponse parseAudit(String raw, String expectedPageId) {
+        try {
+            return parseAuditObject(raw, expectedPageId);
+        } catch (ParseException failure) {
+            throw withRawSummary(failure, raw);
+        }
+    }
+
+    private static AuditResponse parseAuditObject(String raw, String expectedPageId) {
         JsonNode root = root(raw);
         requireFields(root, "page_id", "decision", "original_target_is_non_body", "body_unchanged", "target_removed", "background_acceptable", "evidence");
         rejectUnknown(root, "page_id", "decision", "original_target_is_non_body", "body_unchanged", "target_removed", "background_acceptable", "evidence");
@@ -494,23 +408,6 @@ public final class ResponseParser {
         return requiredFiniteUnit(node, field, raw);
     }
 
-    private static void copyStringArray(JsonNode root, String field, List<String> target, Set<String> expected, String raw) {
-        Set<String> seen = new HashSet<String>();
-        for (JsonNode item : array(root, field)) {
-            if (!item.isTextual()) {
-                throw bad(field + " must contain page_id strings", raw);
-            }
-            String id = item.asText();
-            if (!expected.contains(id)) {
-                throw bad(field + " contains page outside batch: " + id, raw);
-            }
-            if (!seen.add(id)) {
-                throw bad("duplicate page_id in " + field + ": " + id, raw);
-            }
-            target.add(id);
-        }
-    }
-
     private static void requireEqual(String actual, String expected, String field, String raw) {
         if (!expected.equals(actual)) {
             throw bad(field + " mismatch", raw);
@@ -519,6 +416,24 @@ public final class ResponseParser {
 
     private static ParseException bad(String message, String raw) {
         return new ParseException(message, safeSummary(raw));
+    }
+
+    /**
+     * 为字段级校验异常补上模型原始响应摘要。
+     *
+     * <p>字段级校验（缺字段、字段类型错、枚举非法）只带字段名就抛出，异常文本会直接写入
+     * 页面级失败原因。缺失原始响应时无法判断“模型没输出该字段”还是“输出被截断/换行”，
+     * 因此这里统一补齐；已有摘要的异常原样返回，不重复包装。</p>
+     *
+     * @param failure 字段级校验抛出的异常
+     * @param raw 模型原始响应文本
+     * @return 带原始响应摘要的异常
+     */
+    private static ParseException withRawSummary(ParseException failure, String raw) {
+        if (failure.getRawSummary() != null && !failure.getRawSummary().isEmpty()) {
+            return failure;
+        }
+        return new ParseException(failure.getMessage(), safeSummary(raw));
     }
 
     private static String safeSummary(String raw) {

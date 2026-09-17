@@ -17,12 +17,15 @@ public final class VlmConfig {
     private static final String[] ROLES = {"locate", "verify", "audit"};
     private final Map<String, RoleConfig> roles;
     private final int maxPreviewLongEdge;
+    private final int minBodyGapPixels;
     private final String providerKind;
     private final String contractPath;
 
-    private VlmConfig(Map<String, RoleConfig> roles, int maxPreviewLongEdge, String providerKind, String contractPath) {
+    private VlmConfig(Map<String, RoleConfig> roles, int maxPreviewLongEdge, int minBodyGapPixels,
+                      String providerKind, String contractPath) {
         this.roles = Collections.unmodifiableMap(new HashMap<String, RoleConfig>(roles));
         this.maxPreviewLongEdge = maxPreviewLongEdge;
+        this.minBodyGapPixels = minBodyGapPixels;
         this.providerKind = providerKind;
         this.contractPath = contractPath;
     }
@@ -37,6 +40,8 @@ public final class VlmConfig {
         }
         JsonNode root = new ObjectMapper().readTree(configPath.toFile());
         int previewLongEdge = root.path("defaults").path("max_preview_long_edge").asInt(1536);
+        // 正文安全带宽度：0 表示未配置，由 RegionValidator 回落到保守默认值。
+        int minBodyGap = root.path("defaults").path("min_body_gap_pixels").asInt(0);
         int defaultRetries = root.path("defaults").path("network_retries").asInt(2);
         String contractPath = text(root.path("defaults").path("vlm_contract"));
         String active = text(root.path("active"));
@@ -85,7 +90,7 @@ public final class VlmConfig {
             roles.put(role, new RoleConfig(role, prompt, model, endpoint, apiKey, retries, maxOutputTokens, imageDetail,
                     thinkingType, reasoningEffort));
         }
-        return new VlmConfig(roles, previewLongEdge, providerKind, contractPath);
+        return new VlmConfig(roles, previewLongEdge, minBodyGap, providerKind, contractPath);
     }
 
     private static String resolveEndpoint(JsonNode provider, JsonNode roleOverride, Map<String, String> env) {
@@ -168,6 +173,14 @@ public final class VlmConfig {
 
     public int getMaxPreviewLongEdge() {
         return maxPreviewLongEdge;
+    }
+
+    /**
+     * 配置的正文安全带宽度（像素）；{@code 0} 表示未配置，由校验层使用保守默认值。
+     * 该值只影响“候选框与正文之间需要被证明的空白宽度”，不改变坐标来源与擦除范围。
+     */
+    public int getMinBodyGapPixels() {
+        return minBodyGapPixels;
     }
 
     /** 当前 active provider 的传输协议；客户端工厂据此选择请求/响应编解码方式。 */

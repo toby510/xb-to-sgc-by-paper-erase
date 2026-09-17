@@ -2,7 +2,6 @@ package com.xb.sgc.papererase.image;
 
 import com.xb.sgc.papererase.model.ExamModels.BodyBoundary;
 import com.xb.sgc.papererase.model.ExamModels.EraseRegion;
-import com.xb.sgc.papererase.model.ExamModels.LocateWindow;
 import com.xb.sgc.papererase.safety.RegionValidator;
 
 /**
@@ -163,33 +162,6 @@ public final class RoiTransform {
         int clampedBottom = clampToInt(bottom, clampedTop, fullHeight);
         return new RoiTransform(clampedLeft, clampedTop, clampedRight - clampedLeft,
                 clampedBottom - clampedTop, fullWidth, fullHeight);
-    }
-
-    /**
-     * 合并 VLM 候选框与 pattern 粗窗口后生成 ROI。候选框可能整体偏移，合并只扩大模型可见范围，todo @me:原来的region四周加上2*min(款，高)，即最小regions的宽或高的2倍，而且要包含正文坐标
-     * 不改变最终擦除框；正文边界仍只用于最终安全门禁。
-     *
-     * @param fullWidth 整图宽度
-     * @param fullHeight 整图高度
-     * @param candidate 本页 locate 候选框
-     * @param window pattern 给出的归一化粗窗口，可为空
-     * @param bodyBoundary 正文边界，可为空
-     * @param marginPixels 额外像素边距
-     * @return 覆盖候选和粗窗口的整图像素 ROI
-     */
-    public static RoiTransform fromNormalizedCandidateAndWindow(int fullWidth, int fullHeight, EraseRegion candidate,
-                                                                 LocateWindow window, BodyBoundary bodyBoundary,
-                                                                 int marginPixels) {
-        if (window == null) {
-            return fromNormalizedCandidate(fullWidth, fullHeight, candidate, bodyBoundary, marginPixels);
-        }
-        validateLocalRect(window.x1, window.y1, window.x2, window.y2);
-        EraseRegion combined = new EraseRegion();
-        combined.x1 = Math.min(candidate.x1, window.x1);
-        combined.y1 = Math.min(candidate.y1, window.y1);
-        combined.x2 = Math.max(candidate.x2, window.x2);
-        combined.y2 = Math.max(candidate.y2, window.y2);
-        return fromNormalizedCandidate(fullWidth, fullHeight, combined, null, marginPixels);
     }
 
     /**

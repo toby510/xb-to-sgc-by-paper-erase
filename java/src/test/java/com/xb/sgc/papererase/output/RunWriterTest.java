@@ -1,6 +1,7 @@
 package com.xb.sgc.papererase.output;
 
 import com.xb.sgc.papererase.model.ExamModels.ExamInput;
+import com.xb.sgc.papererase.model.ExamModels.EraseRegion;
 import com.xb.sgc.papererase.model.ExamModels.PageInput;
 import com.xb.sgc.papererase.pipeline.ExamOutcome;
 import com.xb.sgc.papererase.pipeline.ExamOutcome.PageOutcome;
@@ -36,10 +37,9 @@ public class RunWriterTest {
         PageTransforms tx = new PageTransforms(12, 12, 12, 12, 0);
         ExamOutcome outcome = new ExamOutcome("1001", "processed", "ok", Arrays.asList(
                 new PageOutcome("1001:1", "safe_to_erase", "audit_pass", white, white, green, tx,
-                        null, Collections.emptyList(), null, null),
+                        Collections.<EraseRegion>emptyList(), null, null),
                 new PageOutcome("1001:2", "manual_review", "risk", white, blue, blue, tx,
-                        null, Collections.emptyList(), null, null)),
-                Collections.emptyList());
+                        Collections.<EraseRegion>emptyList(), null, null)));
 
         Path runDir = RunWriter.createRunDir(root, "qwen3.8-max", "20260821T120000");
         new RunWriter().writeExam(input, outcome, runDir);
@@ -50,7 +50,7 @@ public class RunWriterTest {
         assertTrue(Files.isRegularFile(base.resolve("1001_1_原图.png")));
         assertTrue(Files.isRegularFile(base.resolve("1001_1_擦除后.png")));
         assertTrue(Files.isRegularFile(base.resolve("1001_2_regions.json")));
-        assertTrue(Files.isRegularFile(runDir.resolve("consensus/语文/1001/exam_consensus.json")));
+        // consensus output removed in pattern-cleanup refactor
         assertTrue(Files.isRegularFile(runDir.resolve("word_output/语文/1001/1001_原图.docx")));
         assertTrue(Files.isRegularFile(runDir.resolve("word_output/语文/1001/1001_擦除后_待人工审核.docx")));
         Path wordDir = runDir.resolve("word_output/语文/1001");
@@ -104,7 +104,7 @@ public class RunWriterTest {
         PageTransforms tx = new PageTransforms(12, 12, 12, 12, 0);
         ExamOutcome outcome = new ExamOutcome("2002", "processed", "ok", Collections.singletonList(
                 new PageOutcome("2002:1", "safe_to_erase", "audit_pass", white, white, white, tx,
-                        null, Collections.emptyList(), null, null)), Collections.emptyList());
+                        Collections.<EraseRegion>emptyList(), null, null)));
 
         Path runDir = RunWriter.createRunDir(root, "qwen3.8-max", "20260821T120001");
         Path wordDir = runDir.resolve("word_output/数学/2002");

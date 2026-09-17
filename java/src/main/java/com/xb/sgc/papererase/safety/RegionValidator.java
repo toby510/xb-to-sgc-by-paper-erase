@@ -19,9 +19,45 @@ import java.util.Set;
  */
 public final class RegionValidator {
     private static final double EDGE_BAND = 0.20;
-    private static final int MIN_BODY_GAP_PIXELS = 8;
+
+    /** 未配置时的正文安全带宽度：保持历史行为，最保守。 */
+    private static final int DEFAULT_MIN_BODY_GAP_PIXELS = 8;
+    /** 可配置安全带的合法区间，防止配置错误把门禁放到无意义或过严的值。 */
+    private static final int MIN_CONFIGURABLE_BODY_GAP_PIXELS = 3;
+    private static final int MAX_CONFIGURABLE_BODY_GAP_PIXELS = 24;
+
+    /**
+     * 候选框与正文之间必须被像素证明的最小无墨空白带宽度（像素）。
+     *
+     * <p>这是本类唯一的可调几何阈值：调大更容易拒绝并转人工，调小则允许放行真实空白
+     * 只有 5～7px 的紧框。取值在每次 run 启动前由配置一次性写入；未配置时保持
+     * {@link #DEFAULT_MIN_BODY_GAP_PIXELS}，行为与历史版本一致。</p>
+     */
+    private static volatile int MIN_BODY_GAP_PIXELS = DEFAULT_MIN_BODY_GAP_PIXELS;
 
     private RegionValidator() {
+    }
+
+    /**
+     * 设置本次运行的正文安全带宽度。
+     *
+     * <p>必须在流水线开始前调用一次；越界值按合法区间收敛，非正值视为未配置并回落到默认值。
+     * 阈值只影响“需要多少像素空白才算安全”，不改变任何坐标来源或擦除写入范围。</p>
+     *
+     * @param pixels 配置的像素宽度；{@code <=0} 表示未配置
+     */
+    public static void configureMinBodyGapPixels(int pixels) {
+        if (pixels <= 0) {
+            MIN_BODY_GAP_PIXELS = DEFAULT_MIN_BODY_GAP_PIXELS;
+            return;
+        }
+        MIN_BODY_GAP_PIXELS = Math.max(MIN_CONFIGURABLE_BODY_GAP_PIXELS,
+                Math.min(MAX_CONFIGURABLE_BODY_GAP_PIXELS, pixels));
+    }
+
+    /** 返回当前生效的正文安全带宽度，供运行元数据和排查使用。 */
+    public static int minBodyGapPixels() {
+        return MIN_BODY_GAP_PIXELS;
     }
 
     /**
@@ -131,11 +167,11 @@ public final class RegionValidator {
                 reasons.add(boundaryReason);
                 continue;
             }
-            // 3.6 正文安全带：从候选框朝正文方向扫描至少 8px 连续无实质墨迹，抵抗边界幻觉
-            //todo me：【空白带是否合法校验】目标是判断空白带：1）是否<=8px，小于则返回“body blank gap is insufficient”；2）否则看安全的空白带是否有墨迹，没有返回null表示安全，有则返回"body blank gap contains ink"
+            // 3.6 正文安全带：从候选框朝正文方向扫描至少“配置的安全带宽度”连续无实质墨迹，抵抗边界幻觉
+            //todo me：【空白带是否合法校验】目标是判断空白带：1）宽度是否小于配置的安全带（默认8px），小于则返回“body blank gap is insufficient”；2）否则看这条安全带内是否有墨迹，没有返回null表示安全，有则返回"body blank gap contains ink"
             String gapReason = invalidPixelGapReason(edge, pixelRegion, boundary, image);
 
-            //todo me :isLocallyConfirmedTightBox=ROI VLM 已经看过局部高清图，并重新测量过目标框；此时如果 8px 安全带仍然含墨，不再让 Java 自己继续“猜坐标”，而应该让硬门禁直接处理。
+            //todo me :isLocallyConfirmedTightBox=ROI VLM 已经看过局部高清图，并重新测量过目标框；此时如果正文安全带仍然含墨，不再让 Java 自己继续“猜坐标”，而应该让硬门禁直接处理。
             if ("body blank gap contains ink".equals(gapReason) && !isLocallyConfirmedTightBox(region)) {
 
                 //todo me:到这里表示空白带内有墨迹，但是还是要分情况分析：
@@ -145,13 +181,13 @@ public final class RegionValidator {
                 /*
                  * VLM 坐标是语义定位，常把页码最外侧一两列抗锯齿笔画排除在框外。不能把
                  * 这类“与框内页码连通”的残笔直接当正文，也不能无条件放宽安全带：只把
-                 * 连通分量向正文方向扩一像素白边，再重新验证 8px 的真实无墨安全带。
+                 * 连通分量向正文方向扩一像素白边，再重新验证配置宽度的真实无墨安全带。
                  */
                 pixelRegion = hasConservativeInk(image, pixelRegion)
                         //todo me:【框基本找对只是太小-扩连通域】页码框超正文方向框住墨迹了，从原框 top 向页面内部逐行向上扫描，最多扫 24～32px，连续两条空白扫描线就停（bottom为例）
                         ? expandConnectedTargetInk(edge, pixelRegion, boundary, image)
-                        //todo me:【页码框无墨迹-框可能整个偏了落在空白处-安全空白带8px内寻找页码框】
-                        : rescueEmptyModelBox(edge, pixelRegion, bodyLimit(edge, boundary, image), image);
+                        // 框内完全无墨时不再由 Java 沿走廊搜字：保持原框交给上层 ROI 重定位或人工审核。
+                        : pixelRegion;
 
                 //todo me:修复页码框后再次验证空白带是否满足，不满足直接拒绝（扩完页码以后，再往正文方向看依然有文字结构。这时候就不能继续猜了，返回拒绝
                 gapReason = invalidPixelGapReason(edge, pixelRegion, boundary, image);
@@ -159,18 +195,6 @@ public final class RegionValidator {
             if (gapReason != null) {
                 reasons.add(gapReason);
                 continue;
-            }
-            // 3.7 空框坐标救援：模型框落在邻近空白时，只能沿已证明安全的同侧走廊找回目标。
-            // 模型可能把整个框偏到页码相邻空白处。框内完全无墨时，只能在已证明远离正文的
-            // 同侧走廊中找回目标；该分支会标记 coordinateRescued 并强制局部二检。
-            if (!hasConservativeInk(image, pixelRegion)) {
-                pixelRegion = rescueEmptyModelBox(edge, pixelRegion,
-                        bodyLimit(edge, boundary, image), image);
-                gapReason = invalidPixelGapReason(edge, pixelRegion, boundary, image);
-                if (gapReason != null) {
-                    reasons.add(gapReason);
-                    continue;
-                }
             }
             // 3.8 框边墨迹门禁：定位坐标落在字形抗锯齿边缘时，先尝试向空白侧扩到安全边界。
             // 定位坐标落在字形抗锯齿边缘时，擦除器会因“掩码贴框”拒绝。这里与擦除器
@@ -205,7 +229,7 @@ public final class RegionValidator {
      * 将它交回 {@link #validate(PageLocateResult, BufferedImage)} 做完整门禁。
      *
      * <p>它刻意不处理缺失边界、普通候选框或任何含墨的空白带：只要不能同时证明同一边缘、
-     * 基线投影重叠、候选内确有墨迹和最终 8px 正文安全带，即返回 {@code null}。当正文侧
+     * 基线投影重叠、候选内确有墨迹和最终配置宽度的正文安全带，即返回 {@code null}。当正文侧
      * 墨迹贴住精框、最终校验还会补两行空白边界时，内部才为这两行额外预留像素。</p>
      */
     public static BodyBoundary replaceConflictingBodyBoundary(EraseRegion originalRegion, EraseRegion refinedRegion,
@@ -237,9 +261,9 @@ public final class RegionValidator {
         if (!isLocallyConfirmedTightBox(refinedRegion)) {
             refined = expandTargetTowardBody(refinedEdge, refined, image);
         }
-        // 最终硬门禁要求批准框与正文相隔 8px。若正文侧墨迹仍贴框，validate 会先向该侧
+        // 最终硬门禁要求批准框与正文相隔“配置的安全带宽度”（默认 8px）。若正文侧墨迹仍贴框，validate 会先向该侧
         // 补入两条空白扫描线，替代边界必须为这次确定性扩框预留 2px；若框内已经有空白，
-        // 则不额外预扣，避免把恰好满足 8px 的安全页码误拒。
+        // 则不额外预扣，避免把恰好满足安全带的安全页码误拒。
         int backgroundLum = BackgroundEstimator.medianLightLuminance(image, refined);
         boolean bodySideTouches = sideTouchesCandidateBox(
                 image, refined, towardBodySide(refinedEdge), backgroundLum);
@@ -266,7 +290,7 @@ public final class RegionValidator {
         } else {
             return null;
         }
-        effective.basis = "java_8px_blank_band_replaced_conflicting_vlm_boundary"
+        effective.basis = "java_" + MIN_BODY_GAP_PIXELS + "px_blank_band_replaced_conflicting_vlm_boundary"
                 + "; original_basis=" + safeBasis(originalBoundary.basis)
                 + "; original_x=" + originalBoundary.x + "; original_y=" + originalBoundary.y;
         return effective;
@@ -548,7 +572,7 @@ public final class RegionValidator {
      *
      * @param edge 页码所在页面边缘
      * @param region 当前像素候选框
-     * @param boundary 正文边界，用于阻止朝正文方向越过 8px 安全带
+     * @param boundary 正文边界，用于阻止朝正文方向越过配置宽度的正文安全带
      * @param image 旋正后的原图
      * @return 扩展后的像素框；任一方向无法证明安全时返回 {@code null}
      */
@@ -556,12 +580,12 @@ public final class RegionValidator {
                                                      BufferedImage image) {
         // 宽页脚徽标/色块的完整外轮廓可能明显大于普通数字高度。扫描预算以候选最大边的
         // 两倍自适应增长，同时由 96px 硬上限约束；它只决定何时停止寻找两条空白线，四向
-        // 墨迹判定、正文方向 8px 安全带和物理页边规则均不变。
+        // 墨迹判定、正文方向安全带和物理页边规则均不变。
         int maxSteps = Math.min(96, Math.max(32, 2 * Math.max(region.getWidth(), region.getHeight())));
         int backgroundLum = BackgroundEstimator.medianLightLuminance(image, region);
         PixelRegion expanded = region;
         for (Side side : Side.values()) {
-            // 正文侧本来已有框内空白时不额外扩出 2px，避免无意义侵占 8px 安全带。
+            // 正文侧本来已有框内空白时不额外扩出 2px，避免无意义侵占正文安全带。
             // 其余三侧保留既有的两条空白边界契约，供擦除器安全覆盖抗锯齿笔画。
             if (side == towardBodySide(edge)
                     && !sideTouchesCandidateBox(image, expanded, side, backgroundLum)) {
@@ -688,7 +712,7 @@ public final class RegionValidator {
                 region.isCoordinateRescued());
     }
 
-    /** 判断扩展扫描线是否越过正文边界前的 8px 安全带；只有朝正文的一侧受该边界限制。 */
+    /** 判断扩展扫描线是否越过正文边界前的安全带；只有朝正文的一侧受该边界限制。 */
     private static boolean crossesBodySafetyBand(Edge edge, Side side, int left, int top, int right, int bottom,
                                                  BodyBoundary boundary, BufferedImage image) {
         int limit = bodyLimit(edge, boundary, image);
@@ -729,6 +753,19 @@ public final class RegionValidator {
             return Edge.RIGHT;
         }
         return Edge.NONE;
+    }
+
+    /**
+     * 返回候选框所属的物理页面边缘；不在任何边缘终止带内时返回 {@link Edge#NONE}。
+     *
+     * <p>供调用方与该类使用同一套 20% 边缘带口径，例如 verify 的 ROI 需要据此补齐页面
+     * 物理边缘，避免同一候选框在“送检画面”和“几何门禁”里被当成不同位置。</p>
+     *
+     * @param region 整图归一化候选框
+     * @return 页面边缘方向；{@code null} 输入返回 {@link Edge#NONE}
+     */
+    public static Edge edgeBand(EraseRegion region) {
+        return region == null ? Edge.NONE : edge(region);
     }
 
     /** 候选框必须位于 20% 边缘带；极端横向短条页允许中心落入对应 25% 特例，之后仍需像素门禁。 */
@@ -857,7 +894,7 @@ public final class RegionValidator {
         int right = region.getX() + region.getWidth();
         int bottom = region.getY() + region.getHeight();
         if (edge == Edge.TOP) {
-            // TOP：页面纵向示意：C(上) | G=[bottom,bottom+8) | B(下)。
+            // TOP：页面纵向示意：C(上) | G=[bottom,bottom+gap) | B(下)，gap=配置的安全带宽度。
             int bodyY = (int) Math.floor(boundary.y * image.getHeight());
             if (bodyY - bottom < MIN_BODY_GAP_PIXELS) {
                 return "body blank gap is insufficient";
@@ -865,14 +902,14 @@ public final class RegionValidator {
             /*
              * bandHasBlockingInk 实际圈选的像素矩形（原图像素坐标）：
              *   左上角 (x1,y1) = (region.x, region.y + region.height)
-             *   右下角 (x2,y2) = (region.x + region.width, region.y + region.height + 8)
-             * 即候选框正下方 8px 横条；x2/y2 为 exclusive 边界，不包含候选框本身。
+             *   右下角 (x2,y2) = (region.x + region.width, region.y + region.height + gap)
+             * 即候选框正下方 gap 像素横条；x2/y2 为 exclusive 边界，不包含候选框本身。
              */
             return hasBlockingForeground(image, region, region.getX(), bottom, right, bottom + MIN_BODY_GAP_PIXELS)
                     ? "body blank gap contains ink" : null;
         }
         if (edge == Edge.BOTTOM) {
-            // BOTTOM：页面纵向示意：B(上) | G=[top-8,top) | C(下)。
+            // BOTTOM：页面纵向示意：B(上) | G=[top-gap,top) | C(下)，gap=配置的安全带宽度。
             int bodyY = (int) Math.ceil(boundary.y * image.getHeight());
             if (region.getY() - bodyY < MIN_BODY_GAP_PIXELS) {
                 //todo me:候选框离正文太近了，不安全，上层会进行RoiRelocate重新定位
@@ -880,16 +917,16 @@ public final class RegionValidator {
             }
             /*
              * bandHasBlockingInk 实际圈选的像素矩形（原图像素坐标）：
-             *   左上角 (x1,y1) = (region.x, region.y - 8)
+             *   左上角 (x1,y1) = (region.x, region.y - gap)
              *   右下角 (x2,y2) = (region.x + region.width, region.y)
-             * 即候选框正上方 8px 横条；x2/y2 为 exclusive 边界。
+             * 即候选框正上方 gap 像素横条；x2/y2 为 exclusive 边界。
              */
             return hasBlockingForeground(image, region, region.getX(), region.getY() - MIN_BODY_GAP_PIXELS, right, region.getY())
-                    ? "body blank gap contains ink"  // todo me:候选框离正文满足8px安全带，但是安全带有墨迹，比如有黑点，可能疑似正文，需要上层RoiRelocate重新定位
+                    ? "body blank gap contains ink"  // todo me:候选框离正文满足配置的安全带，但是安全带有墨迹，比如有黑点，可能疑似正文，需要上层RoiRelocate重新定位
                     : null;
         }
         if (edge == Edge.LEFT) {
-            // LEFT：页面横向示意：C(左) | G=[right,right+8) | B(右)。
+            // LEFT：页面横向示意：C(左) | G=[right,right+gap) | B(右)，gap=配置的安全带宽度。
             int bodyX = (int) Math.floor(boundary.x * image.getWidth());
             if (bodyX - right < MIN_BODY_GAP_PIXELS) {
                 return "body blank gap is insufficient";
@@ -897,23 +934,23 @@ public final class RegionValidator {
             /*
              * bandHasBlockingInk 实际圈选的像素矩形（原图像素坐标）：
              *   左上角 (x1,y1) = (region.x + region.width, region.y)
-             *   右下角 (x2,y2) = (region.x + region.width + 8, region.y + region.height)
-             * 即候选框正右方 8px 竖条；x2/y2 为 exclusive 边界。
+             *   右下角 (x2,y2) = (region.x + region.width + gap, region.y + region.height)
+             * 即候选框正右方 gap 像素竖条；x2/y2 为 exclusive 边界。
              */
             return hasBlockingForeground(image, region, right, region.getY(), right + MIN_BODY_GAP_PIXELS, bottom)
                     ? "body blank gap contains ink" : null;
         }
         if (edge == Edge.RIGHT) {
-            // RIGHT：页面横向示意：B(左) | G=[left-8,left) | C(右)。
+            // RIGHT：页面横向示意：B(左) | G=[left-gap,left) | C(右)，gap=配置的安全带宽度。
             int bodyX = (int) Math.ceil(boundary.x * image.getWidth());
             if (region.getX() - bodyX < MIN_BODY_GAP_PIXELS) {
                 return "body blank gap is insufficient";
             }
             /*
              * bandHasBlockingInk 实际圈选的像素矩形（原图像素坐标）：
-             *   左上角 (x1,y1) = (region.x - 8, region.y)
+             *   左上角 (x1,y1) = (region.x - gap, region.y)
              *   右下角 (x2,y2) = (region.x, region.y + region.height)
-             * 即候选框正左方 8px 竖条；x2/y2 为 exclusive 边界。
+             * 即候选框正左方 gap 像素竖条；x2/y2 为 exclusive 边界。
              */
             return hasBlockingForeground(image, region, region.getX() - MIN_BODY_GAP_PIXELS, region.getY(), region.getX(), bottom)
                     ? "body blank gap contains ink" : null;
@@ -1027,88 +1064,6 @@ public final class RegionValidator {
         return remainsInEdgeBand(edge, expanded, image) ? expanded : region;
     }
 
-    /**
-     * 处理“模型识别到页码，但返回框完全落在相邻空白处”的坐标救援。
-     *
-     * <p>该方法不在整页搜索，也不根据任意黑点猜测页码。它只在当前候选框与正文边界之间、
-     * 且仍位于同一页面边缘方向的安全走廊中寻找可擦除墨迹；找到后用墨迹包围盒重建候选框，
-     * 再补少量抗锯齿边距。找不到墨迹、走廊越界或安全间隔不足时，原框原样返回，交给上层
-     * 校验/人工审核处理。</p>
-     *
-     * <p>例如底部页码框偏到更下方空白处，走廊只允许在“正文边界下方 8px”和“原框上边界”
-     * 之间找回页码，绝不会跨过正文边界向整页其他区域搜索。</p>
-     *
-     * @param edge 页码所在页面边缘，决定安全走廊方向
-     * @param region VLM 返回但框内没有可靠墨迹的原始像素框
-     * @param bodyLimit 正文边界在当前方向上的像素限制线
-     * @param image 与 region 坐标一致的标准化原图
-     * @return 找回并通过后续边缘限制的候选框；无法安全找回时返回原框
-     */
-    private static PixelRegion rescueEmptyModelBox(Edge edge, PixelRegion region, int bodyLimit, BufferedImage image) {
-        // 先构造只位于原框与正文之间的同侧走廊，不允许在整页范围内盲目寻找墨迹。
-        Bounds corridor = inwardCorridor(edge, region, bodyLimit);
-        // 走廊不存在或超出图片边界时，无法建立可靠的坐标救援范围，保持原框并失败关闭。
-        if (corridor == null || !corridor.isInside(image)) {
-            return region;
-        }
-        // 下面四个值用于收集走廊内所有可擦除墨迹的最小包围盒。
-        int minX = Integer.MAX_VALUE;
-        int minY = Integer.MAX_VALUE;
-        int maxX = Integer.MIN_VALUE;
-        int maxY = Integer.MIN_VALUE;
-        // 以原候选框估计局部背景亮度，避免把纸张底色或扫描阴影当成目标墨迹。
-        int backgroundLum = BackgroundEstimator.medianLightLuminance(image, region);
-        // 扫描走廊内每一个像素；这里仅收集像素证据，不修改图片，也不直接授权擦除。
-        //todo me:corridor=正文坐标+向下8px，所以现在扫描走廊是从corridor往下走到眼眶的bottom(容易误解)
-        for (int y = corridor.top; y < corridor.bottom; y++) {
-            for (int x = corridor.left; x < corridor.right; x++) {
-                // 只有符合“可擦除墨迹”规则的像素才参与包围盒计算，浅影和普通背景被排除。
-                if (!BackgroundEstimator.isErasableInk(image.getRGB(x, y), backgroundLum, false)) {
-                    continue;
-                }
-                // 将当前墨迹像素并入走廊内目标包围盒。
-                minX = Math.min(minX, x);
-                minY = Math.min(minY, y);
-                maxX = Math.max(maxX, x);
-                maxY = Math.max(maxY, y);
-            }
-        }
-        // 没有找到任何目标墨迹时，不能凭空移动模型框；原框保留并由上层转人工/二检。
-        if (minX == Integer.MAX_VALUE) {
-            return region;
-        }
-        // 找到墨迹后，只把包围盒和少量抗锯齿边距并回原框，随后仍需重新 validate。
-        return paddedExpandedRegion(edge, region, minX, minY, maxX, maxY, bodyLimit, image);
-    }
-
-    /**
-     * 根据候选框和正文限制构造同一页面边缘内侧的像素搜索走廊。
-     * 走廊两端各保留 {@link #MIN_BODY_GAP_PIXELS} 的正文安全间隔，避免救援搜索直接贴到正文。
-     */
-    private static Bounds inwardCorridor(Edge edge, PixelRegion region, int bodyLimit) {
-        // 原框的右下开区间边界，用于构造框外的搜索范围。
-        int right = region.getX() + region.getWidth();
-        int bottom = region.getY() + region.getHeight();
-        if (edge == Edge.TOP) {
-            // 顶部页码：在原框下方、正文边界上方至少 8px 的区域搜索。
-            return new Bounds(region.getX(), bottom, right, bodyLimit - MIN_BODY_GAP_PIXELS);
-        }
-        if (edge == Edge.BOTTOM) {
-            // 底部页码：在正文边界下方至少 8px、原框上方的区域搜索。
-            return new Bounds(region.getX(), bodyLimit + MIN_BODY_GAP_PIXELS, right, region.getY());
-        }
-        if (edge == Edge.LEFT) {
-            // 左侧页码：在原框右侧、正文边界左侧至少 8px 的区域搜索。
-            return new Bounds(right, region.getY(), bodyLimit - MIN_BODY_GAP_PIXELS, bottom);
-        }
-        if (edge == Edge.RIGHT) {
-            // 右侧页码：在正文边界右侧至少 8px、原框左侧的区域搜索。
-            return new Bounds(bodyLimit + MIN_BODY_GAP_PIXELS, region.getY(), region.getX(), bottom);
-        }
-        // 无法判断页码所在边缘时，不允许构造搜索走廊。
-        return null;
-    }
-
     /** 将正文边界转换为该页面边缘方向上的像素限制线；无有效边界返回 -1。 */
     private static int bodyLimit(Edge edge, BodyBoundary boundary, BufferedImage image) {
         if (edge == Edge.TOP) return (int) Math.floor(boundary.y * image.getHeight());
@@ -1116,36 +1071,6 @@ public final class RegionValidator {
         if (edge == Edge.LEFT) return (int) Math.floor(boundary.x * image.getWidth());
         if (edge == Edge.RIGHT) return (int) Math.ceil(boundary.x * image.getWidth());
         return -1;
-    }
-
-    /**
-     * 将走廊中找到的墨迹包围盒并入原候选框，并补少量抗锯齿边距。
-     * 扩展后再次检查正文方向的最小安全间隔；间隔不足或越出边缘带时回退原框。
-     */
-    private static PixelRegion paddedExpandedRegion(Edge edge, PixelRegion region, int minX, int minY, int maxX,
-                                                    int maxY, int bodyLimit, BufferedImage image) {
-        // 默认保留模型原框，只有对应的正文方向边才允许被像素证据推动。
-        int left = region.getX();
-        int top = region.getY();
-        int right = region.getX() + region.getWidth();
-        int bottom = region.getY() + region.getHeight();
-        // 各方向额外保留 1~2px，用于覆盖抗锯齿边缘；扩展仍受正文安全间隔约束。
-        if (edge == Edge.TOP) bottom = Math.max(bottom, maxY + 2);
-        if (edge == Edge.BOTTOM) top = Math.min(top, minY - 1);
-        if (edge == Edge.LEFT) right = Math.max(right, maxX + 2);
-        if (edge == Edge.RIGHT) left = Math.min(left, minX - 1);
-        // 如果新框距正文不足 8px，立即回退，不能因为“找到了墨迹”就牺牲正文安全。
-        if ((edge == Edge.TOP && bodyLimit - bottom < MIN_BODY_GAP_PIXELS)
-                || (edge == Edge.BOTTOM && top - bodyLimit < MIN_BODY_GAP_PIXELS)
-                || (edge == Edge.LEFT && bodyLimit - right < MIN_BODY_GAP_PIXELS)
-                || (edge == Edge.RIGHT && left - bodyLimit < MIN_BODY_GAP_PIXELS)) {
-            return region;
-        }
-        // 标记为坐标救援结果；RiskGate 后续会据此强制局部 verify。
-        PixelRegion expanded = new PixelRegion(region.getPageId(), region.getRegionId(), left, top, right - left, bottom - top,
-                region.getX1(), region.getY1(), region.getX2(), region.getY2(), region.getConfidence(), true);
-        // 最后确认扩展框仍位于页面允许的边缘带，否则不采纳 Java 的救援坐标。
-        return remainsInEdgeBand(edge, expanded, image) ? expanded : region;
     }
 
     /** 判断扩展后的像素框是否仍位于允许的页面边缘带内。 */
@@ -1237,7 +1162,7 @@ public final class RegionValidator {
     }
 
     /** 局部 ROI 已确认页码锚点的紧框只影响残字率；掩码外零改动与全图审计仍是硬门禁。 */
-    //todo me:ROI VLM 已经看过局部高清图，并重新测量过目标框；此时如果 8px 安全带仍然含墨，不再让 Java 自己继续“猜坐标”，而应该让硬门禁直接处理。
+    //todo me:ROI VLM 已经看过局部高清图，并重新测量过目标框；此时如果正文安全带仍然含墨，不再让 Java 自己继续“猜坐标”，而应该让硬门禁直接处理。
     private static boolean isLocallyConfirmedTightBox(EraseRegion region) {
         return region != null && "local_vlm_coordinate_refined".equals(region.safety_margin);
     }
@@ -1328,38 +1253,9 @@ public final class RegionValidator {
                 || BackgroundEstimator.isColoredMark(argb);
     }
 
-    private enum Edge {
+    /** 候选框所属的物理页面边缘方向；{@link #NONE} 表示不在任何边缘终止带内。 */
+    public enum Edge {
         TOP, BOTTOM, LEFT, RIGHT, NONE
-    }
-
-    private static final class Bounds {
-        private final int left;
-        private final int top;
-        private final int right;
-        private final int bottom;
-
-        private Bounds(int left, int top, int right, int bottom) {
-            this.left = left;
-            this.top = top;
-            this.right = right;
-            this.bottom = bottom;
-        }
-
-        /** 返回半开像素框宽度。 */
-        private int width() {
-            return right - left;
-        }
-
-        /** 返回半开像素框高度。 */
-        private int height() {
-            return bottom - top;
-        }
-
-        /** 判断该像素框是否在整图范围内且具有正面积。 */
-        private boolean isInside(BufferedImage image) {
-            return left >= 0 && top >= 0 && right <= image.getWidth() && bottom <= image.getHeight()
-                    && left < right && top < bottom;
-        }
     }
 
     /** RegionValidator 的输入适配对象：每个 region 自带其投影范围内的最近正文边界。 */

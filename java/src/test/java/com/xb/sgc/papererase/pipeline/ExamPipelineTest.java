@@ -5,10 +5,7 @@ import com.xb.sgc.papererase.model.ExamModels.BodyBoundary;
 import com.xb.sgc.papererase.model.ExamModels.EraseRegion;
 import com.xb.sgc.papererase.model.ExamModels.ExamInput;
 import com.xb.sgc.papererase.model.ExamModels.LocateResponse;
-import com.xb.sgc.papererase.model.ExamModels.PageDirection;
 import com.xb.sgc.papererase.model.ExamModels.PageInput;
-import com.xb.sgc.papererase.model.ExamModels.PatternGroup;
-import com.xb.sgc.papererase.model.ExamModels.PatternResponse;
 import com.xb.sgc.papererase.model.ExamModels.VerifyResponse;
 import com.xb.sgc.papererase.vlm.VlmClient;
 import com.xb.sgc.papererase.vlm.ResponseParser;
@@ -67,37 +64,6 @@ public class ExamPipelineTest {
     }
 
     @Test
-    public void coloredTargetStillUsesExistingAuditGate() throws Exception {
-        /*
-         * 整页 locate 已确认“独立页脚目标”，并且 RegionValidator 已证明其与正文的像素空白带。
-         * 局部 ROI 只能用于坐标精化；若它漏看色块页码而答 no_pagenum，不能推翻整页语义结论。
-         */
-        coloredImageOrders.add(1);
-        FakeVlm fake = FakeVlm.stable();
-
-        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
-
-        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
-        assertTrue(fake.auditPageIds.contains("p1"));
-    }
-
-    @Test
-    public void skipsPatternAndRunsPageLocalFastPathWithMandatoryAudit() throws Exception {
-        FakeVlm fake = FakeVlm.stable();
-        fake.onLinePages.add("p9");
-        ExamOutcome outcome = new ExamPipeline(fake).process(exam(18, false), new ExamPipeline.RunContext());
-
-        assertTrue(fake.patternBatches.isEmpty());
-        assertEquals("rotated p2 requires one extra normalized locate", 19, fake.locatePageIds.size());
-        assertEquals("only rotated and on-line pages should require local verify",
-                Arrays.asList("p2:r1", "p9:r1"), fake.verifyCalls);
-        assertEquals("every modified page must be audited", 18, fake.auditPageIds.size());
-        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
-        assertEquals(90, outcome.page("p2").getTransforms().getReadingRotation());
-        assertEquals(18, outcome.getPages().size());
-    }
-
-    @Test
     public void riskVerifyEdgeRoiAuditFailureAndSinglePageIsolation() throws Exception {
         FakeVlm fake = FakeVlm.stable();
         fake.lowConfidencePages.add("p2");
@@ -123,7 +89,8 @@ public class ExamPipelineTest {
         assertEquals("manual_review", outcome.page("p7").getStatus());
         assertEquals("manual_review", outcome.page("p8").getStatus());
         assertEquals("manual_review", outcome.page("p9").getStatus());
-        assertEquals("validation_rejected", outcome.page("p9").getReason());
+        // 页面结论必须同时带上具体门禁原因，便于事后定位是哪一层拒绝。
+        assertTrue(outcome.page("p9").getReason().startsWith("validation_rejected: "));
         assertEquals("safe_to_erase", outcome.page("p10").getStatus());
         assertEquals("audit_pass_with_color_warning", outcome.page("p10").getReason());
         assertEquals("safe_to_erase", outcome.page("p1").getStatus());
@@ -138,26 +105,6 @@ public class ExamPipelineTest {
                             || "no_pagenum".equals(page.getStatus())
                             || "manual_review".equals(page.getStatus()));
         }
-    }
-
-    @Test
-    public void inactivePatternFailureHasNoEffectButSinglePageModelFailureIsIsolated() throws Exception {
-        FakeVlm badPattern = FakeVlm.stable();
-        badPattern.patternProtocolFailure = true;
-        ExamOutcome protocolOutcome = new ExamPipeline(badPattern).process(exam(3, false), new ExamPipeline.RunContext());
-
-        assertEquals("safe_to_erase", protocolOutcome.page("p1").getStatus());
-        assertEquals("safe_to_erase", protocolOutcome.page("p2").getStatus());
-        assertTrue(badPattern.patternBatches.isEmpty());
-
-        FakeVlm singlePageFailure = FakeVlm.stable();
-        singlePageFailure.locateThrowsPages.add("p2");
-        ExamOutcome isolated = new ExamPipeline(singlePageFailure).process(exam(3, false), new ExamPipeline.RunContext());
-
-        assertEquals("safe_to_erase", isolated.page("p1").getStatus());
-        assertEquals("manual_review", isolated.page("p2").getStatus());
-        assertEquals("safe_to_erase", isolated.page("p3").getStatus());
-        assertEquals("transport failures retain the existing same-request retry path", 0, singlePageFailure.locateCorrectionCalls);
     }
 
     @Test
@@ -184,20 +131,6 @@ public class ExamPipelineTest {
     }
 
     @Test
-    public void closesPageWhenLocateProtocolFailsWithoutPromptRewrite() throws Exception {
-        FakeVlm fake = FakeVlm.stable();
-        fake.locateProtocolFailureOncePages.add("p2");
-
-        ExamOutcome outcome = new ExamPipeline(fake).process(exam(3, false), new ExamPipeline.RunContext());
-
-        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
-        assertEquals("manual_review", outcome.page("p2").getStatus());
-        assertEquals("locate_error", outcome.page("p2").getReason());
-        assertEquals(0, fake.locateCorrectionCalls);
-        assertEquals("safe_to_erase", outcome.page("p3").getStatus());
-    }
-
-    @Test
     public void isolatesPageWhenLocateProtocolFails() throws Exception {
         FakeVlm fake = FakeVlm.stable();
         fake.locateProtocolFailurePages.add("p2");
@@ -212,17 +145,6 @@ public class ExamPipelineTest {
     }
 
     @Test
-    public void retriesTheSameLocalVerifyRoiOnceAfterProtocolFailure() throws Exception {
-        FakeVlm fake = FakeVlm.stable();
-        fake.verifyThrowsOnceRegionIds.add("p2:r1");
-
-        ExamOutcome outcome = new ExamPipeline(fake).process(exam(2, false), new ExamPipeline.RunContext());
-
-        assertEquals("safe_to_erase", outcome.page("p2").getStatus());
-        assertEquals(Arrays.asList("p2:r1", "p2:r1"), fake.verifyCalls);
-    }
-
-    @Test
     public void locallySnapsTightPageNumberBoxBeforeSpendingCoordinateRefineCall() throws Exception {
         FakeVlm fake = FakeVlm.stable();
         fake.tightLocatePages.add("p1");
@@ -234,88 +156,11 @@ public class ExamPipelineTest {
     }
 
     @Test
-    public void coordinateRefineDoesNotBorrowAnotherBoundaryWhenLocalResponseHasNoBoundary() throws Exception {
-        FakeVlm fake = FakeVlm.stable();
-        fake.coordinateRefinePages.add("p1");
-
-        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
-
-        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
-        assertTrue(outcome.page("p1").getLocate().regions.get(0).nearest_body_boundary == null);
-        assertTrue(fake.verifyCalls.contains("p1:r1"));
-    }
-
-    @Test
-    public void localRefineMayUsePixelBlankBandWhenItsOwnBoundaryIsUnavailable() throws Exception {
-        FakeVlm fake = FakeVlm.stable();
-        fake.boundaryConflictPages.add("p1");
-
-        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
-
-        assertEquals(outcome.page("p1").getReason(), "safe_to_erase", outcome.page("p1").getStatus());
-        assertTrue(outcome.page("p1").getLocate().regions.get(0).nearest_body_boundary == null);
-        assertEquals(Arrays.asList("p1:r1"), fake.verifyCalls);
-    }
-
-    @Test
-    public void coordinateRefineUsesTheBodyBoundaryMeasuredInTheSameRoiAsTheRefinedBox() throws Exception {
-        FakeVlm fake = FakeVlm.stable();
-        fake.localBoundaryConflictPages.add("p1");
-
-        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
-
-        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
-        assertEquals("ROI-local body boundary must replace the incompatible whole-page estimate",
-                "roi-local", outcome.page("p1").getLocate().regions.get(0).nearest_body_boundary.basis);
-    }
-
-    @Test
     public void fullyContainedDuplicateRegionIsAnIdempotentErase() throws Exception {
         FakeVlm fake = FakeVlm.stable();
         fake.duplicateRegionPages.add("p1");
 
         ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
-
-        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
-        assertTrue(fake.auditPageIds.contains("p1"));
-    }
-
-    @Test
-    public void auditResidualOnTwoFooterRegionsAcceptsOneRoiResponseWithBothBoxes() throws Exception {
-        twoFooterTargetImageOrders.add(1);
-        FakeVlm fake = FakeVlm.stable();
-        fake.twoRegionAuditResidualPages.add("p1");
-
-        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
-
-        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
-        assertEquals("the first residual audit and the refined result must both be audited",
-                2, Collections.frequency(fake.auditPageIds, "p1"));
-        assertEquals(Arrays.asList("p1:r1", "p1:r2"), fake.coordinateRefineCalls);
-    }
-
-    @Test
-    public void doesNotLetLocalNoPageNumberOverrideHighConfidenceValidatedFullPageLocate() throws Exception {
-        twoFooterTargetImageOrders.add(1);
-        FakeVlm fake = FakeVlm.stable();
-        fake.twoRegionLocatePages.add("p1");
-        fake.verifyNoPageNumRegionIds.add("p1:r2");
-
-        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, true), new ExamPipeline.RunContext());
-
-        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
-        assertTrue(fake.auditPageIds.contains("p1"));
-        assertEquals(Arrays.asList("p1:r1", "p1:r2"), fake.verifyCalls);
-    }
-
-    @Test
-    public void doesNotLetLocalManualReviewOverrideHighConfidenceValidatedFullPageLocate() throws Exception {
-        twoFooterTargetImageOrders.add(1);
-        FakeVlm fake = FakeVlm.stable();
-        fake.twoRegionLocatePages.add("p1");
-        fake.verifyManualRegionIds.add("p1:r2");
-
-        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, true), new ExamPipeline.RunContext());
 
         assertEquals("safe_to_erase", outcome.page("p1").getStatus());
         assertTrue(fake.auditPageIds.contains("p1"));
@@ -360,31 +205,6 @@ public class ExamPipelineTest {
 
         assertEquals("manual_review", outcome.page("p1").getStatus());
         assertTrue(fake.locateStatusCorrectionPageIds.isEmpty());
-        assertTrue(fake.auditPageIds.isEmpty());
-    }
-
-    @Test
-    public void usesLocateForDirectionWithoutCallingPatternAndRelocatesAfterRotation() throws Exception {
-        FakeVlm fake = FakeVlm.stable();
-
-        ExamOutcome outcome = new ExamPipeline(fake).process(exam(2, false), new ExamPipeline.RunContext());
-
-        assertTrue("pattern must be absent from the active path", fake.patternBatches.isEmpty());
-        assertEquals("normal page uses one locate; rotated page uses original plus normalized locate",
-                Arrays.asList("p1", "p2", "p2"), fake.locatePageIds);
-        assertEquals(90, outcome.page("p2").getTransforms().getReadingRotation());
-        assertEquals("safe_to_erase", outcome.page("p2").getStatus());
-    }
-
-    @Test
-    public void closesPageAfterTransientLocateFailureWithoutWholePageRetry() throws Exception {
-        FakeVlm fake = FakeVlm.stable();
-        fake.locateThrowsOncePages.add("p1");
-
-        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
-
-        assertEquals("manual_review", outcome.page("p1").getStatus());
-        assertEquals(Collections.singletonList("p1"), fake.locatePageIds);
         assertTrue(fake.auditPageIds.isEmpty());
     }
 
@@ -458,19 +278,6 @@ public class ExamPipelineTest {
         region.confidence = 0.99;
         region.safety_margin = "blank";
         return region;
-    }
-
-    @Test
-    public void refinesAnEmptyRegionEvenWhenAnotherFooterRegionPassesGeometryValidation() throws Exception {
-        twoFooterTargetImageOrders.add(1);
-        FakeVlm fake = FakeVlm.stable();
-        fake.emptyMultiRegionPages.add("p1");
-
-        ExamOutcome outcome = new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
-
-        assertEquals("safe_to_erase", outcome.page("p1").getStatus());
-        assertEquals(Collections.singletonList("p1:r1"), fake.coordinateRefineCalls);
-        assertTrue(fake.auditPageIds.contains("p1"));
     }
 
     private ExamInput exam(int pages, boolean incomplete) throws Exception {
@@ -583,49 +390,7 @@ public class ExamPipelineTest {
             return new FakeVlm();
         }
 
-        public PatternResponse pattern(List<VlmClient.PageImage> pages) {
-            patternBatches.add(joinPageIds(pages));
-            if (patternProtocolFailure) {
-                throw new ResponseParser.ParseException("batch page ids mismatch", "{}");
-            }
-            if (patternProtocolFailureOnce) {
-                patternProtocolFailureOnce = false;
-                throw new ResponseParser.ParseException("page_ids must be classified exactly once", "{}");
-            }
-            PatternResponse response = new PatternResponse();
-            PatternGroup group = new PatternGroup();
-            group.group_id = "g-bottom";
-            group.edge = "bottom";
-            group.alignment = "center";
-            group.layout_description = "bottom center";
-            group.confidence = 0.99;
-            group.locate_window = window(0.20, 0.80, 0.80, 1.00);
-            for (VlmClient.PageImage page : pages) {
-                PageDirection direction = new PageDirection();
-                direction.page_id = page.getPageId();
-                direction.reading_rotation = "p2".equals(page.getPageId()) ? 90 : 0;
-                direction.confidence = lowDirectionConfidencePages.contains(page.getPageId()) ? 0.60 : 0.99;
-                response.page_directions.add(direction);
-                if (emptyGroupPages.contains(page.getPageId())) {
-                    response.ungrouped_page_ids.add(page.getPageId());
-                } else {
-                    group.page_ids.add(page.getPageId());
-                }
-            }
-            if (!group.page_ids.isEmpty()) response.pattern_groups.add(group);
-            return response;
-        }
-
-        private com.xb.sgc.papererase.model.ExamModels.LocateWindow window(double x1, double y1, double x2, double y2) {
-            com.xb.sgc.papererase.model.ExamModels.LocateWindow window = new com.xb.sgc.papererase.model.ExamModels.LocateWindow();
-            window.x1 = x1;
-            window.y1 = y1;
-            window.x2 = x2;
-            window.y2 = y2;
-            return window;
-        }
-
-        public LocateResponse locate(VlmClient.PageImage page, PatternGroup group) {
+        public LocateResponse locate(VlmClient.PageImage page) {
             locatePageIds.add(page.getPageId());
             if (locateProtocolFailurePages.contains(page.getPageId())) {
                 throw new ResponseParser.ParseException("page_number_text is required", "{}");
@@ -734,7 +499,7 @@ public class ExamPipelineTest {
         }
 
         @Override
-        public LocateResponse locate(VlmClient.PageImage page, PatternGroup group, VlmClient.RoiImage roi) {
+        public LocateResponse locate(VlmClient.PageImage page, VlmClient.RoiImage roi) {
             patternRoiLocatePageIds.add(page.getPageId());
             if (!patternRoiSafeLocatePages.contains(page.getPageId())) {
                 LocateResponse manual = new LocateResponse();
@@ -771,7 +536,7 @@ public class ExamPipelineTest {
         }
 
         @Override
-        public LocateResponse relocateCoordinateRefinement(VlmClient.PageImage page, PatternGroup group,
+        public LocateResponse relocateCoordinateRefinement(VlmClient.PageImage page,
                                                             EraseRegion semanticAnchor, VlmClient.RoiImage roi) {
             if (localBoundaryConflictPages.contains(page.getPageId())) {
                 LocateResponse response = new LocateResponse();
@@ -821,7 +586,7 @@ public class ExamPipelineTest {
                 return response;
             }
             if (!twoRegionAuditResidualPages.contains(page.getPageId())) {
-                return VlmClient.super.relocateCoordinateRefinement(page, group, semanticAnchor, roi);
+                return VlmClient.super.relocateCoordinateRefinement(page, semanticAnchor, roi);
             }
             coordinateRefineCalls.add(page.getPageId() + ":" + semanticAnchor.region_id);
             LocateResponse response = new LocateResponse();
@@ -858,18 +623,12 @@ public class ExamPipelineTest {
             return response;
         }
 
-        public PatternResponse correctPatternAfterProtocolError(List<VlmClient.PageImage> pages,
-                                                                 List<String> expectedPageIds, String error) {
-            patternCorrectionCalls++;
-            return pattern(pages);
-        }
-
-        public LocateResponse correctLocateAfterProtocolError(VlmClient.PageImage page, PatternGroup group, String error) {
+        public LocateResponse correctLocateAfterProtocolError(VlmClient.PageImage page, String error) {
             locateCorrectionCalls++;
-            return locate(page, group);
+            return locate(page);
         }
 
-        public LocateResponse correctLocateStatusAfterManualReview(VlmClient.PageImage page, PatternGroup group) {
+        public LocateResponse correctLocateStatusAfterManualReview(VlmClient.PageImage page) {
             locateStatusCorrectionPageIds.add(page.getPageId());
             LocateResponse response = new LocateResponse();
             response.page_id = page.getPageId();

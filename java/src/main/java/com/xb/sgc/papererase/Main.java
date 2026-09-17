@@ -11,6 +11,7 @@ import com.xb.sgc.papererase.output.RunWriter;
 import com.xb.sgc.papererase.output.WordOutputConfig;
 import com.xb.sgc.papererase.pipeline.ExamOutcome;
 import com.xb.sgc.papererase.pipeline.ExamPipeline;
+import com.xb.sgc.papererase.safety.RegionValidator;
 import com.xb.sgc.papererase.vlm.VlmClient;
 import com.xb.sgc.papererase.vlm.VlmConfig;
 import com.xb.sgc.papererase.vlm.VlmUsageFileSink;
@@ -65,6 +66,7 @@ public final class Main {
             return;
         }
         VlmConfig config = VlmConfig.load(skillRoot.resolve("config/vlm-providers.json"));
+        RegionValidator.configureMinBodyGapPixels(config.getMinBodyGapPixels());
         // 与旧版一致：扫描数据前即冻结本次 run 使用的提示词。usage 路径尚未创建时 sink 为 no-op。
         VlmUsageFileSink usageSink = new VlmUsageFileSink(null, pricingConfig);
         VlmClient vlm = VlmClient.create(config, skillRoot, usageSink);
@@ -131,7 +133,7 @@ public final class Main {
 
     /**
      * 断点续跑：扫描 test-root 全量试卷，跳过本 run 目录已完整落盘的试卷（每页原图/擦除图/regions +
-     * consensus + Word 齐备），只处理剩余试卷并写入同一 run 目录，最后从产物重建完整报告。
+     * Word 齐备），只处理剩余试卷并写入同一 run 目录，最后从产物重建完整报告。
      * 被系统终止的 run（run.json=completed 前）可通过该命令继续，不重复消耗已完成卷的模型额度。
      */
     private static void resumeRun(Path testRoot, Path runDir, QrcodeOptions qrcode) throws Exception {
@@ -140,6 +142,7 @@ public final class Main {
         }
         Path skillRoot = findSkillRoot();
         VlmConfig config = VlmConfig.load(skillRoot.resolve("config/vlm-providers.json"));
+        RegionValidator.configureMinBodyGapPixels(config.getMinBodyGapPixels());
         VlmClient vlm = VlmClient.create(config, skillRoot,
                 new VlmUsageFileSink(runDir.resolve("_vlm_usage.ndjson"), skillRoot.resolve("config/model-pricing.json")));
         ScanResult scan = new ExamScanner().scanWithRejections(testRoot);
@@ -178,10 +181,10 @@ public final class Main {
         System.out.println(runDir.resolve("测试报告").resolve("测试报告.md").toAbsolutePath().toString());
     }
 
-    /** 判定一份试卷是否已在本 run 目录完整落盘（每页原图/擦除图/regions + consensus + Word 均存在）。 */
+    /** 判定一份试卷是否已在本 run 目录完整落盘（每页原图/擦除图/regions + Word 均存在）。 */
     private static boolean examFullyWritten(ExamInput exam, Path runDir) {
         Path erasedDir = runDir.resolve("erased").resolve(exam.getSubject()).resolve(exam.getExamId());
-        Path consensusDir = runDir.resolve("consensus").resolve(exam.getSubject()).resolve(exam.getExamId());
+        
         Path wordDir = runDir.resolve("word_output").resolve(exam.getSubject()).resolve(exam.getExamId());
         for (PageInput page : exam.getPages()) {
             String stem = exam.getExamId() + "_" + page.getPageOrder();
@@ -190,9 +193,6 @@ public final class Main {
                     || !Files.isRegularFile(erasedDir.resolve(stem + "_regions.json"))) {
                 return false;
             }
-        }
-        if (!Files.isRegularFile(consensusDir.resolve("exam_consensus.json"))) {
-            return false;
         }
         try (java.nio.file.DirectoryStream<Path> stream = Files.newDirectoryStream(wordDir, "*.docx")) {
             return stream.iterator().hasNext();

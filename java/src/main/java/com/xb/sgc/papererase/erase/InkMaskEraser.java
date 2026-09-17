@@ -1,6 +1,5 @@
 package com.xb.sgc.papererase.erase;
 
-import com.xb.sgc.papererase.safety.ColorSeamGate;
 import com.xb.sgc.papererase.safety.PixelDiffGate;
 import com.xb.sgc.papererase.safety.RegionValidator;
 
@@ -29,8 +28,7 @@ public final class InkMaskEraser {
      * 在 RegionValidator 已批准的像素框内执行擦除：先提取目标墨迹掩码，再做形状/颜色风险检查，
      * 然后用外环估计背景重建整框。整框重建是为了清理灰色抗锯齿，但写入范围仍严格等于
      * approved box；彩色像素默认视为非目标，只有局部视觉复核确认候选框仅含页码时才允许
-     * 传入 coloredTargetVerified=true；最后由 PixelDiffGate 证明框外没有任何变化，
-     * ColorSeamGate 只负责色差告警。
+     * 传入 coloredTargetVerified=true；最后由 PixelDiffGate 证明框外没有任何变化。
      */
     public static EraseOutcome erase(BufferedImage source, RegionValidator.PixelRegion region, boolean coloredTargetVerified) {
         // 5.2.1 输入与批准框：只接受上游已通过正文门禁的原图坐标矩形。
@@ -97,13 +95,9 @@ public final class InkMaskEraser {
         if (!diff.isPassed()) {
             return EraseOutcome.manual(copy(source), approvedMask, diff.getReason());
         }
-        // 8.1 色差收口：背景色只产生告警，不扩大掩码，也不改变正文安全门禁结论。
-        ColorSeamGate.GateResult seam = ColorSeamGate.check(source, candidate, approvedMask);
-        if (!seam.isPassed()) {
-            return new EraseOutcome(Status.SAFE_TO_ERASE, colorReason(whiteFallback, seam.getReason()), candidate, approvedMask);
-        }
-        return new EraseOutcome(Status.SAFE_TO_ERASE,
-                whiteFallback ? "white_fallback; color_warning" : "erased", candidate, approvedMask);
+        // 8.1 收口：背景重建成功即按外环颜色回填，失败时框内退化为纯白；两者都已在
+        // PixelDiffGate 证明过写入范围，背景色差不构成新的安全结论。
+        return new EraseOutcome(Status.SAFE_TO_ERASE, whiteFallback ? "white_fallback" : "erased", candidate, approvedMask);
     }
 
     private static String invalidRegionReason(BufferedImage source, RegionValidator.PixelRegion region) {
@@ -213,13 +207,6 @@ public final class InkMaskEraser {
     private static int whiteAt(BufferedImage source, int x, int y) {
         int alpha = (source.getRGB(x, y) >>> 24) & 0xFF;
         return ((alpha & 0xFF) << 24) | 0x00FFFFFF;
-    }
-
-    private static String colorReason(boolean whiteFallback, String seamReason) {
-        if (whiteFallback) {
-            return "white_fallback; color_warning: " + seamReason;
-        }
-        return "color_warning: " + seamReason;
     }
 
     private static boolean hasApprovedPixel(boolean[][] mask, RegionValidator.PixelRegion region) {

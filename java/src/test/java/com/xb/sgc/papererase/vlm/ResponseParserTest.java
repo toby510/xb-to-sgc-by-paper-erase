@@ -2,7 +2,6 @@ package com.xb.sgc.papererase.vlm;
 
 import com.xb.sgc.papererase.model.ExamModels.AuditResponse;
 import com.xb.sgc.papererase.model.ExamModels.LocateResponse;
-import com.xb.sgc.papererase.model.ExamModels.PatternResponse;
 import com.xb.sgc.papererase.model.ExamModels.VerifyResponse;
 import org.junit.Test;
 
@@ -14,46 +13,6 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class ResponseParserTest {
-    @Test
-    public void parsesStrictPatternOnlyWhenBatchPageIdsMatchExactly() {
-        String json = "{"
-                + "\"page_directions\":["
-                + "{\"page_id\":\"p1\",\"reading_rotation\":0,\"confidence\":0.99},"
-                + "{\"page_id\":\"p2\",\"reading_rotation\":90,\"confidence\":0.98}],"
-                + "\"pattern_groups\":[{\"group_id\":\"g1\",\"edge\":\"bottom\",\"alignment\":\"center\","
-                + "\"layout_description\":\"footer\",\"page_ids\":[\"p1\",\"p2\"],\"confidence\":0.97,\"locate_window\":{\"x1\":0.2,\"y1\":0.8,\"x2\":0.8,\"y2\":1.0}}],"
-                + "\"heterogeneous_page_ids\":[],\"no_pagenum_page_ids\":[],\"ungrouped_page_ids\":[]}";
-
-        PatternResponse parsed = ResponseParser.parsePattern(json, Arrays.asList("p1", "p2"));
-
-        assertEquals(2, parsed.page_directions.size());
-        assertEquals("p2", parsed.page_directions.get(1).page_id);
-        assertEquals("bottom", parsed.pattern_groups.get(0).edge);
-    }
-
-    @Test
-    public void rejectsMarkdownGarbageUnknownFieldsBadEnumsDuplicateAndMissingPatternPages() {
-        assertBadPattern("```json\n{}\n```", "missing field");
-        assertBadPattern("{\"page_directions\":[],\"pattern_groups\":[],\"heterogeneous_page_ids\":[],"
-                + "\"no_pagenum_page_ids\":[],\"ungrouped_page_ids\":[],\"extra\":true}", "unknown");
-        assertBadPattern("{\"page_directions\":[{\"page_id\":\"p1\",\"reading_rotation\":45,\"confidence\":0.9}],"
-                + "\"pattern_groups\":[],\"heterogeneous_page_ids\":[],\"no_pagenum_page_ids\":[],"
-                + "\"ungrouped_page_ids\":[]}", "rotation");
-        assertBadPattern("{\"page_directions\":[{\"page_id\":\"p1\",\"reading_rotation\":0,\"confidence\":0.9},"
-                + "{\"page_id\":\"p1\",\"reading_rotation\":0,\"confidence\":0.9}],\"pattern_groups\":[],"
-                + "\"heterogeneous_page_ids\":[],\"no_pagenum_page_ids\":[],\"ungrouped_page_ids\":[]}", "duplicate");
-        assertBadPattern("{\"page_directions\":[{\"page_id\":\"p1\",\"reading_rotation\":0,\"confidence\":0.9}],"
-                + "\"pattern_groups\":[],\"heterogeneous_page_ids\":[],\"no_pagenum_page_ids\":[],"
-                + "\"ungrouped_page_ids\":[]}", "batch page ids");
-    }
-
-    @Test
-    public void rejectsPatternWhenPageIdsAreNotClassifiedExactlyOnce() {
-        assertPatternRejected(patternJson("[\"p1\",\"p2\"]", "[\"p2\"]", "[]", "[]"));
-        assertPatternRejected(patternJson("[\"p1\",\"p3\"]", "[]", "[]", "[]"));
-        assertPatternRejected(patternJson("[\"p1\"]", "[]", "[]", "[]"));
-        assertPatternRejected(patternJsonTwoGroups("[\"p1\"]", "[\"p1\"]"));
-    }
 
     @Test
     public void parsesLocateVerifyAndAuditWithStrictCoordinatesAndDecisions() {
@@ -216,47 +175,6 @@ public class ResponseParserTest {
         assertBadAudit("{\"page_id\":\"p1\",\"decision\":\"pass\",\"original_target_is_non_body\":false,"
                 + "\"body_unchanged\":true,\"target_removed\":true,\"background_acceptable\":true,\"evidence\":\"x\"}",
                 "decision must exactly match");
-    }
-
-    private void assertBadPattern(String json, String messagePart) {
-        try {
-            ResponseParser.parsePattern(json, Arrays.asList("p1", "p2"));
-            throw new AssertionError("pattern should be rejected");
-        } catch (ResponseParser.ParseException expected) {
-            assertTrue(expected.getMessage(), expected.getMessage().contains(messagePart));
-        }
-    }
-
-    private void assertPatternRejected(String json) {
-        try {
-            ResponseParser.parsePattern(json, Arrays.asList("p1", "p2"));
-            throw new AssertionError("pattern should be rejected");
-        } catch (ResponseParser.ParseException expected) {
-            // The safety behavior is the contract; parser wording is deliberately not asserted.
-        }
-    }
-
-    private String patternJson(String groupPageIds, String heterogeneous, String noPagenum, String ungrouped) {
-        return "{\"page_directions\":["
-                + "{\"page_id\":\"p1\",\"reading_rotation\":0,\"confidence\":0.9},"
-                + "{\"page_id\":\"p2\",\"reading_rotation\":0,\"confidence\":0.9}],"
-                + "\"pattern_groups\":[{\"group_id\":\"g1\",\"edge\":\"bottom\",\"alignment\":\"center\","
-                + "\"layout_description\":\"footer\",\"page_ids\":" + groupPageIds + ",\"confidence\":0.9,\"locate_window\":{\"x1\":0.2,\"y1\":0.8,\"x2\":0.8,\"y2\":1.0}}],"
-                + "\"heterogeneous_page_ids\":" + heterogeneous + ","
-                + "\"no_pagenum_page_ids\":" + noPagenum + ","
-                + "\"ungrouped_page_ids\":" + ungrouped + "}";
-    }
-
-    private String patternJsonTwoGroups(String firstGroupPageIds, String secondGroupPageIds) {
-        return "{\"page_directions\":["
-                + "{\"page_id\":\"p1\",\"reading_rotation\":0,\"confidence\":0.9},"
-                + "{\"page_id\":\"p2\",\"reading_rotation\":0,\"confidence\":0.9}],"
-                + "\"pattern_groups\":["
-                + "{\"group_id\":\"g1\",\"edge\":\"bottom\",\"alignment\":\"center\","
-                + "\"layout_description\":\"footer\",\"page_ids\":" + firstGroupPageIds + ",\"confidence\":0.9,\"locate_window\":{\"x1\":0.2,\"y1\":0.8,\"x2\":0.8,\"y2\":1.0}},"
-                + "{\"group_id\":\"g2\",\"edge\":\"top\",\"alignment\":\"center\","
-                + "\"layout_description\":\"header\",\"page_ids\":" + secondGroupPageIds + ",\"confidence\":0.9,\"locate_window\":{\"x1\":0.2,\"y1\":0.0,\"x2\":0.8,\"y2\":0.2}}],"
-                + "\"heterogeneous_page_ids\":[],\"no_pagenum_page_ids\":[],\"ungrouped_page_ids\":[\"p2\"]}";
     }
 
     private void assertBadLocate(String json, String messagePart) {

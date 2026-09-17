@@ -13,8 +13,6 @@ import java.util.Base64;
 import javax.imageio.ImageIO;
 
 import com.xb.sgc.papererase.model.ExamModels.EraseRegion;
-import com.xb.sgc.papererase.model.ExamModels.LocateWindow;
-import com.xb.sgc.papererase.model.ExamModels.PatternGroup;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -42,27 +40,14 @@ public class VlmRequestBuilderTest {
 
         assertTrue(instruction.contains("第2页(共8页)"));
         assertTrue(instruction.contains("【英语(八)】"));
-        assertTrue(instruction.contains("Search the entire ROI"));
+        // 指令文本与提示词正文统一为中文，协议字段名保持原样。
+        assertTrue(instruction.contains("请在完整 ROI 内重新查找"));
         assertTrue("局部精修必须重新测量当前 ROI 可见的正文边界，不能沿用整页幻觉边界",
-                instruction.contains("ROI-relative nearest_body_boundary"));
+                instruction.contains("nearest_body_boundary"));
         assertFalse(instruction.contains("Do not return or infer a body boundary"));
 
         String relocation = VlmClient.relocationInstruction(region);
-        assertTrue(relocation.contains("nearest_body_boundary inside each matched region"));
-    }
-
-    @Test
-    public void protocolCorrectionInstructionIsCarriedInOpenAiRequestBody() throws Exception {
-        String patternCorrection = VlmClient.patternProtocolCorrectionInstruction(Arrays.asList("exam:1", "exam:2"),
-                "page_ids must be classified exactly once");
-        String body = VlmClient.OpenAiCompatible.buildRequestBody("qwen", "prompt", patternCorrection,
-                Arrays.asList(new VlmClient.PageImage("exam:1", image(Color.WHITE)), new VlmClient.PageImage("exam:2", image(Color.WHITE))),
-                java.util.Collections.<VlmClient.RoiImage>emptyList());
-        String instruction = new ObjectMapper().readTree(body).path("messages").path(0).path("content").path(0).path("text").asText();
-
-        assertTrue(instruction.contains("every input page_id exactly once"));
-        assertTrue(instruction.contains("exam:1"));
-        assertTrue(instruction.contains("exam:2"));
+        assertTrue(relocation.contains("每个匹配到的 region 都要给出它自己的 nearest_body_boundary"));
     }
 
     @Test

@@ -59,21 +59,6 @@ public class ArkResponsesRequestBuilderTest {
     }
 
     @Test
-    public void arkRequestCarriesProtocolCorrectionSemantics() throws Exception {
-        Class<?> arkClient = Class.forName("com.xb.sgc.papererase.vlm.VlmClient$ArkResponses");
-        Method builder = arkClient.getMethod("buildRequestBody", String.class, String.class, String.class,
-                java.util.List.class, java.util.List.class);
-        String instruction = VlmClient.patternProtocolCorrectionInstruction(Arrays.asList("p1", "p2"), "classification failed");
-        String body = (String) builder.invoke(null, "ep-ark-vision", "prompt", instruction,
-                Collections.singletonList(new VlmClient.PageImage("p2", image())), Collections.<VlmClient.RoiImage>emptyList());
-        String text = new ObjectMapper().readTree(body).path("input").path(0).path("content").path(0).path("text").asText();
-
-        assertTrue(text.contains("exactly once"));
-        assertTrue(text.contains("p1"));
-        assertTrue(text.contains("p2"));
-    }
-
-    @Test
     public void arkRequestCarriesAllAuditTargetManifestEntries() throws Exception {
         EraseRegion first = region("r1", "371", "化学'卷");
         EraseRegion second = region("r2", "第5页", "Booklet B");

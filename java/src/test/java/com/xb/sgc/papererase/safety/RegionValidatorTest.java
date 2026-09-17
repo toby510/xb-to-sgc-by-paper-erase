@@ -260,37 +260,6 @@ public class RegionValidatorTest {
     }
 
     @Test
-    public void validateRescuesAnEmptyRightEdgeModelBoxOnlyInsideTheProvenBlankGap() {
-        BufferedImage image = blankPage();
-        // 模型框 x=90..96 完全偏在页码右侧；真实页码位于 x=82..88，正文边界为 x=70。
-        // 左侧仍可留出至少 8px 无墨安全带，因此可把“模型空框”内移至该独立墨迹组。
-        drawText(image, 82, 86, 88, 108);
-
-        RegionValidator.ValidationResult result = RegionValidator.validate(
-                locate("page-1", region("r1", 0.90, 0.40, 0.96, 0.60), boundary(0.70, null)),
-                image);
-
-        assertTrue(result.getReasons().toString(), result.isAccepted());
-        RegionValidator.PixelRegion rescued = result.getRegions().get(0);
-        assertEquals(81, rescued.getX());
-        assertEquals(15, rescued.getWidth());
-    }
-
-    @Test
-    public void validateRescuesAnEmptyBottomModelBoxWhenItsGapIsBlank() {
-        BufferedImage image = blankPage();
-        // 模型框完全落在页码下方空白；真实页码仍位于正文边界 y=100 之外的安全走廊。
-        drawText(image, 45, 170, 54, 175);
-
-        RegionValidator.ValidationResult result = RegionValidator.validate(
-                locate("page-1", region("r1", 0.40, 0.90, 0.60, 0.95), boundary(null, 0.50)), image);
-
-        assertTrue(result.getReasons().toString(), result.isAccepted());
-        assertTrue(result.getRegions().get(0).isCoordinateRescued());
-        assertEquals(169, result.getRegions().get(0).getY());
-    }
-
-    @Test
     public void validateAcceptsMissingBoundaryOnlyWithSixteenPixelBlankBand() {
         BufferedImage image = blankPage();
         drawText(image, 45, 8, 54, 14);

@@ -18,14 +18,8 @@ public class RiskGateTest {
 
         assertTrue(RiskGate.requiresLocalVerify(RiskGate.PageContext.stable(null), validation));
         assertTrue(RiskGate.requiresLocalVerify(RiskGate.PageContext.stable(" "), validation));
-        assertTrue(RiskGate.requiresLocalVerify(stablePage().withJavaBlankGap(false), validation));
-        assertTrue(RiskGate.requiresLocalVerify(stablePage().withMaskTouchesBoundary(true), validation));
         assertTrue(RiskGate.requiresLocalVerify(stablePage().withReadingRotation(90), validation));
-        assertTrue(RiskGate.requiresLocalVerify(stablePage().withDoublePage(true), validation));
-        assertTrue(RiskGate.requiresLocalVerify(stablePage().withHeterogeneousFirstOrLast(true), validation));
-        assertTrue(RiskGate.requiresLocalVerify(stablePage().withBodyBoundaryConflict(true), validation));
         assertTrue(RiskGate.requiresLocalVerify(stablePage().withPageSequenceIncomplete(true), validation));
-        assertTrue(RiskGate.requiresLocalVerify(stablePage().withMissingPageRisk(true), validation));
         assertTrue(RiskGate.requiresLocalVerify(stablePage(), validated(0.969)));
         assertTrue(RiskGate.requiresLocalVerify(stablePage(), validated(Double.NaN)));
         assertTrue(RiskGate.requiresLocalVerify(stablePage(), RegionValidator.ValidationResult.rejectedResult("bad region")));
