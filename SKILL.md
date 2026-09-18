@@ -90,6 +90,25 @@ description: 当用户要按“整份试卷”而不是单张图片去除页码�
 - 已有 run 目录只需要重新生成报告时，使用 `Main report <run-dir>` 或 `scripts/run.sh report <run-dir>`；该模式只读取现有产物，不重新调用 VLM。
 - 合成 Word 的二维码独立配置在 `config/word-template.json` 的 `qrcode`：`enabled` 为默认开关、`width_cm` 为等比例横幅宽度（4.0–5.6，默认 4.8）、`right_inset_cm` 为固定右边距（默认 1.5）、`short_link` 为二维码内容、`text_line_1`/`text_line_2` 为横幅文案。`run`、`gate`、`resume` 可用 `--with-qrcode true|false`、`--qrcode-width-cm 4.0-5.6` 临时覆盖开关和宽度；二维码固定页面顶部和右边距，不参与试卷图片的缩放、定位或分页。
 
+## 运行期进度播报
+
+数据集全量运行（`run` 模式）期间，每 **2 分钟**播报一次进度，用 Markdown 表格，固定五项：
+
+1. 图片进度 = 已处理图片 / 总图片数（百分比）
+2. 试卷进度 = 已处理试卷数 / 总试卷数（百分比）
+3. 准确率 =（有页码成功擦除图片数 + 无页码图片数）/ 已处理图片数
+4. 人工审核图片数
+5. 转人工 `manual_review` 原因分布
+
+```bash
+python3 scripts/progress_report.py <run目录 或 runs目录> <总图片数> <总试卷数>
+```
+
+- 脚本只读 `_progress.ndjson` 与 `run.json`，不调用 VLM，运行中随时可执行；也可以直接传 `runs` 目录，自动取最新一次 run。
+- 表格口径与 `测试报告` 一致；第 5 项按 `reason` 原样分组、数量倒序，便于直接看失败类型分布。
+- `run.json` 出现 `completed_at` 时表头显示"运行已结束"，此时播报最终结果并停止后续播报。
+- 需要既有脚本消费时加 `--plain`，输出单行 tab 分隔格式。
+
 ## 测试与交付
 
 当前阶段只运行用户指定的 bad 图所对应的完整试卷门禁；得到用户确认前，不自动扩展到 100 份/400 份全量集。
