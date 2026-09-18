@@ -69,8 +69,8 @@ final class RunMetrics {
             if ("locate".equals(role) && call.path("roi_region_ids").isArray()
                     && call.path("roi_region_ids").size() > 0) {
                 stageKey = "locate-coordinate-refine";
-            } else if ("verify".equals(role)) {
-                stageKey = "verify-ROI";
+            } else if ("relocate".equals(role) || "verify".equals(role)) {
+                stageKey = "relocate-ROI";
             }
             StageMetric stage = snapshot.stageMetrics.get(stageKey);
             if (stage == null) {
@@ -260,7 +260,7 @@ final class RunMetrics {
             for (PageMetric page : pages.values()) {
                 List<JsonNode> events = eventsByPage.get(page.pageId);
                 int locateCalls = 0;
-                int verifyCalls = 0;
+                int relocateCalls = 0;
                 int auditCalls = 0;
                 boolean normalizedLocate = false;
                 if (events != null) {
@@ -269,15 +269,17 @@ final class RunMetrics {
                         if ("locate".equals(stage)) {
                             if (!"started".equals(event.path("status").asText())) locateCalls++;
                             if ("normalized".equals(event.path("reason").asText())) normalizedLocate = true;
-                        } else if ("verify".equals(stage) && !"started".equals(event.path("status").asText())) {
-                            verifyCalls++;
+                        } else if (("relocate".equals(stage) || "verify".equals(stage))
+                                && !"started".equals(event.path("status").asText())) {
+                            relocateCalls++;
                         } else if ("audit".equals(stage) && !"started".equals(event.path("status").asText())) {
                             auditCalls++;
                         }
                     }
                 }
                 locateCalls = page.roleCalls.containsKey("locate") ? page.roleCalls.get("locate") : locateCalls;
-                verifyCalls = page.roleCalls.containsKey("verify") ? page.roleCalls.get("verify") : verifyCalls;
+                relocateCalls = page.roleCalls.containsKey("relocate") ? page.roleCalls.get("relocate")
+                        : (page.roleCalls.containsKey("verify") ? page.roleCalls.get("verify") : relocateCalls);
                 auditCalls = page.roleCalls.containsKey("audit") ? page.roleCalls.get("audit") : auditCalls;
                 if (normalizedLocate) increment(flowTriggers, "locate-旋转归一化后");
                 if (locateCalls > 1 && !normalizedLocate) {
@@ -285,9 +287,9 @@ final class RunMetrics {
                     increment(flowOutcomes, page.isPassed() ? "locate重试后成功" : "locate重试后失败");
                 }
                 if (page.roleCalls.containsKey("locate-coordinate-refine")) increment(flowTriggers, "locate坐标精修");
-                if (verifyCalls > 0) {
-                    increment(flowTriggers, "ROI verify");
-                    increment(flowOutcomes, page.isPassed() ? "ROI verify后成功" : "ROI verify后失败");
+                if (relocateCalls > 0) {
+                    increment(flowTriggers, "ROI relocate");
+                    increment(flowOutcomes, page.isPassed() ? "ROI relocate后成功" : "ROI relocate后失败");
                 }
                 if (auditCalls > 1) {
                     increment(flowTriggers, "audit重试");
@@ -296,7 +298,7 @@ final class RunMetrics {
                 String path;
                 if (auditCalls > 1) path = page.isPassed() ? "audit重试后成功" : "audit重试后失败";
                 else if (auditCalls == 1) path = page.isPassed() ? "audit首次通过" : "audit首次失败";
-                else if (verifyCalls > 0) path = page.isPassed() ? "ROI verify成功" : "ROI verify后失败";
+                else if (relocateCalls > 0) path = page.isPassed() ? "ROI relocate成功" : "ROI relocate后失败";
                 else if (locateCalls > 1 && !normalizedLocate) path = page.isPassed() ? "locate重试后成功" : "locate重试后失败";
                 else if (page.status.indexOf("validation") >= 0) path = "Java门禁拒绝";
                 else if (page.isPassed()) path = "首次locate成功";
@@ -316,7 +318,9 @@ final class RunMetrics {
                     PageMetric page = pages.get(pageId);
                     recordLatest(stageOutcomes, "normalized", pageId, page != null && page.isPassed());
                 }
-                recordLatest(stageOutcomes, "verify", pageId, latestResult(events, "verify", null));
+                Boolean relocateResult = latestResult(events, "relocate", null);
+                if (relocateResult == null) relocateResult = latestResult(events, "verify", null);
+                recordLatest(stageOutcomes, "relocate", pageId, relocateResult);
                 recordLatest(stageOutcomes, "audit", pageId, latestResult(events, "audit", null));
             }
             StageMetric refine = stageMetrics.get("locate-coordinate-refine");

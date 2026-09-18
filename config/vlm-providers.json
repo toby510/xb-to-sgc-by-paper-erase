@@ -2,8 +2,8 @@
   "active": "dashscope",
   "defaults": {
     "max_preview_long_edge": 1536,
-    "min_body_gap_pixels": 5,
-    "min_body_gap_pixels说明": "候选框与正文之间必须被像素证明的最小无墨空白带宽度（像素），合法区间 3-24；不配置或 <=0 时使用保守默认值 8。调大更保守（更易转人工），调小则放行真实空白带只有 5-7px 的紧框。只影响安全带判定，不改变 VLM 坐标来源与擦除写入范围。",
+    "min_body_gap_pixels": 8,
+    "min_body_gap_pixels说明": "候选框与正文之间必须被像素证明的最小无墨空白带宽度（像素），生产默认 8；更小值仅允许作为明确标记的实验覆盖。只影响安全带判定，不改变 VLM 坐标来源与擦除写入范围。",
     "network_retries": 2,
     "fail_closed": true,
     "vlm_contract": "references/00-协议/VLM-CONTRACT-v1.md"
@@ -13,13 +13,11 @@
       "说明": "页码目标行定位：整页模式识别独立页眉/页脚页码行，并为每个 region 分别测量最近正文边界；局部 ROI 模式同步精确复测当前 region 及其正文边界。结果始终只是候选。",
       "输入": "首次定位仅输入标准化整页图（带 PAGE_ID）；坐标精修输入边缘带 ROI（带 PAGE_ID、ROI_PAGE_ID、ROI_REGION_ID）。",
       "调用时机": "逐页先在原图定位并判断阅读方向；旋转页由 Java 旋正后再定位一次；仅在候选框为空、坐标风险等需精修时调用 ROI 模式。",
-      "prompt": "references/02-单页页码定位/locate-prompt-v33.md"
+      "prompt": "references/02-单页页码定位/locate-full-page-v34.md"
     },
-    "verify": {
-      "说明": "局部安全复核：仅确认或细化候选独立页眉/页脚目标行的 ROI，目标包含页码及明确同行非正文元数据；专门处理低置信度、旋转和正文过近等风险页面。",
-      "输入": "候选区域 ROI（带 PAGE_ID、ROI_PAGE_ID、ROI_REGION_ID）。",
-      "调用时机": "只有 RiskGate 判定为高风险，或需要确认无页码时才调用，避免每页重复消耗。",
-      "prompt": "references/03-局部安全复核/verify-prompt-v20.md"
+    "relocate": {
+      "说明": "ROI 局部重定位：只重新测量已确认目标的几何框和该 region 的正文边界，不重新判断整页状态。",
+      "prompt": "references/02-单页页码定位/roi-relocate-v2.md"
     },
     "audit": {
       "说明": "擦除结果审计：对比擦除前后，确认正文未变、页码及获批同行非正文元数据组成的目标行已消失，并独立评估背景色。",
@@ -35,7 +33,9 @@
         "env": "XB_PAPER_ERASE_DASHSCOPE_BASE_URL",
         "default": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
       },
-      "api_key": ["MST_QWEN_API_KEY"],
+      "api_key": [
+        "MST_QWEN_API_KEY"
+      ],
       "model": {
         "env": "XB_PAPER_ERASE_QWEN_MODEL",
         "default": "qwen3.8-flash"
@@ -54,22 +54,10 @@
             "env": "XB_PAPER_ERASE_LOCATE_ENDPOINT",
             "default": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
           },
-          "api_key": ["XB_PAPER_ERASE_LOCATE_API_KEY", "MST_QWEN_API_KEY"]
-        },
-        "verify": {
-          "model": {
-            "env": "XB_PAPER_ERASE_VERIFY_MODEL",
-            "default": "qwen3.8-flash"
-          },
-          "base_url": {
-            "env": "XB_PAPER_ERASE_VERIFY_BASE_URL",
-            "default": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-          },
-          "endpoint": {
-            "env": "XB_PAPER_ERASE_VERIFY_ENDPOINT",
-            "default": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-          },
-          "api_key": ["XB_PAPER_ERASE_VERIFY_API_KEY", "MST_QWEN_API_KEY"]
+          "api_key": [
+            "XB_PAPER_ERASE_LOCATE_API_KEY",
+            "MST_QWEN_API_KEY"
+          ]
         },
         "audit": {
           "model": {
@@ -84,32 +72,44 @@
             "env": "XB_PAPER_ERASE_AUDIT_ENDPOINT",
             "default": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
           },
-          "api_key": ["XB_PAPER_ERASE_AUDIT_API_KEY", "MST_QWEN_API_KEY"]
+          "api_key": [
+            "XB_PAPER_ERASE_AUDIT_API_KEY",
+            "MST_QWEN_API_KEY"
+          ]
         }
       }
     },
     "ark": {
       "kind": "ark-responses",
-      "说明": "将 active 改为 ark 后，四个角色统一使用 Ark Responses API。MST_XB_AI_ARK_MODEL_ENDPOINT 的值是方舟模型或推理接入点 ID，会作为请求中的 model 发送。",
+      "说明": "将 active 改为 ark 后，locate/audit 统一使用 Ark Responses API；ROI 重定位复用 locate 配置。MST_XB_AI_ARK_MODEL_ENDPOINT 的值是方舟模型或推理接入点 ID，会作为请求中的 model 发送。",
       "base_url": {
         "env": "XB_PAPER_ERASE_ARK_BASE_URL",
         "default": "https://ark.cn-beijing.volces.com/api/v3/responses"
       },
-      "api_key": ["XB_PAPER_ERASE_ARK_API_KEY", "MST_XB_AI_ARK_API_KEY"],
+      "api_key": [
+        "XB_PAPER_ERASE_ARK_API_KEY",
+        "MST_XB_AI_ARK_API_KEY"
+      ],
       "model": {
         "env": "MST_XB_AI_ARK_MODEL_ENDPOINT"
       },
       "roles": {
         "locate": {
-          "thinking": { "type": "disabled" },
+          "thinking": {
+            "type": "disabled"
+          },
           "image_detail": "high"
         },
-        "verify": {
-          "thinking": { "type": "disabled" },
+        "relocate": {
+          "thinking": {
+            "type": "disabled"
+          },
           "image_detail": "high"
         },
         "audit": {
-          "thinking": { "type": "disabled" },
+          "thinking": {
+            "type": "disabled"
+          },
           "image_detail": "high"
         }
       }

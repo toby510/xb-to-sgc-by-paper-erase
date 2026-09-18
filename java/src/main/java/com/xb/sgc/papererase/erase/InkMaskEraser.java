@@ -20,17 +20,13 @@ public final class InkMaskEraser {
     private InkMaskEraser() {
     }
 
-    public static EraseOutcome erase(BufferedImage source, RegionValidator.PixelRegion region) {
-        return erase(source, region, false);
-    }
-
     /**
      * 在 RegionValidator 已批准的像素框内执行擦除：先提取目标墨迹掩码，再做形状/颜色风险检查，
      * 然后用外环估计背景重建整框。整框重建是为了清理灰色抗锯齿，但写入范围仍严格等于
-     * approved box；彩色像素默认视为非目标，只有局部视觉复核确认候选框仅含页码时才允许
-     * 传入 coloredTargetVerified=true；最后由 PixelDiffGate 证明框外没有任何变化。
+     * approved box；彩色像素默认不作为可擦墨迹，无法证明其归属时失败关闭；最后由
+     * PixelDiffGate 证明框外没有任何变化。
      */
-    public static EraseOutcome erase(BufferedImage source, RegionValidator.PixelRegion region, boolean coloredTargetVerified) {
+    public static EraseOutcome erase(BufferedImage source, RegionValidator.PixelRegion region) {
         // 5.2.1 输入与批准框：只接受上游已通过正文门禁的原图坐标矩形。
         if (source == null || region == null) {
             return EraseOutcome.manual(null, new ApprovedMask(0, 0), "source and region are required");
@@ -39,13 +35,9 @@ public final class InkMaskEraser {
         if (regionReason != null) {
             return EraseOutcome.manual(copy(source), new ApprovedMask(source.getWidth(), source.getHeight()), regionReason);
         }
-        String nonTargetReason = coloredTargetVerified ? null : nonTargetReason(source, region);
-        if (nonTargetReason != null) {
-            return EraseOutcome.manual(copy(source), new ApprovedMask(source.getWidth(), source.getHeight()), nonTargetReason);
-        }
         // 5.2.2 目标掩码：把页码深色和抗锯齿灰色纳入候选，掩码数组仍与整图同坐标系。
         //todo me:图片所有像素点掩码处理，候选框外全部为 false
-        boolean[][] mask = extractMask(source, region, coloredTargetVerified);
+        boolean[][] mask = extractMask(source, region);
 
         //todo me:候选框内没有墨迹
         if (!hasApprovedPixel(mask, region)) {
@@ -69,7 +61,7 @@ public final class InkMaskEraser {
 
         // 最终写入掩码就是实际目标墨迹，而非批准矩形整框。这样即使上游候选框混入了
         // 未被像素门禁识别的细线或正文，擦除器也不会把这些非目标像素重建为背景。
-        // extractMask 已将深色笔画、抗锯齿灰边及经 verify 授权的彩色目标纳入同一掩码。
+        // extractMask 已将深色笔画和抗锯齿灰边纳入掩码；彩色像素保持保护态。
         boolean[][] approvedPixels = mask;
 
         //todo me:擦除背景色预估
@@ -114,94 +106,29 @@ public final class InkMaskEraser {
         return null;
     }
 
-    public static boolean hasColoredPixels(BufferedImage source, List<RegionValidator.PixelRegion> regions) {
-        if (source == null || regions == null) {
-            return false;
-        }
-        for (RegionValidator.PixelRegion region : regions) {
-            for (int y = region.getY(); y < region.getY() + region.getHeight(); y++) {
-                for (int x = region.getX(); x < region.getX() + region.getWidth(); x++) {
-                    if (BackgroundEstimator.isColoredNonTarget(BackgroundEstimator.parts(source.getRGB(x, y)))) {
-                        return true;
-                    }
-                }
-            }
-        }
-        return false;
-    }
-
-    /**
-     * 色块、边框或装饰线不等于正文，但不能仅凭 Java 像素形状自行放行。
-     * 命中后由流水线请求一次局部 VLM 复核；复核确认后才允许 {@link #erase}
-     * 擦除整个已批准的独立页脚/页眉区域。
-     */
-    public static boolean requiresVisualTargetConfirmation(BufferedImage source, List<RegionValidator.PixelRegion> regions) {
-        if (source == null || regions == null) {
-            return false;
-        }
-        for (RegionValidator.PixelRegion region : regions) {
-            if (nonTargetReason(source, region) != null) {
-                return true;
-            }
-            boolean[][] mask = extractMask(source, region, false);
-            String reason = invalidInkGeometryReason(mask, region);
-            // 空框由流水线先走坐标精定位；其余形状异常都必须先让 VLM 看局部图，
-            // 不能让 Java 把页码装饰、色块或同行元数据误判成正文表格。
-            if (reason != null && !"no target ink found".equals(reason)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     /**
      * 在已批准候选框内提取待擦除墨迹掩码。
      *
      * @param source 旋正后的原图
      * @param region RegionValidator 已批准的像素区域
-     * @param coloredTargetVerified 是否经过 verify 授权将彩色目标视为页码
      * @return 与整张 source 同尺寸的掩码，候选框外全部为 {@code false}
      */
-    private static boolean[][] extractMask(BufferedImage source, RegionValidator.PixelRegion region,
-                                           boolean coloredTargetVerified) {
+    private static boolean[][] extractMask(BufferedImage source, RegionValidator.PixelRegion region) {
         /*
          * 只在上游已批准的 region 内提取实际目标墨迹。数组仍按整张图片建立，保证后续
-         * ApprovedMask 与 PixelDiffGate 使用同一坐标系；region 外永远保持 false。默认不
-         * 接纳彩色非目标，只有 verify 明确确认彩色内容属于页码时才允许授权参数为 true。
+         * ApprovedMask 与 PixelDiffGate 使用同一坐标系；region 外永远保持 false。彩色
+         * 非目标不进入掩码，由上游的 nonTargetReason 统一失败关闭。
          */
         int backgroundLum = BackgroundEstimator.medianLightLuminance(source, region);
         boolean[][] mask = new boolean[source.getHeight()][source.getWidth()];
         for (int y = region.getY(); y < region.getY() + region.getHeight(); y++) {
             for (int x = region.getX(); x < region.getX() + region.getWidth(); x++) {
-                if (BackgroundEstimator.isErasableInk(source.getRGB(x, y), backgroundLum, coloredTargetVerified)) {
+                if (BackgroundEstimator.isErasableInk(source.getRGB(x, y), backgroundLum)) {
                     mask[y][x] = true;
                 }
             }
         }
         return mask;
-    }
-
-    /**
-     * 检查候选框内是否含未经授权的彩色非目标内容。
-     *
-     * @param source 旋正后的原图
-     * @param region 待擦除候选框
-     * @return {@code null} 表示未发现彩色非目标；否则返回人工审核原因
-     */
-    private static String nonTargetReason(BufferedImage source, RegionValidator.PixelRegion region) {
-        /*
-         * 擦除前的彩色非目标拦截。候选框内只要出现未经 verify 授权的彩色像素，就转人工
-         * 审核；这里不靠文字形状或颜色相似度猜测语义，优先避免清掉彩色题干、图表和正文。
-         */
-        for (int y = region.getY(); y < region.getY() + region.getHeight(); y++) {
-            for (int x = region.getX(); x < region.getX() + region.getWidth(); x++) {
-                BackgroundEstimator.ColorParts c = BackgroundEstimator.parts(source.getRGB(x, y));
-                if (BackgroundEstimator.isColoredNonTarget(c)) {
-                    return "colored non-target inside region";
-                }
-            }
-        }
-        return null;
     }
 
     private static int whiteAt(BufferedImage source, int x, int y) {

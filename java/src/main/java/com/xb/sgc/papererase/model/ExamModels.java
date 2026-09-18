@@ -9,7 +9,7 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * 全链路数据契约：承载输入页面、locate/verify/audit 响应、候选框、正文边界和状态。
+ * 全链路数据契约：承载输入页面、locate/relocate/audit 响应、候选框、正文边界和状态。
  * 归一化坐标用于 VLM 协议，PixelRegion 的像素坐标用于 Java 校验与擦除；两者不可混用。
  */
 public final class ExamModels {
@@ -178,7 +178,7 @@ public final class ExamModels {
         @JsonProperty(required = true)
         /**
          * 页码目标是否与正文、答题横线或表格线处于同一条视觉行带。
-         * true 只表示“需要更谨慎地做局部 verify”，不表示该区域一定不允许擦除。
+         * true 只表示“需要更谨慎地做局部 relocate”，不表示该区域一定不允许擦除。
          */
         public boolean on_line;
         @JsonProperty(required = true)
@@ -204,31 +204,24 @@ public final class ExamModels {
         public String basis;
     }
 
-    /** 4-verify 的局部风险复核结果及可选精修框。 */
+    /** ROI Relocate 的单 region 局部几何测量结果；不承担页码语义裁决。 */
     @JsonIgnoreProperties(ignoreUnknown = false)
-    public static final class VerifyResponse {
+    public static final class RelocateResponse {
         @JsonProperty(required = true)
         public String page_id;
         @JsonProperty(required = true)
         public String region_id;
         @JsonProperty(required = true)
-        public String decision;
-        @JsonProperty(required = true)
-        public String allowed_scope;
+        public boolean target_found;
         @JsonProperty(required = true)
         public String evidence;
-        /**
-         * Verify 对当前 ROI 中确认安全的目标行重新测量得到的局部归一化框。
-         * decision=safe_to_erase 时必须存在；
-         * 非 safe 决策时必须为 null。
-         * 坐标仅属于当前 ROI，必须映射回整图后重新经过 RegionValidator。
-         */
+        /** 当前 ROI 坐标系内的目标框；target_found=false 时必须为 null。 */
         public LocalRegion refined_region;
-        /** 局部二检确认的最近正文边界，坐标同样属于 ROI；无精定位时必须为 null。 */
-        public BodyBoundary refined_nearest_body_boundary;
+        /** 当前 ROI、当前 region 投影内的最近正文边界；target_found=false 时必须为 null。 */
+        public BodyBoundary nearest_body_boundary;
     }
 
-    /** verify ROI 内的局部归一化框，必须经 RoiTransform 映射回整图。 */
+    /** ROI 内的局部归一化框，必须经 RoiTransform 映射回整图。 */
     @JsonIgnoreProperties(ignoreUnknown = false)
     public static final class LocalRegion {
         @JsonProperty(required = true)

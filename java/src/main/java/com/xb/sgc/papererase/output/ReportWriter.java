@@ -144,7 +144,7 @@ public class ReportWriter {
     }
 
     /**
-     * 仅展示 run 级汇总和分布；每次 HTTP 尝试的 locate/verify/audit/重试明细保留在
+     * 仅展示 run 级汇总和分布；每次 HTTP 尝试的 locate/relocate/audit/重试明细保留在
      * _vlm_usage.ndjson，避免把数百页的追溯数据塞进人工阅读的测试报告。
      */
     private void appendUsageAndPerformance(StringBuilder report, RunMetrics.Snapshot metrics) {
@@ -174,7 +174,7 @@ public class ReportWriter {
         } else {
             report.append("| 平均成本/试卷（平均页数×单页平均） | 无真实用量或成本数据 |\n");
         }
-        report.append("\n明细追溯文件：`_vlm_usage.ndjson`（每次 locate / verify / audit / 重试各一行）。\n\n");
+        report.append("\n明细追溯文件：`_vlm_usage.ndjson`（每次 locate / relocate / audit / 重试各一行）。\n\n");
 
         report.append("### 单张图片 Token 与成本分布\n\n");
         report.append("| 指标 | 最小 | P50 | 平均 | P90 | 最大 |\n| --- | ---: | ---: | ---: | ---: | ---: |\n");
@@ -215,7 +215,7 @@ public class ReportWriter {
         report.append("| 环节 | 触发 | 成功（占触发） | 失败（占触发） |\n");
         report.append("| --- | ---: | ---: | ---: |\n");
         appendRetryRow(report, "locate 重试", "locate重试", "locate重试后成功", "locate重试后失败", metrics);
-        appendRetryRow(report, "ROI 安全复核（verify）", "ROI verify", "ROI verify后成功", "ROI verify后失败", metrics);
+        appendRetryRow(report, "ROI 重定位（relocate）", "ROI relocate", "ROI relocate后成功", "ROI relocate后失败", metrics);
         appendRetryRow(report, "audit 重试", "audit重试", "audit重试后成功", "audit重试后失败", metrics);
 
         report.append("\n### 图片全流程与整卷耗时分布\n\n");
@@ -693,13 +693,13 @@ public class ReportWriter {
 
     private String stageReportKey(String role) {
         if ("locate-coordinate-refine".equals(role)) return "refine";
-        if ("verify-ROI".equals(role)) return "verify";
+        if ("relocate-ROI".equals(role) || "verify-ROI".equals(role)) return "relocate";
         return role;
     }
 
     private String stageDisplayName(String role) {
         if ("locate-coordinate-refine".equals(role)) return "坐标精修（refine）";
-        if ("verify-ROI".equals(role)) return "安全复核（verify）";
+        if ("relocate-ROI".equals(role) || "verify-ROI".equals(role)) return "ROI 重定位（relocate）";
         if ("locate".equals(role)) return "首次定位（locate）";
         if ("audit".equals(role)) return "结果审计（audit）";
         return role;

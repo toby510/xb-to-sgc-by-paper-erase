@@ -38,7 +38,7 @@ description: 当用户要按“整份试卷”而不是单张图片去除页码�
 3. 方向置信度不足时转人工；非零旋转页由 Java 旋正原图后再调用一次 `locate`，未旋正图上的候选坐标一律废弃。
 4. `locate` 在当前旋正整页返回候选区域、置信度，并为每个 region 单独返回其版式投影内的最近正文边界；坐标精修仅发送“候选框+该 region 正文边界+固定 margin”的 3 倍局部 ROI。
 5. `RegionValidator` 先做硬校验：边缘带、坐标、正文间隔、空白安全带、候选框边界墨迹。任一失败不得擦除。
-6. 高风险页面（低置信度、旋转、首尾页差异、同线候选、共性不稳定、缺页等）只对局部 ROI 调用 `verify`；二检非 `safe_to_erase` 时不擦除。
+6. 高风险页面（低置信度、旋转、首尾页差异、同线候选、缺页等）只对局部 ROI 调用 `relocate`；它只重测已确认目标的几何坐标，返回的 `target_found=false` 或协议不完整时不擦除。
 7. `InkMaskEraser` 仅修改候选框内识别出的目标墨迹；背景估计失败时可仅在已批准掩码内降级为白色。
 8. `PixelDiffGate` 必须证明候选掩码以外的所有像素未变；该门禁失败立即丢弃候选图。
 9. 每张修改过的图都调用 `audit` 对原图、擦除图和局部 ROI 进行视觉复核。`original_target_is_non_body=false`、`body_unchanged=false` 或 `target_removed=false` 一律人工审核；仅当 audit 报告的正文变化与 PixelDiffGate 的批准框范围证据矛盾时，允许对同一前后图纠错复核一次。
@@ -48,7 +48,7 @@ description: 当用户要按“整份试卷”而不是单张图片去除页码�
 
 - 所有图片通过 OpenAI 兼容的 `messages[].content[]` 发送，图片项必须是 `{"type":"image_url","image_url":{"url":"data:image/..."}}`；不得把 data URL 当普通文本。
 - 每张整页图前附加 `PAGE_ID`；审计的两张图额外附加 `IMAGE_ROLE: ORIGINAL|ERASED`；局部图附加 `ROI_PAGE_ID` 和 `ROI_REGION_ID`。
-- 活跃角色为 `locate`、`verify`、`audit`；历史 pattern 提示词和 parser 只为旧 run 兼容保留，不参与新运行。当前生效版本和角色说明在 `config/vlm-providers.json`。
+- 活跃角色为 `locate`、`audit`；ROI 重定位复用 locate 的模型与提示词，但使用独立 `ROI_RELOCATE` JSON Contract。历史 verify/pattern 提示词和 parser 只为旧 run 兼容保留，不参与新运行。当前生效版本和角色说明在 `config/vlm-providers.json`。
 - 任何网络失败、响应 JSON 无法解析、页面 ID 错配或协议字段缺失，都按失败关闭：不擦除，转人工审核。
 
 ## 安全门禁与降级原则

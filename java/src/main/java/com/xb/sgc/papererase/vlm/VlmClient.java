@@ -5,7 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xb.sgc.papererase.model.ExamModels.AuditResponse;
 import com.xb.sgc.papererase.model.ExamModels.EraseRegion;
 import com.xb.sgc.papererase.model.ExamModels.LocateResponse;
-import com.xb.sgc.papererase.model.ExamModels.VerifyResponse;
+import com.xb.sgc.papererase.model.ExamModels.RelocateResponse;
 
 import javax.imageio.ImageIO;
 import java.awt.Graphics2D;
@@ -28,7 +28,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 视觉模型的三角色协议。此接口故意只返回结构化业务结果，响应 JSON 校验集中在
+ * 视觉模型的 locate/relocate/audit 协议。此接口故意只返回结构化业务结果，响应 JSON 校验集中在
  * {@link ResponseParser}，避免调用方在“坐标不可信”时仍继续擦除。
  */
 public interface VlmClient {
@@ -40,8 +40,21 @@ public interface VlmClient {
     LocateResponse locate(PageImage page);
 
     /**
-     * 局部精修 locate 只发送候选框生成的 ROI。默认实现保留旧 fake/client 兼容；
-     * 真实客户端覆写后不得把整页与 ROI 同时发送，以免降低局部坐标精度。
+     * 仅在上一轮响应无法通过 VLM Contract 时重发同一整页；默认实现保持测试替身兼容。
+     * repairInstruction 不改变任务语义，只指出 JSON 合同必须重新输出。
+     */
+    default LocateResponse locate(PageImage page, String repairInstruction) {
+        return locate(page);
+    }
+
+    /** 协议失败后的固定修复提醒；视觉规则仍唯一由 locate 提示词维护。 */
+    static String locateProtocolRepairInstruction() {
+        return "\n上一响应未通过 JSON 协议校验。请重新观察当前图并完整重写唯一 JSON，不得沿用上次的 regions。"
+                + "若返回 safe_to_erase，每个 region 必须各自包含非空、当前图真实可见的 page_number_text，"
+                + "并使用精确字段名 same_line_metadata；无法满足时返回 manual_review 与 regions:[]。";
+    }
+    /**
+     * 局部 locate 只发送候选框生成的 ROI。真实客户端不得把整页与 ROI 同时发送，以免降低局部坐标精度。
      */
     default LocateResponse locate(PageImage page, RoiImage roi) {
         return locate(page);
@@ -51,48 +64,14 @@ public interface VlmClient {
      * 坐标漂移后的局部重定位：沿用 locate 的“页码行语义”能力，但只发送边缘 ROI，
      * 且携带首次识别出的文字锚点。默认实现兼容旧测试替身。
      */
-    default LocateResponse relocateCoordinateRefinement(PageImage page, EraseRegion semanticAnchor, RoiImage roi) {
-        VerifyResponse verified = verifyCoordinateRefinement(page, semanticAnchor, roi);
-        LocateResponse relocated = new LocateResponse();
-        relocated.page_id = page.getPageId();
-        relocated.reading_rotation = 0;
-        relocated.direction_confidence = 1.0;
-        relocated.status = verified.decision;
-        relocated.evidence = verified.evidence;
-        if ("safe_to_erase".equals(verified.decision) && verified.refined_region != null) {
-            EraseRegion local = new EraseRegion();
-            local.region_id = semanticAnchor.region_id;
-            local.x1 = verified.refined_region.x1;
-            local.y1 = verified.refined_region.y1;
-            local.x2 = verified.refined_region.x2;
-            local.y2 = verified.refined_region.y2;
-            local.page_number_text = semanticAnchor.page_number_text;
-            local.same_line_metadata = semanticAnchor.same_line_metadata;
-            local.on_line = semanticAnchor.on_line;
-            local.confidence = semanticAnchor.confidence;
-            local.safety_margin = semanticAnchor.safety_margin;
-            local.nearest_body_boundary = verified.refined_nearest_body_boundary;
-            relocated.regions.add(local);
-        }
-        return relocated;
-    }
-
-    /** 4-verify：仅对风险候选或坐标精修 ROI 做局部安全复核。 */
-    VerifyResponse verify(PageImage page, EraseRegion region, RoiImage roi);
-
-    /**
-     * 坐标门禁拒绝后的二次定位只允许模型看到候选中心 ROI。整页版式已在首次 locate
-     * 中确认；此处再附整页会稀释小页码的像素定位精度。默认实现兼容测试替身。
-     */
-    default VerifyResponse verifyCoordinateRefinement(PageImage page, EraseRegion region, RoiImage roi) {
-        return verify(page, region, roi);
-    }
+    /** ROI Relocate：只测量当前 semanticAnchor 对应的局部几何框，不重新裁决页码语义。 */
+    RelocateResponse relocateCoordinateRefinement(PageImage page, EraseRegion semanticAnchor, RoiImage roi);
 
     /** 2-audit：对原图、擦除图和局部 ROI 复核正文未变及目标已移除。 */
     AuditResponse audit(PageImage original, PageImage erased, List<EraseRegion> regions, List<RoiImage> rois);
 
     /**
-     * active 是唯一的提供方选择入口。四个业务角色始终共享同一个协议客户端，避免出现
+     * active 是唯一的提供方选择入口。业务角色始终共享同一个协议客户端，避免出现
      * 业务角色与协议客户端始终保持单一连接，便于归因。
      */
     static VlmClient create(VlmConfig config, Path skillRoot) {
@@ -116,41 +95,15 @@ public interface VlmClient {
         throw new IllegalStateException("unsupported VLM provider kind: " + config.getProviderKind());
     }
 
-    /**
-     * 将坐标精修意图写进本次请求文本，避免模型把它误当普通的 yes/no 安全复核。
-     * 指令文本与提示词正文保持同一种语言（中文），协议标记与字段名保持原样。
-     */
-    static String refinementInstruction(EraseRegion region) {
-        if (region != null && "coordinate_refinement_requested".equals(region.safety_margin)) {
-            return "\nCOORDINATE_REFINEMENT：本次是坐标精修请求。仅当判定为 safe_to_erase 时才返回非空 refined_region，"
-                    + "坐标为相对本 ROI 的 0..1。同时必须返回该 region 自己的 nearest_body_boundary，也用相对本 ROI 的 0..1 表示；"
-                    + "它只能依据本 ROI 内真实可见的清晰正文测量，不得推断 ROI 之外的内容，并且必须与返回的 refined_region 处于同一平行投影。"
-                    + "首轮语义线索是 page_number_text='" + safePromptText(region.page_number_text)
-                    + "'，same_line_metadata='" + safePromptText(region.same_line_metadata) + "'。"
-                    + "请在完整 ROI 内重新查找实际可见的目标字面量并测量该行墨迹，不得照抄首轮坐标，也不得改选邻近的正文行。";
-        }
-        return "";
-    }
-
-    static String relocationInstruction(EraseRegion region) {
-        return " LOCAL_RELOCATE：当前图片是边缘带 ROI，返回的所有坐标都相对本 ROI。"
-                + "每个匹配到的 region 都要给出它自己的 nearest_body_boundary，只用本 ROI 内真实可见的清晰正文测量；"
-                + "不得推断本 ROI 之外的内容，边界必须落在该目标行的平行投影上。"
-                + "整页语义锚点是 page_number_text='" + safePromptText(region.page_number_text)
-                + "'，same_line_metadata='" + safePromptText(region.same_line_metadata) + "'。"
-                + "请在完整 ROI 内重新查找实际可见的匹配目标行；旧坐标不是证据，不得照抄。";
+    /** 动态值仅提供本次 ROI 的语义锚点；视觉规则与协议统一维护在 relocate 提示词。 */
+    static String relocationAnchor(EraseRegion region) {
+        return "\n本次 ROI 语义锚点：page_number_text='" + safePromptText(region.page_number_text)
+                + "'，same_line_metadata='" + safePromptText(region.same_line_metadata) + "'。";
     }
 
     /** JSON-free instruction text still must not let model evidence break the surrounding quoted clues. */
     static String safePromptText(String value) {
         return value == null ? "" : value.replace("'", "’").replace('\n', ' ').replace('\r', ' ');
-    }
-
-    /** 普通 verify 只带当前页 locate 的文字语义锚点；边缘无候选复核不带任何猜测锚点。 */
-    static String verifySemanticAnchor(EraseRegion region) {
-        if (region == null) return "";
-        return " semantic_anchor：page_number_text='" + safePromptText(region.page_number_text)
-                + "'，same_line_metadata='" + safePromptText(region.same_line_metadata) + "'。";
     }
 
     /** 审计模型只接收已批准目标的语义锚点，不接收坐标猜测，避免把正文误当作擦除目标。 */
@@ -229,9 +182,9 @@ public interface VlmClient {
         }
 
         private void freezePrompts() {
-            for (String role : new String[]{"locate", "verify", "audit"}) {
-                prompts.put(role, loadPrompt(config.role(role)));
-            }
+            prompts.put("locate", loadPrompt(config.role("locate")));
+            prompts.put("relocate", loadPrompt(config.role("relocate")));
+            prompts.put("audit", loadPrompt(config.role("audit")));
         }
 
         @Override
@@ -243,7 +196,13 @@ public interface VlmClient {
 
         @Override
         public LocateResponse locate(PageImage page) {
-            return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "任务：整页定位"), one(page),
+            return locate(page, "");
+        }
+
+        @Override
+        public LocateResponse locate(PageImage page, String repairInstruction) {
+            return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "任务：整页定位")
+                    + (repairInstruction == null ? "" : repairInstruction), one(page),
                     java.util.Collections.<RoiImage>emptyList()), page.getPageId());
         }
 
@@ -255,28 +214,12 @@ public interface VlmClient {
         }
 
         @Override
-        public LocateResponse relocateCoordinateRefinement(PageImage page,
-                                                            EraseRegion semanticAnchor, RoiImage roi) {
-            return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "任务：同一目标行重定位")
-                    + relocationInstruction(semanticAnchor),
-                    java.util.Collections.<PageImage>emptyList(), java.util.Collections.singletonList(roi)), page.getPageId());
-        }
-
-        public VerifyResponse verify(PageImage page, EraseRegion region, RoiImage roi) {
-            String regionId = region == null ? "edge" : region.region_id;
-            return ResponseParser.parseVerify(call("verify", "任务：局部安全复核。page_id=" + page.getPageId()
-                    + "，region_id=" + regionId + verifySemanticAnchor(region) + refinementInstruction(region),
+        public RelocateResponse relocateCoordinateRefinement(PageImage page,
+                                                             EraseRegion semanticAnchor, RoiImage roi) {
+            return ResponseParser.parseRelocate(call("relocate", exactPageIdInstruction(page.getPageId(), "任务：同一目标行局部重定位")
+                    + relocationAnchor(semanticAnchor),
                     java.util.Collections.<PageImage>emptyList(), java.util.Collections.singletonList(roi)),
-                    page.getPageId(), regionId);
-        }
-
-        @Override
-        public VerifyResponse verifyCoordinateRefinement(PageImage page, EraseRegion region, RoiImage roi) {
-            String regionId = region.region_id;
-            return ResponseParser.parseVerify(call("verify", "任务：仅精修本 ROI 内的目标坐标。page_id=" + page.getPageId()
-                    + "，region_id=" + regionId + refinementInstruction(region),
-                    java.util.Collections.<PageImage>emptyList(), java.util.Collections.singletonList(roi)),
-                    page.getPageId(), regionId);
+                    page.getPageId(), semanticAnchor.region_id);
         }
 
         public AuditResponse audit(PageImage original, PageImage erased, List<EraseRegion> regions, List<RoiImage> rois) {
@@ -468,9 +411,9 @@ public interface VlmClient {
         }
 
         private void freezePrompts() {
-            for (String role : new String[]{"locate", "verify", "audit"}) {
-                prompts.put(role, loadPrompt(config.role(role)));
-            }
+            prompts.put("locate", loadPrompt(config.role("locate")));
+            prompts.put("relocate", loadPrompt(config.role("relocate")));
+            prompts.put("audit", loadPrompt(config.role("audit")));
         }
 
         @Override
@@ -480,7 +423,13 @@ public interface VlmClient {
 
 
         public LocateResponse locate(PageImage page) {
-            return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "任务：整页定位"), one(page),
+            return locate(page, "");
+        }
+
+        @Override
+        public LocateResponse locate(PageImage page, String repairInstruction) {
+            return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "任务：整页定位")
+                    + (repairInstruction == null ? "" : repairInstruction), one(page),
                     java.util.Collections.<RoiImage>emptyList()), page.getPageId());
         }
 
@@ -492,27 +441,12 @@ public interface VlmClient {
         }
 
         @Override
-        public LocateResponse relocateCoordinateRefinement(PageImage page,
-                                                            EraseRegion semanticAnchor, RoiImage roi) {
-            return ResponseParser.parseLocate(call("locate", exactPageIdInstruction(page.getPageId(), "任务：同一目标行重定位")
-                    + relocationInstruction(semanticAnchor),
-                    java.util.Collections.<PageImage>emptyList(), java.util.Collections.singletonList(roi)), page.getPageId());
-        }
-
-        public VerifyResponse verify(PageImage page, EraseRegion region, RoiImage roi) {
-            String regionId = region == null ? "edge" : region.region_id;
-            return ResponseParser.parseVerify(call("verify", "任务：局部安全复核。page_id=" + page.getPageId()
-                    + "，region_id=" + regionId + verifySemanticAnchor(region) + refinementInstruction(region),
+        public RelocateResponse relocateCoordinateRefinement(PageImage page,
+                                                             EraseRegion semanticAnchor, RoiImage roi) {
+            return ResponseParser.parseRelocate(call("relocate", exactPageIdInstruction(page.getPageId(), "任务：同一目标行局部重定位")
+                    + relocationAnchor(semanticAnchor),
                     java.util.Collections.<PageImage>emptyList(), java.util.Collections.singletonList(roi)),
-                    page.getPageId(), regionId);
-        }
-
-        public VerifyResponse verifyCoordinateRefinement(PageImage page, EraseRegion region, RoiImage roi) {
-            String regionId = region.region_id;
-            return ResponseParser.parseVerify(call("verify", "任务：仅精修本 ROI 内的目标坐标。page_id=" + page.getPageId()
-                    + "，region_id=" + regionId + refinementInstruction(region),
-                    java.util.Collections.<PageImage>emptyList(), java.util.Collections.singletonList(roi)),
-                    page.getPageId(), regionId);
+                    page.getPageId(), semanticAnchor.region_id);
         }
 
         public AuditResponse audit(PageImage original, PageImage erased, List<EraseRegion> regions, List<RoiImage> rois) {

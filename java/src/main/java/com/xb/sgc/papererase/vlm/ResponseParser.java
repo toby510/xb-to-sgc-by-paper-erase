@@ -12,7 +12,7 @@ import com.xb.sgc.papererase.model.ExamModels.AuditResponse;
 import com.xb.sgc.papererase.model.ExamModels.BodyBoundary;
 import com.xb.sgc.papererase.model.ExamModels.EraseRegion;
 import com.xb.sgc.papererase.model.ExamModels.LocateResponse;
-import com.xb.sgc.papererase.model.ExamModels.VerifyResponse;
+import com.xb.sgc.papererase.model.ExamModels.RelocateResponse;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -21,7 +21,7 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * VLM 协议解析器：把 locate/verify/audit 三个角色的原始 JSON 转换为强约束业务对象，并校验 page_id、状态和字段。
+ * VLM 协议解析器：把 locate/relocate/audit 三个角色的原始 JSON 转换为强约束业务对象，并校验 page_id、状态和字段。
  * 解析失败必须失败关闭，禁止调用方拿不完整坐标继续擦除。
  */
 public final class ResponseParser {
@@ -96,40 +96,36 @@ public final class ResponseParser {
         return response;
     }
 
-    public static VerifyResponse parseVerify(String raw, String expectedPageId, String expectedRegionId) {
+    public static RelocateResponse parseRelocate(String raw, String expectedPageId, String expectedRegionId) {
         try {
-            return parseVerifyObject(raw, expectedPageId, expectedRegionId);
+            return parseRelocateObject(raw, expectedPageId, expectedRegionId);
         } catch (ParseException failure) {
             throw withRawSummary(failure, raw);
         }
     }
 
-    private static VerifyResponse parseVerifyObject(String raw, String expectedPageId, String expectedRegionId) {
+    private static RelocateResponse parseRelocateObject(String raw, String expectedPageId, String expectedRegionId) {
         JsonNode root = root(raw);
-        requireFields(root, "page_id", "region_id", "decision", "allowed_scope", "evidence", "refined_region");
-        rejectUnknown(root, "page_id", "region_id", "decision", "allowed_scope", "evidence", "refined_region", "refined_nearest_body_boundary");
-        VerifyResponse response = new VerifyResponse();
+        requireFields(root, "page_id", "region_id", "target_found", "evidence", "refined_region", "nearest_body_boundary");
+        rejectUnknown(root, "page_id", "region_id", "target_found", "evidence", "refined_region", "nearest_body_boundary");
+        RelocateResponse response = new RelocateResponse();
         response.page_id = requiredText(root, "page_id");
         response.region_id = requiredText(root, "region_id");
         requireEqual(response.page_id, expectedPageId, "page_id", raw);
         requireEqual(response.region_id, expectedRegionId, "region_id", raw);
-        response.decision = enumText(root, "decision", "safe_to_erase", "no_pagenum", "manual_review");
-        response.allowed_scope = requiredText(root, "allowed_scope");
+        response.target_found = requiredBoolean(root, "target_found");
         response.evidence = requiredText(root, "evidence");
         if (!root.path("refined_region").isNull()) {
             response.refined_region = parseLocalRegion(root.path("refined_region"), raw);
-            if (root.has("refined_nearest_body_boundary") && !root.path("refined_nearest_body_boundary").isNull()) {
-                // 兼容旧版响应；新局部精定位协议不会再采纳或请求此字段。
-                response.refined_nearest_body_boundary = parseBoundary(root.path("refined_nearest_body_boundary"), raw);
-            }
-        } else if (root.has("refined_nearest_body_boundary") && !root.path("refined_nearest_body_boundary").isNull()) {
-            throw bad("refined_nearest_body_boundary requires refined_region", raw);
+            response.nearest_body_boundary = parseBoundary(root.path("nearest_body_boundary"), raw);
+        } else if (!root.path("nearest_body_boundary").isNull()) {
+            throw bad("nearest_body_boundary requires refined_region", raw);
         }
-        if ("safe_to_erase".equals(response.decision) && response.refined_region == null) {
-            throw bad("safe_to_erase verify requires refined_region", raw);
+        if (response.target_found && response.refined_region == null) {
+            throw bad("target_found relocate requires refined_region", raw);
         }
-        if (!"safe_to_erase".equals(response.decision) && response.refined_region != null) {
-            throw bad("non-safe verify requires null refined_region", raw);
+        if (!response.target_found && response.refined_region != null) {
+            throw bad("target_not_found relocate requires null refined_region", raw);
         }
         return response;
     }

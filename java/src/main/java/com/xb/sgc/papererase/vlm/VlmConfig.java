@@ -10,11 +10,11 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * VLM 配置中心：读取 provider、三个活跃角色的提示词/参数和预览尺寸。
+ * VLM 配置中心：读取 locate/relocate/audit 三个活跃角色的提示词/参数和预览尺寸。
  * active provider 决定请求通道，角色配置决定同一通道下各阶段的提示词与推理参数。
  */
 public final class VlmConfig {
-    private static final String[] ROLES = {"locate", "verify", "audit"};
+    private static final String[] ROLES = {"locate", "relocate", "audit"};
     private final Map<String, RoleConfig> roles;
     private final int maxPreviewLongEdge;
     private final int minBodyGapPixels;

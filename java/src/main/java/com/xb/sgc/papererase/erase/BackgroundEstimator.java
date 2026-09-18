@@ -113,10 +113,9 @@ public final class BackgroundEstimator {
     }
 
     /** 擦除掩码的统一像素契约；校验器必须用同一规则证明批准框边缘无可擦墨迹。 */
-    public static boolean isErasableInk(int argb, int backgroundLum, boolean coloredTargetVerified) {
+    public static boolean isErasableInk(int argb, int backgroundLum) {
         ColorParts c = parts(argb);
-        return isInk(c, backgroundLum)
-                || (coloredTargetVerified && isColoredNonTarget(c) && c.luminance <= backgroundLum - 25);
+        return isInk(c, backgroundLum);
     }
 
     /** 供安全边界检测使用：彩色印刷内容也不能被误判为纸张空白。 */

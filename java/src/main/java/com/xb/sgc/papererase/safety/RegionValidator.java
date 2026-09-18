@@ -433,7 +433,7 @@ public final class RegionValidator {
         int count = 0;
         for (int y = top; y < bottom; y++) {
             for (int x = left; x < right; x++) {
-                if (BackgroundEstimator.isErasableInk(image.getRGB(x, y), backgroundLum, false)) count++;
+                if (BackgroundEstimator.isErasableInk(image.getRGB(x, y), backgroundLum)) count++;
             }
         }
         return count;
@@ -758,7 +758,7 @@ public final class RegionValidator {
     /**
      * 返回候选框所属的物理页面边缘；不在任何边缘终止带内时返回 {@link Edge#NONE}。
      *
-     * <p>供调用方与该类使用同一套 20% 边缘带口径，例如 verify 的 ROI 需要据此补齐页面
+     * <p>供调用方与该类使用同一套 20% 边缘带口径，例如 relocate 的 ROI 需要据此补齐页面
      * 物理边缘，避免同一候选框在“送检画面”和“几何门禁”里被当成不同位置。</p>
      *
      * @param region 整图归一化候选框
@@ -1056,7 +1056,7 @@ public final class RegionValidator {
                 break;
             }
         }
-        // 坐标发生变化时标记 coordinateRescued，供后续 RiskGate 强制触发局部 verify。
+        // 坐标发生变化时标记 coordinateRescued，供后续 RiskGate 强制触发局部 relocate。
         PixelRegion expanded = new PixelRegion(region.getPageId(), region.getRegionId(), left, top, right - left, bottom - top,
                 region.getX1(), region.getY1(), region.getX2(), region.getY2(), region.getConfidence(),
                 left != region.getX() || top != region.getY() || right != region.getX() + region.getWidth() || bottom != region.getY() + region.getHeight());
@@ -1246,10 +1246,10 @@ public final class RegionValidator {
     private static boolean isConservativeMark(int argb, int backgroundLum) {
         /*
          * 保守墨迹是正文保护的统一底层判据：深色文字/线条和明显彩色内容都算风险。彩色
-         * 内容是否确属页码由更高层 verify 授权；在安全带和扩框阶段必须先按风险处理，
+         * 内容是否确属页码由更高层 locate/relocate 语义授权；在安全带和扩框阶段必须先按风险处理，
          * 防止跨过彩色标题、表格或正文。
          */
-        return BackgroundEstimator.isErasableInk(argb, backgroundLum, false)
+        return BackgroundEstimator.isErasableInk(argb, backgroundLum)
                 || BackgroundEstimator.isColoredMark(argb);
     }
 
@@ -1379,7 +1379,7 @@ public final class RegionValidator {
          */
         private final double confidence;
         /**
-         * Java 是否曾对模型候选做过像素级坐标救援/扩展；为 true 时会提升 verify 风险。
+         * Java 是否曾对模型候选做过像素级坐标救援/扩展；为 true 时会提升 relocate 风险。
          */
         private final boolean coordinateRescued;
 
