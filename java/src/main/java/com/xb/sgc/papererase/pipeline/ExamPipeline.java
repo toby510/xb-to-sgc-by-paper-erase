@@ -40,6 +40,12 @@ import java.util.Map;
  * 始终失败关闭，流水线不以整页重跑改变模型已经给出的保守结论。</p>
  */
 public final class ExamPipeline {
+    /**
+     * audit 局部图的放大倍率。原始 ROI 尺寸下，约 5 像素的框边切口低于模型分辨力；
+     * 3 倍放大后同一批样本的识别率由 0/5 提升到 5/5，且阴性样本无误报。
+     */
+    private static final int AUDIT_ROI_SCALE = 3;
+
     private static final double MIN_DIRECTION_CONFIDENCE = 0.90;
     private static final int ROI_MAPPING_GUARD_PIXELS = 4;
     /** ROI Relocate 在候选框四周保留的上下文边距（像素）；只提供上下文，不做放大。 */
@@ -1127,10 +1133,18 @@ public final class ExamPipeline {
         for (RegionValidator.PixelRegion region : regions) {
             RoiTransform transform = RoiTransform.fromCandidate(
                     original.getWidth(), original.getHeight(), region, null, 24);
-            rois.add(new VlmClient.RoiImage(pageId, region.getRegionId(), crop(original, transform), "ORIGINAL"));
-            rois.add(new VlmClient.RoiImage(pageId, region.getRegionId(), crop(erased, transform), "ERASED"));
+            // audit 的 ROI 原图与擦除图必须用同一倍率放大后再送审：细切口（约 5px）在原始
+            // ROI 尺寸下低于模型分辨力，放大后模型才能看清框边是否切到正文笔画。倍率与
+            // relocate 的 3 倍口径一致；只放大这两张 ROI，整页图仍按 max_preview_long_edge 走。
+            rois.add(new VlmClient.RoiImage(pageId, region.getRegionId(), auditRoi(original, transform), "ORIGINAL"));
+            rois.add(new VlmClient.RoiImage(pageId, region.getRegionId(), auditRoi(erased, transform), "ERASED"));
         }
         return rois;
+    }
+
+    /** 审计用局部图：裁剪后固定放大 3 倍；原图与擦除图共用同一变换，保证两张图可逐位置对齐。 */
+    private BufferedImage auditRoi(BufferedImage source, RoiTransform transform) {
+        return enlarge(crop(source, transform), AUDIT_ROI_SCALE);
     }
 
     private BufferedImage enlarge(BufferedImage source, int factor) {
@@ -1200,8 +1214,8 @@ public final class ExamPipeline {
             for (EraseRegion region : locate.regions) {
                 RoiTransform transform = RoiTransform.fromNormalizedCandidate(
                         normalized.getWidth(), normalized.getHeight(), region, null, 24);
-                rois.add(new VlmClient.RoiImage(page.getPageId(), region.region_id, crop(normalized, transform), "ORIGINAL"));
-                rois.add(new VlmClient.RoiImage(page.getPageId(), region.region_id, crop(trial, transform), "ERASED"));
+                rois.add(new VlmClient.RoiImage(page.getPageId(), region.region_id, auditRoi(normalized, transform), "ORIGINAL"));
+                rois.add(new VlmClient.RoiImage(page.getPageId(), region.region_id, auditRoi(trial, transform), "ERASED"));
             }
             AuditResponse audit = vlm.audit(pageImage,
                     new VlmClient.PageImage(page.getPageId(), trial), locate.regions, rois);

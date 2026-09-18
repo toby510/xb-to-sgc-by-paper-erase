@@ -23,7 +23,7 @@
    "说明": "擦除结果审计：对比擦除前后，确认正文未变、页码及获批同行非正文元数据组成的目标行已消失，并独立评估背景色。",
    "输入": "同一页的 ORIGINAL、ERASED 两张图及所有相关 ROI。",
    "调用时机": "每张实际发生过像素擦除的页面完成后；正文或目标判断失败即回退人工审核。",
-   "prompt": "references/04-擦除结果审计/audit-prompt-v13.md"
+   "prompt": "references/04-擦除结果审计/audit-prompt-v14.md"
   }
  },
  "providers": {
