@@ -49,7 +49,7 @@ final class RunMetrics {
                     page.pageOrder = root.path("page_order").asInt(0);
                     page.status = root.path("status").asText();
                     JsonNode audit = root.path("audit");
-                    page.bodyDamaged = audit.isObject() && audit.has("body_unchanged") && !audit.path("body_unchanged").asBoolean(true);
+                    page.bodyDamaged = audit.isObject() && audit.has("body_changed") && audit.path("body_changed").asBoolean(false);
                     pages.put(pageId, page);
                 }
             }

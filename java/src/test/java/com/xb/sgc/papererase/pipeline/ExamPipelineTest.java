@@ -681,26 +681,26 @@ public class ExamPipelineTest {
             response.page_id = original.getPageId();
             response.original_target_is_non_body = !auditTargetIsBodyPages.contains(original.getPageId());
             response.decision = auditFailPages.contains(original.getPageId()) ? "manual_review" : "pass";
-            response.body_unchanged = !auditFailPages.contains(original.getPageId());
+            response.body_changed = auditFailPages.contains(original.getPageId());
             response.target_removed = !auditFailPages.contains(original.getPageId());
             response.background_acceptable = !auditFailPages.contains(original.getPageId())
                     && !auditColorWarningPages.contains(original.getPageId());
             response.evidence = "fake";
             if (auditContradictionOncePages.contains(original.getPageId()) && call == 1) {
                 response.decision = "manual_review";
-                response.body_unchanged = false;
+                response.body_changed = true;
                 response.target_removed = true;
                 response.background_acceptable = true;
                 response.evidence = "reported body change inside approved target";
             }
             if (auditTargetIsBodyPages.contains(original.getPageId())) {
                 response.decision = "manual_review";
-                response.body_unchanged = true;
+                response.body_changed = false;
                 response.target_removed = true;
             }
             if (twoRegionAuditResidualPages.contains(original.getPageId()) && call == 1) {
                 response.decision = "manual_review";
-                response.body_unchanged = true;
+                response.body_changed = false;
                 response.target_removed = false;
                 response.background_acceptable = false;
                 response.evidence = "both footer targets retain readable glyphs";

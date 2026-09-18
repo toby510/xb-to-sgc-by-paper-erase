@@ -41,7 +41,7 @@ description: 当用户要按“整份试卷”而不是单张图片去除页码�
 6. 高风险页面（低置信度、旋转、首尾页差异、同线候选、缺页等）只对局部 ROI 调用 `relocate`；它只重测已确认目标的几何坐标，返回的 `target_found=false` 或协议不完整时不擦除。
 7. `InkMaskEraser` 仅修改候选框内识别出的目标墨迹；背景估计失败时可仅在已批准掩码内降级为白色。
 8. `PixelDiffGate` 必须证明候选掩码以外的所有像素未变；该门禁失败立即丢弃候选图。
-9. 每张修改过的图都调用 `audit` 对原图、擦除图和局部 ROI 进行视觉复核。`original_target_is_non_body=false`、`body_unchanged=false` 或 `target_removed=false` 一律人工审核；仅当 audit 报告的正文变化与 PixelDiffGate 的批准框范围证据矛盾时，允许对同一前后图纠错复核一次。
+9. 每张修改过的图都调用 `audit` 对原图、擦除图和局部 ROI 进行视觉复核。`original_target_is_non_body=false`、`body_changed=true` 或 `target_removed=false` 一律人工审核；仅当 audit 报告的正文变化与 PixelDiffGate 的批准框范围证据矛盾时，允许对同一前后图纠错复核一次。
 10. 网络、协议、几何或审计失败均按页失败关闭；客户端可按配置重试同一 HTTP 请求，流水线不得以整页重跑、改写提示词或放宽门禁改变已得到的保守结论。
 
 ## VLM 请求与协议

@@ -32,7 +32,7 @@ public class RunComparisonWriterTest {
         Files.createDirectories(erased);
         Files.write(run.resolve("run.json"), ("{\"model\":\"" + model + "\"}").getBytes(StandardCharsets.UTF_8));
         Files.write(erased.resolve("1001_1_regions.json"), ("{\"page_id\":\"1001:1\",\"exam_id\":\"1001\","
-                + "\"page_order\":1,\"status\":\"" + status + "\",\"audit\":{\"body_unchanged\":true}}").getBytes(StandardCharsets.UTF_8));
+                + "\"page_order\":1,\"status\":\"" + status + "\",\"audit\":{\"body_changed\":false}}").getBytes(StandardCharsets.UTF_8));
         Files.write(run.resolve("_vlm_usage.ndjson"), ("{\"usage_available\":true,\"page_ids\":[\"1001:1\"],"
                 + "\"input_tokens\":4000,\"output_tokens\":100,\"total_tokens\":" + totalTokens
                 + ",\"cached_tokens\":0,\"image_tokens\":0,\"text_tokens\":0,\"reasoning_tokens\":0,\"cost_cny\":0.01}\n").getBytes(StandardCharsets.UTF_8));

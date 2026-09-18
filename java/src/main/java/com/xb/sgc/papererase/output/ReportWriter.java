@@ -318,7 +318,7 @@ public class ReportWriter {
                 row.erased = base.resolve(stem + "_擦除后.png");
                 if (pageOutcome.getAudit() != null) {
                     row.auditEvidence = nvl(pageOutcome.getAudit().evidence);
-                    row.bodyDamaged = auditSaysBodyDamaged(!pageOutcome.getAudit().body_unchanged,
+                    row.bodyDamaged = auditSaysBodyDamaged(pageOutcome.getAudit().body_changed,
                             row.reason, row.auditEvidence);
                 } else {
                     row.bodyDamaged = mentionsBodyDamage(row.reason, "");
@@ -361,8 +361,8 @@ public class ReportWriter {
             JsonNode audit = root.get("audit");
             if (audit != null && audit.isObject()) {
                 row.auditEvidence = text(audit, "evidence", "");
-                JsonNode body = audit.get("body_unchanged");
-                row.bodyDamaged = auditSaysBodyDamaged(body != null && body.isBoolean() && !body.booleanValue(),
+                JsonNode body = audit.get("body_changed");
+                row.bodyDamaged = auditSaysBodyDamaged(body != null && body.isBoolean() && body.booleanValue(),
                         row.reason, row.auditEvidence);
             } else {
                 row.bodyDamaged = mentionsBodyDamage(row.reason, "");
@@ -742,8 +742,8 @@ public class ReportWriter {
     }
 
     private boolean auditSaysBodyDamaged(boolean auditBodyChanged, String reason, String evidence) {
-        // 结构化审计字段是最高优先级证据：body_unchanged=false 必须统计为正文变化，不能
-        // 被模型 evidence 中可能自相矛盾的“未变”字样反向覆盖。字段为 true 时，仍保留
+        // 结构化审计字段是最高优先级证据：body_changed=true 必须统计为正文变化，不能
+        // 被模型 evidence 中可能自相矛盾的“未变”字样反向覆盖。字段为 false 时，仍保留
         // 文字兜底，用于发现 reason/evidence 中额外报告的正文损伤。
         return auditBodyChanged || mentionsBodyDamage(reason, evidence);
     }

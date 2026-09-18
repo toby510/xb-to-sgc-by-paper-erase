@@ -6,24 +6,24 @@
   "min_body_gap_pixels说明": "候选框与正文之间必须被像素证明的最小无墨空白带宽度（像素），生产默认 8；更小值仅允许作为明确标记的实验覆盖。只影响安全带判定，不改变 VLM 坐标来源与擦除写入范围。",
   "network_retries": 2,
   "fail_closed": true,
-  "vlm_contract": "references/00-协议/VLM-CONTRACT-v1.md"
+  "vlm_contract": "references/00-协议/VLM-CONTRACT-v2.md"
  },
  "roles": {
   "locate": {
    "说明": "页码目标行定位：整页模式识别独立页眉/页脚页码行，并为每个 region 分别测量最近正文边界；局部 ROI 模式同步精确复测当前 region 及其正文边界。结果始终只是候选。",
    "输入": "首次定位仅输入标准化整页图（带 PAGE_ID）；坐标精修输入边缘带 ROI（带 PAGE_ID、ROI_PAGE_ID、ROI_REGION_ID）。",
    "调用时机": "逐页先在原图定位并判断阅读方向；旋转页由 Java 旋正后再定位一次；仅在候选框为空、坐标风险等需精修时调用 ROI 模式。",
-   "prompt": "references/02-单页页码定位/locate-full-page-v35.md"
+   "prompt": "references/02-单页页码定位/locate-full-page-v36.md"
   },
   "relocate": {
    "说明": "ROI 局部重定位：只重新测量已确认目标的几何框和该 region 的正文边界，不重新判断整页状态。",
-   "prompt": "references/02-单页页码定位/roi-relocate-v3.md"
+   "prompt": "references/02-单页页码定位/roi-relocate-v4.md"
   },
   "audit": {
    "说明": "擦除结果审计：对比擦除前后，确认正文未变、页码及获批同行非正文元数据组成的目标行已消失，并独立评估背景色。",
    "输入": "同一页的 ORIGINAL、ERASED 两张图及所有相关 ROI。",
    "调用时机": "每张实际发生过像素擦除的页面完成后；正文或目标判断失败即回退人工审核。",
-   "prompt": "references/04-擦除结果审计/audit-prompt-v12.md"
+   "prompt": "references/04-擦除结果审计/audit-prompt-v13.md"
   }
  },
  "providers": {

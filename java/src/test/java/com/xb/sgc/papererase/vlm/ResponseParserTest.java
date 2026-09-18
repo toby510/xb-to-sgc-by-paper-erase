@@ -32,9 +32,9 @@ public class ResponseParserTest {
         assertEquals("safe_to_erase", verify.decision);
 
         AuditResponse audit = ResponseParser.parseAudit("{\"page_id\":\"p1\",\"decision\":\"pass\","
-                + "\"original_target_is_non_body\":true,\"body_unchanged\":true,\"target_removed\":true,\"background_acceptable\":true,"
+                + "\"original_target_is_non_body\":true,\"body_changed\":false,\"target_removed\":true,\"background_acceptable\":true,"
                 + "\"evidence\":\"ok\"}", "p1");
-        assertTrue(audit.body_unchanged);
+        assertFalse(audit.body_changed);
     }
 
     @Test
@@ -122,7 +122,7 @@ public class ResponseParserTest {
         assertBadVerify("{\"page_id\":\"p1\",\"region_id\":\"r1\",\"decision\":\"erase\","
                 + "\"allowed_scope\":\"x\",\"evidence\":\"x\",\"refined_region\":null,"
                 + "\"refined_nearest_body_boundary\":null}", "decision");
-        assertBadAudit("{\"page_id\":\"p1\",\"decision\":\"pass\",\"original_target_is_non_body\":true,\"body_unchanged\":true,"
+        assertBadAudit("{\"page_id\":\"p1\",\"decision\":\"pass\",\"original_target_is_non_body\":true,\"body_changed\":false,"
                 + "\"target_removed\":false,\"background_acceptable\":true,\"evidence\":\"x\"}", "decision must exactly match");
 
         ResponseParser.ParseException ex = ResponseParser.parseFailure("token=secret-1234567890 " + repeat("x", 500));
@@ -133,7 +133,7 @@ public class ResponseParserTest {
     @Test
     public void acceptsAuditPassWithOnlyBackgroundWarning() {
         AuditResponse audit = ResponseParser.parseAudit("{\"page_id\":\"p1\",\"decision\":\"pass\","
-                + "\"original_target_is_non_body\":true,\"body_unchanged\":true,\"target_removed\":true,\"background_acceptable\":false,"
+                + "\"original_target_is_non_body\":true,\"body_changed\":false,\"target_removed\":true,\"background_acceptable\":false,"
                 + "\"evidence\":\"only background tone differs\"}", "p1");
         assertFalse(audit.background_acceptable);
     }
@@ -164,16 +164,16 @@ public class ResponseParserTest {
         assertBadVerify("{\"page_id\":\"p1\",\"region_id\":\"r1\",\"decision\":\"manual_review\","
                 + "\"allowed_scope\":\"x\",\"evidence\":\"x\",\"refined_region\":{\"x1\":0.1,\"y1\":0.1,\"x2\":0.2,\"y2\":0.2}}", "refined_region");
         assertBadAudit("{\"page_id\":\"p1\",\"decision\":\"manual_review\",\"original_target_is_non_body\":true,"
-                + "\"body_unchanged\":true,\"target_removed\":true,\"background_acceptable\":false,\"evidence\":\"x\"}", "decision must exactly match");
+                + "\"body_changed\":false,\"target_removed\":true,\"background_acceptable\":false,\"evidence\":\"x\"}", "decision must exactly match");
     }
 
     @Test
     public void rejectsAuditPassWhenOriginalTargetIsBodyOrFieldIsMissing() {
-        assertBadAudit("{\"page_id\":\"p1\",\"decision\":\"pass\",\"body_unchanged\":true,"
+        assertBadAudit("{\"page_id\":\"p1\",\"decision\":\"pass\",\"body_changed\":false,"
                 + "\"target_removed\":true,\"background_acceptable\":true,\"evidence\":\"x\"}",
                 "original_target_is_non_body");
         assertBadAudit("{\"page_id\":\"p1\",\"decision\":\"pass\",\"original_target_is_non_body\":false,"
-                + "\"body_unchanged\":true,\"target_removed\":true,\"background_acceptable\":true,\"evidence\":\"x\"}",
+                + "\"body_changed\":false,\"target_removed\":true,\"background_acceptable\":true,\"evidence\":\"x\"}",
                 "decision must exactly match");
     }
 

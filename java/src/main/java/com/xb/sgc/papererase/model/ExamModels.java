@@ -248,8 +248,9 @@ public final class ExamModels {
         /** ORIGINAL 中获批擦除目标确认为非正文页码/同行元数据；不确定也必须为 false。 */
         @JsonProperty(required = true)
         public boolean original_target_is_non_body;
+        /** ORIGINAL 与 ERASED 对比后正文是否被改变（true 即伤正文）；要求正文零变化时为 false。 */
         @JsonProperty(required = true)
-        public boolean body_unchanged;
+        public boolean body_changed;
         @JsonProperty(required = true)
         public boolean target_removed;
         @JsonProperty(required = true)

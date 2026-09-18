@@ -161,21 +161,21 @@ public final class ResponseParser {
 
     private static AuditResponse parseAuditObject(String raw, String expectedPageId) {
         JsonNode root = root(raw);
-        requireFields(root, "page_id", "decision", "original_target_is_non_body", "body_unchanged", "target_removed", "background_acceptable", "evidence");
-        rejectUnknown(root, "page_id", "decision", "original_target_is_non_body", "body_unchanged", "target_removed", "background_acceptable", "evidence");
+        requireFields(root, "page_id", "decision", "original_target_is_non_body", "body_changed", "target_removed", "background_acceptable", "evidence");
+        rejectUnknown(root, "page_id", "decision", "original_target_is_non_body", "body_changed", "target_removed", "background_acceptable", "evidence");
         AuditResponse response = new AuditResponse();
         response.page_id = requiredText(root, "page_id");
         requireEqual(response.page_id, expectedPageId, "page_id", raw);
         response.decision = enumText(root, "decision", "pass", "manual_review");
         response.original_target_is_non_body = requiredBoolean(root, "original_target_is_non_body");
-        response.body_unchanged = requiredBoolean(root, "body_unchanged");
+        response.body_changed = requiredBoolean(root, "body_changed");
         response.target_removed = requiredBoolean(root, "target_removed");
         response.background_acceptable = requiredBoolean(root, "background_acceptable");
         response.evidence = requiredText(root, "evidence");
         boolean hardConditionsPassed = response.original_target_is_non_body
-                && response.body_unchanged && response.target_removed;
+                && !response.body_changed && response.target_removed;
         if ("pass".equals(response.decision) != hardConditionsPassed) {
-            throw bad("audit decision must exactly match original_target_is_non_body, body_unchanged and target_removed", raw);
+            throw bad("audit decision must exactly match original_target_is_non_body, body_changed and target_removed", raw);
         }
         return response;
     }

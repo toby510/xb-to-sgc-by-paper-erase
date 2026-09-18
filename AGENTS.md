@@ -29,7 +29,7 @@ Java 使用 `RoiTransform` 将 `locate` 返回的 ROI 坐标无损映射回标�
 
 `InkMaskEraser` 只修改批准框内的页码墨迹，不允许矩形整块涂白。`PixelDiffGate` 必须证明掩码外像素完全未变。背景估计失败时，只能在已批准掩码内降级为白色。
 
-每张实际擦除图都必须经过 `audit`：`body_unchanged=true` 且 `target_removed=true` 才能交付。背景色不佳可标记 `color_warning`，但不得回滚已证明安全的页码擦除。
+每张实际擦除图都必须经过 `audit`：`body_changed=false` 且 `target_removed=true` 才能交付。背景色不佳可标记 `color_warning`，但不得回滚已证明安全的页码擦除。
 
 ### 4. 异常兜底
 
