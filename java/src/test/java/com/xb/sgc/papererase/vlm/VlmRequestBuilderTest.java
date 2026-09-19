@@ -20,34 +20,25 @@ import static org.junit.Assert.assertTrue;
 
 public class VlmRequestBuilderTest {
     @Test
-    public void verifyCarriesOnlyCurrentPageSemanticAnchor() {
-        EraseRegion region = region("r1", "第2页", "英语试卷");
-        String anchor = VlmClient.verifySemanticAnchor(region);
-        assertTrue(anchor.contains("第2页"));
-        assertTrue(anchor.contains("英语试卷"));
-        assertEquals("", VlmClient.verifySemanticAnchor(null));
+    public void relocationAnchorCarriesOnlyCurrentRegionAnchorText() {
+        EraseRegion region = region("r1", "第2页(共8页)", "【英语(八)】");
+
+        String anchor = VlmClient.relocationAnchor(region);
+
+        assertTrue(anchor.contains("page_number_text='第2页(共8页)'"));
+        assertTrue(anchor.contains("same_line_metadata='【英语(八)】'"));
+        assertTrue(anchor.contains("本次 ROI 语义锚点"));
         assertFalse(anchor.contains("pattern_group"));
+        // 空 region 不得抛异常：锚点退化为空串，其余判断交给 relocate 提示词。
+        assertTrue(VlmClient.relocationAnchor(new EraseRegion()).contains("page_number_text=''"));
     }
 
     @Test
-    public void coordinateRefinementCarriesFirstPassTextAsRoiSearchAnchor() {
-        EraseRegion region = new EraseRegion();
-        region.safety_margin = "coordinate_refinement_requested";
-        region.page_number_text = "第2页(共8页)";
-        region.same_line_metadata = "【英语(八)】";
+    public void relocationAnchorEscapesQuotesAndNewlines() {
+        // 单引号和换行会把锚点截断或破句，拼进提示词前必须转义。
+        String anchor = VlmClient.relocationAnchor(region("r1", "第5页", "英语'试卷\nA"));
 
-        String instruction = VlmClient.refinementInstruction(region);
-
-        assertTrue(instruction.contains("第2页(共8页)"));
-        assertTrue(instruction.contains("【英语(八)】"));
-        // 指令文本与提示词正文统一为中文，协议字段名保持原样。
-        assertTrue(instruction.contains("请在完整 ROI 内重新查找"));
-        assertTrue("局部精修必须重新测量当前 ROI 可见的正文边界，不能沿用整页幻觉边界",
-                instruction.contains("nearest_body_boundary"));
-        assertFalse(instruction.contains("Do not return or infer a body boundary"));
-
-        String relocation = VlmClient.relocationInstruction(region);
-        assertTrue(relocation.contains("每个匹配到的 region 都要给出它自己的 nearest_body_boundary"));
+        assertTrue(anchor.contains("same_line_metadata='英语’试卷 A'"));
     }
 
     @Test

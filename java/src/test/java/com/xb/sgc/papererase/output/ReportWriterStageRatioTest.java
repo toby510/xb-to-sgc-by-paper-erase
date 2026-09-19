@@ -24,17 +24,16 @@ public class ReportWriterStageRatioTest {
         Files.write(erased.resolve("1001_2_擦除后.png"), new byte[] {0});
         write(run.resolve("_vlm_usage.ndjson"),
                 usage("locate", "1001:1") + usage("locate", "1001:1")
-                        + usage("locate", "1001:2") + usage("verify", "1001:1") + usage("verify", "1001:2"));
+                        + usage("locate", "1001:2") + usage("relocate", "1001:1") + usage("relocate", "1001:2"));
         write(run.resolve("_progress.ndjson"),
                 event("locate", "1001:1", "safe_to_erase") + event("locate", "1001:2", "safe_to_erase")
-                        + event("verify", "1001:1", "safe_to_erase") + event("verify", "1001:2", "manual_review"));
+                        + event("relocate", "1001:1", "safe_to_erase") + event("relocate", "1001:2", "manual_review"));
 
         new ReportWriter().writeFromRunDirectory(run);
         String report = new String(Files.readAllBytes(run.resolve("测试报告/测试报告.md")), StandardCharsets.UTF_8);
 
-        assertTrue(report.contains("| 安全复核（verify） | 2/2=100% | 1/2=50% | 1/2=50% |"));
+        assertTrue(report.contains("| ROI 重定位（relocate） | 2/2=100% | 1/2=50% | 1/2=50% |"));
         assertTrue(report.contains("| locate 重试 | 1/2=50% | 1/1=100% | 0/1=0% |"));
-        assertTrue(report.contains("| ROI 安全复核（verify） | 2/2=100% | 1/2=50% | 1/2=50% |"));
     }
 
     private static String usage(String role, String pageId) {

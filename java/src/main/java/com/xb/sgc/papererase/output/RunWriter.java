@@ -258,7 +258,8 @@ public class RunWriter {
         }
         run.put("usage_observability", usage);
         Map<String, Object> prompts = new LinkedHashMap<String, Object>();
-        for (String role : new String[]{"locate", "audit"}) {
+        // 快照集合以实际冻结的提示词为准，避免新增角色后此处硬编码清单再次遗漏。
+        for (String role : frozenPrompts.keySet()) {
             com.xb.sgc.papererase.vlm.VlmConfig.RoleConfig roleConfig = config.role(role);
             byte[] content = frozenPrompts.get(role).getBytes(StandardCharsets.UTF_8);
             Path source = skillRoot.resolve(roleConfig.getPromptPath());

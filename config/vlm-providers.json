@@ -38,13 +38,13 @@
    ],
    "model": {
     "env": "XB_PAPER_ERASE_QWEN_MODEL",
-    "default": "qwen3.8-flash"
+    "default": "qwen3.8-max"
    },
    "roles": {
     "locate": {
      "model": {
       "env": "XB_PAPER_ERASE_LOCATE_MODEL",
-      "default": "qwen3.8-flash"
+      "default": "qwen3.8-max"
      },
      "base_url": {
       "env": "XB_PAPER_ERASE_LOCATE_BASE_URL",
@@ -62,7 +62,7 @@
     "audit": {
      "model": {
       "env": "XB_PAPER_ERASE_AUDIT_MODEL",
-      "default": "qwen3.8-flash"
+      "default": "qwen3.8-max"
      },
      "base_url": {
       "env": "XB_PAPER_ERASE_AUDIT_BASE_URL",

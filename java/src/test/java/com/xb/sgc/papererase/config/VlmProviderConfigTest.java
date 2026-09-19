@@ -17,14 +17,13 @@ public class VlmProviderConfigTest {
         JsonNode roles = root.path("providers").path("dashscope").path("roles");
 
         assertRoleOverride(roles, "locate", "XB_PAPER_ERASE_LOCATE_MODEL");
-        assertRoleOverride(roles, "verify", "XB_PAPER_ERASE_VERIFY_MODEL");
         assertRoleOverride(roles, "audit", "XB_PAPER_ERASE_AUDIT_MODEL");
     }
 
     private void assertRoleOverride(JsonNode roles, String role, String modelEnv) {
         JsonNode roleConfig = roles.path(role);
         assertFalse("missing dashscope role override for " + role, roleConfig.isMissingNode());
-        assertEquals("qwen3.8-flash", roleConfig.path("model").path("default").asText());
+        assertEquals("qwen3.8-max", roleConfig.path("model").path("default").asText());
         assertEquals(modelEnv, roleConfig.path("model").path("env").asText());
         assertTrue(roleConfig.path("base_url").path("env").asText().contains(role.toUpperCase()));
         assertTrue(roleConfig.path("endpoint").path("env").asText().contains(role.toUpperCase()));

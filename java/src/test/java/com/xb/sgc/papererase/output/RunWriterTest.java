@@ -1,19 +1,26 @@
 package com.xb.sgc.papererase.output;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xb.sgc.papererase.model.ExamModels.ExamInput;
 import com.xb.sgc.papererase.model.ExamModels.EraseRegion;
 import com.xb.sgc.papererase.model.ExamModels.PageInput;
 import com.xb.sgc.papererase.pipeline.ExamOutcome;
 import com.xb.sgc.papererase.pipeline.ExamOutcome.PageOutcome;
 import com.xb.sgc.papererase.pipeline.ExamOutcome.PageTransforms;
+import com.xb.sgc.papererase.vlm.VlmClient;
+import com.xb.sgc.papererase.vlm.VlmConfig;
 import org.junit.Test;
 
 import java.awt.Color;
 import java.awt.image.BufferedImage;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertEquals;
@@ -116,6 +123,31 @@ public class RunWriterTest {
         assertTrue(!Files.exists(wordDir.resolve("2002_擦除后_待人工审核.docx")));
         assertTrue("other source documents still copy after one failure", Files.isRegularFile(wordDir.resolve("可复制.pdf")));
         assertTrue(Files.isDirectory(wordDir.resolve("复制失败.docx")));
+    }
+
+    @Test
+    public void snapshotsEveryFrozenPromptIncludingRoiRelocate() throws Exception {
+        Path root = Files.createTempDirectory("run-writer-prompts-");
+        Path skillRoot = Paths.get("..");
+        Map<String, String> env = new HashMap<String, String>();
+        env.put("MST_QWEN_API_KEY", "provider-secret");
+        VlmConfig config = VlmConfig.load(skillRoot.resolve("config/vlm-providers.json"), env);
+        VlmClient client = VlmClient.create(config, skillRoot);
+        Path runDir = RunWriter.createRunDir(root, "qwen3.8-max", "20260821T120002");
+
+        RunWriter.writeRunningRunJson(runDir, Collections.singletonMap("数据集1", root), "run", config,
+                1, 2, skillRoot, client.frozenPrompts());
+
+        JsonNode prompts = new ObjectMapper().readTree(runDir.resolve("run.json").toFile()).path("prompts");
+        // ROI 重定位复用 locate 的模型，但提示词独立，少快照一个角色就无法复现当次运行。
+        for (String role : new String[]{"locate", "relocate", "audit"}) {
+            JsonNode item = prompts.path(role);
+            assertTrue("run.json 缺失 " + role + " 提示词快照", !item.isMissingNode());
+            assertTrue("提示词快照文件不存在: " + role,
+                    Files.isRegularFile(runDir.resolve(item.path("snapshot_path").asText())));
+        }
+        assertEquals(3, prompts.size());
+        assertTrue(Files.isRegularFile(runDir.resolve("metadata/prompts/relocate/roi-relocate-v4.md")));
     }
 
     private static BufferedImage solid(Color color) {

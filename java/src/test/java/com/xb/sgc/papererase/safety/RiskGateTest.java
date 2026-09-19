@@ -13,23 +13,23 @@ import static org.junit.Assert.assertTrue;
 
 public class RiskGateTest {
     @Test
-    public void requiresLocalVerifyWhenAnyRiskConditionFails() {
+    public void requiresRelocationWhenAnyRiskConditionFails() {
         RegionValidator.ValidationResult validation = validated(0.99);
 
-        assertTrue(RiskGate.requiresLocalVerify(RiskGate.PageContext.stable(null), validation));
-        assertTrue(RiskGate.requiresLocalVerify(RiskGate.PageContext.stable(" "), validation));
-        assertTrue(RiskGate.requiresLocalVerify(stablePage().withReadingRotation(90), validation));
-        assertTrue(RiskGate.requiresLocalVerify(stablePage().withPageSequenceIncomplete(true), validation));
-        assertTrue(RiskGate.requiresLocalVerify(stablePage(), validated(0.969)));
-        assertTrue(RiskGate.requiresLocalVerify(stablePage(), validated(Double.NaN)));
-        assertTrue(RiskGate.requiresLocalVerify(stablePage(), RegionValidator.ValidationResult.rejectedResult("bad region")));
-        assertTrue(RiskGate.requiresLocalVerify(stablePage(), validatedForPage("different-page", 0.99)));
+        assertTrue(RiskGate.requiresRelocation(RiskGate.PageContext.stable(null), validation));
+        assertTrue(RiskGate.requiresRelocation(RiskGate.PageContext.stable(" "), validation));
+        assertTrue(RiskGate.requiresRelocation(stablePage().withReadingRotation(90), validation));
+        assertTrue(RiskGate.requiresRelocation(stablePage().withPageSequenceIncomplete(true), validation));
+        assertTrue(RiskGate.requiresRelocation(stablePage(), validated(0.969)));
+        assertTrue(RiskGate.requiresRelocation(stablePage(), validated(Double.NaN)));
+        assertTrue(RiskGate.requiresRelocation(stablePage(), RegionValidator.ValidationResult.rejectedResult("bad region")));
+        assertTrue(RiskGate.requiresRelocation(stablePage(), validatedForPage("different-page", 0.99)));
     }
 
     @Test
-    public void skipsLocalVerifyOnlyForFullyStableValidatedPage() {
-        assertFalse(RiskGate.requiresLocalVerify(stablePage(), validated(0.97)));
-        assertFalse(RiskGate.requiresLocalVerify(stablePage(), validated(0.99)));
+    public void skipsRelocationOnlyForFullyStableValidatedPage() {
+        assertFalse(RiskGate.requiresRelocation(stablePage(), validated(0.97)));
+        assertFalse(RiskGate.requiresRelocation(stablePage(), validated(0.99)));
     }
 
     private RiskGate.PageContext stablePage() {

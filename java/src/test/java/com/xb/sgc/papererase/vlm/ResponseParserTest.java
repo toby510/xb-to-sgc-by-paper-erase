@@ -2,7 +2,7 @@ package com.xb.sgc.papererase.vlm;
 
 import com.xb.sgc.papererase.model.ExamModels.AuditResponse;
 import com.xb.sgc.papererase.model.ExamModels.LocateResponse;
-import com.xb.sgc.papererase.model.ExamModels.VerifyResponse;
+import com.xb.sgc.papererase.model.ExamModels.RelocateResponse;
 import org.junit.Test;
 
 import java.util.Arrays;
@@ -15,7 +15,7 @@ import static org.junit.Assert.assertTrue;
 public class ResponseParserTest {
 
     @Test
-    public void parsesLocateVerifyAndAuditWithStrictCoordinatesAndDecisions() {
+    public void parsesLocateRelocateAndAuditWithStrictCoordinatesAndDecisions() {
         LocateResponse locate = ResponseParser.parseLocate("{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,\"status\":\"safe_to_erase\","
                 + "\"regions\":[{\"region_id\":\"r1\",\"x1\":0.45,\"y1\":0.94,\"x2\":0.55,\"y2\":0.98,"
                 + "\"page_number_text\":\"1\",\"same_line_metadata\":\"page only\",\"on_line\":false,"
@@ -26,10 +26,11 @@ public class ResponseParserTest {
         assertEquals(0, locate.reading_rotation);
         assertEquals(0.99, locate.direction_confidence, 0.0);
 
-        VerifyResponse verify = ResponseParser.parseVerify("{\"page_id\":\"p1\",\"region_id\":\"r1\","
-                + "\"decision\":\"safe_to_erase\",\"allowed_scope\":\"page number only\","
-                + "\"evidence\":\"ok\",\"refined_region\":{\"x1\":0.2,\"y1\":0.7,\"x2\":0.8,\"y2\":0.9}}", "p1", "r1");
-        assertEquals("safe_to_erase", verify.decision);
+        RelocateResponse relocate = ResponseParser.parseRelocate("{\"page_id\":\"p1\",\"region_id\":\"r1\","
+                + "\"target_found\":true,\"evidence\":\"ok\","
+                + "\"refined_region\":{\"x1\":0.2,\"y1\":0.7,\"x2\":0.8,\"y2\":0.9},"
+                + "\"nearest_body_boundary\":{\"x\":null,\"y\":0.1,\"basis\":\"roi\"}}", "p1", "r1");
+        assertTrue(relocate.target_found);
 
         AuditResponse audit = ResponseParser.parseAudit("{\"page_id\":\"p1\",\"decision\":\"pass\","
                 + "\"original_target_is_non_body\":true,\"body_changed\":false,\"target_removed\":true,\"background_acceptable\":true,"
@@ -39,12 +40,12 @@ public class ResponseParserTest {
 
     @Test
     public void parsesRoiRelativeRefinedCoordinatesOnlyAsAnExplicitPair() {
-        VerifyResponse verify = ResponseParser.parseVerify("{\"page_id\":\"p1\",\"region_id\":\"r1\","
-                + "\"decision\":\"safe_to_erase\",\"allowed_scope\":\"page number only\",\"evidence\":\"ok\","
+        RelocateResponse relocate = ResponseParser.parseRelocate("{\"page_id\":\"p1\",\"region_id\":\"r1\","
+                + "\"target_found\":true,\"evidence\":\"ok\","
                 + "\"refined_region\":{\"x1\":0.20,\"y1\":0.30,\"x2\":0.40,\"y2\":0.50},"
-                + "\"refined_nearest_body_boundary\":{\"x\":null,\"y\":0.10,\"basis\":\"body\"}}", "p1", "r1");
-        assertEquals(0.30, verify.refined_region.y1, 0.0);
-        assertEquals(0.10, verify.refined_nearest_body_boundary.y, 0.0);
+                + "\"nearest_body_boundary\":{\"x\":null,\"y\":0.10,\"basis\":\"body\"}}", "p1", "r1");
+        assertEquals(0.30, relocate.refined_region.y1, 0.0);
+        assertEquals(0.10, relocate.nearest_body_boundary.y, 0.0);
     }
 
     @Test
@@ -111,7 +112,7 @@ public class ResponseParserTest {
     }
 
     @Test
-    public void rejectsUnsafeLocateVerifyAuditAndStoresShortSafeRawSummary() {
+    public void rejectsUnsafeLocateRelocateAuditAndStoresShortSafeRawSummary() {
         assertBadLocate("{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,\"status\":\"safe\",\"regions\":[],"
                 + "\"evidence\":\"x\"}", "status");
         assertBadLocate("{\"page_id\":\"p1\",\"reading_rotation\":0,\"direction_confidence\":0.99,\"status\":\"safe_to_erase\","
@@ -119,9 +120,8 @@ public class ResponseParserTest {
                 + "\"page_number_text\":\"1\",\"same_line_metadata\":\"\",\"on_line\":false,"
                 + "\"confidence\":0.99,\"safety_margin\":\"blank\","
                 + "\"nearest_body_boundary\":{\"x\":null,\"y\":0.8,\"basis\":\"java\"}}],\"evidence\":\"x\"}", "strict JSON");
-        assertBadVerify("{\"page_id\":\"p1\",\"region_id\":\"r1\",\"decision\":\"erase\","
-                + "\"allowed_scope\":\"x\",\"evidence\":\"x\",\"refined_region\":null,"
-                + "\"refined_nearest_body_boundary\":null}", "decision");
+        assertBadRelocate("{\"page_id\":\"p1\",\"region_id\":\"r1\",\"evidence\":\"x\","
+                + "\"refined_region\":null,\"nearest_body_boundary\":null}", "missing field");
         assertBadAudit("{\"page_id\":\"p1\",\"decision\":\"pass\",\"original_target_is_non_body\":true,\"body_changed\":false,"
                 + "\"target_removed\":false,\"background_acceptable\":true,\"evidence\":\"x\"}", "decision must exactly match");
 
@@ -158,11 +158,16 @@ public class ResponseParserTest {
     }
 
     @Test
-    public void rejectsVerifyAndAuditDecisionCombinationsThatContradictTheirPayloads() {
-        assertBadVerify("{\"page_id\":\"p1\",\"region_id\":\"r1\",\"decision\":\"safe_to_erase\","
-                + "\"allowed_scope\":\"x\",\"evidence\":\"x\",\"refined_region\":null}", "refined_region");
-        assertBadVerify("{\"page_id\":\"p1\",\"region_id\":\"r1\",\"decision\":\"manual_review\","
-                + "\"allowed_scope\":\"x\",\"evidence\":\"x\",\"refined_region\":{\"x1\":0.1,\"y1\":0.1,\"x2\":0.2,\"y2\":0.2}}", "refined_region");
+    public void rejectsRelocateAndAuditPayloadsThatContradictTheirDecision() {
+        // 精修框与局部正文边界必须成对出现：只有精修框而漏掉边界，等于隐式丢弃正文证据。
+        assertBadRelocate("{\"page_id\":\"p1\",\"region_id\":\"r1\",\"target_found\":false,\"evidence\":\"x\","
+                + "\"refined_region\":null,\"nearest_body_boundary\":{\"x\":null,\"y\":0.1,\"basis\":\"roi\"}}",
+                "nearest_body_boundary requires refined_region");
+        assertBadRelocate("{\"page_id\":\"p1\",\"region_id\":\"r1\",\"target_found\":true,\"evidence\":\"x\","
+                + "\"refined_region\":null,\"nearest_body_boundary\":null}", "requires refined_region");
+        assertBadRelocate("{\"page_id\":\"p1\",\"region_id\":\"r1\",\"target_found\":false,\"evidence\":\"x\","
+                + "\"refined_region\":{\"x1\":0.1,\"y1\":0.1,\"x2\":0.2,\"y2\":0.2},"
+                + "\"nearest_body_boundary\":{\"x\":null,\"y\":0.1,\"basis\":\"roi\"}}", "null refined_region");
         assertBadAudit("{\"page_id\":\"p1\",\"decision\":\"manual_review\",\"original_target_is_non_body\":true,"
                 + "\"body_changed\":false,\"target_removed\":true,\"background_acceptable\":false,\"evidence\":\"x\"}", "decision must exactly match");
     }
@@ -186,10 +191,10 @@ public class ResponseParserTest {
         }
     }
 
-    private void assertBadVerify(String json, String messagePart) {
+    private void assertBadRelocate(String json, String messagePart) {
         try {
-            ResponseParser.parseVerify(json, "p1", "r1");
-            throw new AssertionError("verify should be rejected");
+            ResponseParser.parseRelocate(json, "p1", "r1");
+            throw new AssertionError("relocate should be rejected");
         } catch (ResponseParser.ParseException expected) {
             assertTrue(expected.getMessage(), expected.getMessage().contains(messagePart));
         }

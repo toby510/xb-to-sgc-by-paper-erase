@@ -21,20 +21,21 @@ public class VlmConfigTest {
     @Test
     public void loadsThreeFailClosedRolesWithoutLeakingApiKey() throws Exception {
         Map<String, String> env = new HashMap<String, String>();
-        env.put("XB_PAPER_ERASE_PATTERN_API_KEY", "pattern-secret");
+        env.put("MST_QWEN_API_KEY", "provider-secret");
         env.put("XB_PAPER_ERASE_LOCATE_API_KEY", "locate-secret");
-        env.put("XB_PAPER_ERASE_VERIFY_API_KEY", "verify-secret");
-        env.put("XB_PAPER_ERASE_SEMANTIC_VERIFY_API_KEY", "semantic-secret");
         env.put("XB_PAPER_ERASE_AUDIT_API_KEY", "audit-secret");
 
         VlmConfig config = VlmConfig.load(Paths.get("../config/vlm-providers.json"), env);
 
-        assertEquals("qwen3.8-flash", config.role("locate").getModel());
-        assertEquals("qwen3.8-flash", config.role("verify").getModel());
-        assertEquals("qwen3.8-flash", config.role("audit").getModel());
+        assertEquals("qwen3.8-max", config.role("locate").getModel());
+        assertEquals("qwen3.8-max", config.role("relocate").getModel());
+        assertEquals("qwen3.8-max", config.role("audit").getModel());
+        // relocate 没有 provider 级角色覆盖，模型与密钥都必须回落到 provider 配置而不是静默缺失。
+        assertEquals("provider-secret", config.role("relocate").getApiKey());
         assertEquals(2, config.role("locate").getRetries());
         assertTrue(config.role("audit").getEndpoint().contains("/chat/completions"));
         assertFalse(config.role("locate").safeSummary().contains("locate-secret"));
+        assertFalse(config.role("relocate").safeSummary().contains("provider-secret"));
     }
 
     @Test
@@ -48,10 +49,7 @@ public class VlmConfigTest {
         }
 
         Map<String, String> env = new HashMap<String, String>();
-        env.put("XB_PAPER_ERASE_PATTERN_API_KEY", "pattern-secret");
         env.put("XB_PAPER_ERASE_LOCATE_API_KEY", "locate-secret");
-        env.put("XB_PAPER_ERASE_VERIFY_API_KEY", "verify-secret");
-        env.put("XB_PAPER_ERASE_SEMANTIC_VERIFY_API_KEY", "semantic-secret");
         env.put("XB_PAPER_ERASE_AUDIT_API_KEY", "audit-secret");
         env.put("XB_PAPER_ERASE_LOCATE_ENDPOINT", " ");
         try {

@@ -83,7 +83,13 @@ public class InkMaskEraserTest {
                 stamped.setRGB(x, y, Color.RED.getRGB());
             }
         }
-        assertManual(stamped, 0.35, 0.05, 0.65, 0.20, 0.40, "colored non-target");
+        // 彩色非目标内容不再让整页转人工：彩色像素被排除在批准掩码外并逐像素保持原样，
+        // 只重建框内已识别的目标墨迹（见 erase 的“彩色像素保持保护态”）。
+        InkMaskEraser.EraseOutcome stampedOutcome = InkMaskEraser.erase(stamped,
+                validated(stamped, 0.35, 0.05, 0.65, 0.20, 0.40));
+        assertEquals(InkMaskEraser.Status.SAFE_TO_ERASE, stampedOutcome.getStatus());
+        assertEquals(Color.RED.getRGB(), stampedOutcome.getCandidate().getRGB(44, 13));
+        assertFalse(stampedOutcome.getApprovedMask().isApproved(44, 13));
 
         BufferedImage grayAntiAlias = page(80, 80, new Color(245, 244, 238));
         drawAntiAliasedDigit(grayAntiAlias, 30, 8);
@@ -109,24 +115,6 @@ public class InkMaskEraserTest {
         InkMaskEraser.EraseOutcome touchingOutcome = InkMaskEraser.erase(touching,
                 validated(touching, 0.35, 0.05, 0.55, 0.20, 0.40));
         assertEquals(touchingOutcome.getReason(), InkMaskEraser.Status.SAFE_TO_ERASE, touchingOutcome.getStatus());
-    }
-
-    @Test
-    public void allowsColoredPageNumberOnlyAfterLocalVerifyApproval() throws Exception {
-        BufferedImage source = page(80, 80, new Color(245, 244, 238));
-        for (int y = 10; y < 15; y++) {
-            for (int x = 68; x < 71; x++) {
-                source.setRGB(x, y, new Color(15, 75, 180).getRGB());
-            }
-        }
-        RegionValidator.PixelRegion region = pixelRegion("page-1", "r1", 64, 4, 12, 14);
-
-        assertEquals(InkMaskEraser.Status.MANUAL_REVIEW, InkMaskEraser.erase(source, region).getStatus());
-        InkMaskEraser.EraseOutcome approved = InkMaskEraser.erase(source, region, true);
-
-        assertEquals(InkMaskEraser.Status.SAFE_TO_ERASE, approved.getStatus());
-        assertTrue(approved.getApprovedMask().isApproved(69, 12));
-        assertEquals(source.getRGB(5, 40), approved.getCandidate().getRGB(5, 40));
     }
 
     @Test

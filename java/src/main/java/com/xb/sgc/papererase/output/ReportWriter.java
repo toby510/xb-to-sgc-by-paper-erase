@@ -318,10 +318,9 @@ public class ReportWriter {
                 row.erased = base.resolve(stem + "_擦除后.png");
                 if (pageOutcome.getAudit() != null) {
                     row.auditEvidence = nvl(pageOutcome.getAudit().evidence);
-                    row.bodyDamaged = auditSaysBodyDamaged(pageOutcome.getAudit().body_changed,
-                            row.reason, row.auditEvidence);
-                } else {
-                    row.bodyDamaged = mentionsBodyDamage(row.reason, "");
+                    // 正文损伤只以审计的结构化字段为准，与 RunMetrics 保持同一口径：
+                    // evidence 是自由文本，"无正文损伤" 之类的否定表述会被子串匹配误判。
+                    row.bodyDamaged = pageOutcome.getAudit().body_changed;
                 }
                 rows.add(row);
             }
@@ -362,13 +361,8 @@ public class ReportWriter {
             if (audit != null && audit.isObject()) {
                 row.auditEvidence = text(audit, "evidence", "");
                 JsonNode body = audit.get("body_changed");
-                row.bodyDamaged = auditSaysBodyDamaged(body != null && body.isBoolean() && body.booleanValue(),
-                        row.reason, row.auditEvidence);
-            } else {
-                row.bodyDamaged = mentionsBodyDamage(row.reason, "");
-            }
-            if (!row.bodyDamaged) {
-                row.bodyDamaged = mentionsBodyDamage(row.reason, row.auditEvidence);
+                // 同上：只认结构化审计字段；没有 audit 的页（空白页、早期失败页）不计正文损伤。
+                row.bodyDamaged = body != null && body.isBoolean() && body.booleanValue();
             }
             rows.add(row);
         }
@@ -439,7 +433,8 @@ public class ReportWriter {
             return "产物异常：缺少擦除后图；原始状态=" + row.status + "，原因=" + reason;
         }
         if (row.bodyDamaged) {
-            return "审计怀疑正文被改变，需要人工确认；原始原因=" + reason + briefEvidence(evidence);
+            return "审计判定该页擦除会改变正文，候选已被拒绝（该页不自动交付）；原始原因="
+                    + reason + briefEvidence(evidence);
         }
         if (reason.contains("locate") || reason.contains("ParseException") || reason.contains("protocol")) {
             return "模型定位或响应解析异常；原始原因=" + reason;
@@ -724,28 +719,6 @@ public class ReportWriter {
 
     private String now() {
         return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date());
-    }
-
-    private boolean mentionsBodyDamage(String reason, String evidence) {
-        String text = (nvl(reason) + " " + nvl(evidence)).toLowerCase();
-        if (text.contains("正文被") || text.contains("正文损") || text.contains("伤正文")
-                || text.contains("body damaged")) {
-            return true;
-        }
-        // 朴素子串匹配会把 audit 通过页 evidence 里的 "无正文变化" 误判为 "正文变化"；
-        // 先剔除常见否定表述再匹配，避免报告虚报"擦除正文"。
-        String stripped = text
-                .replace("无任何正文变化", "").replace("无正文变化", "")
-                .replace("未见正文变化", "").replace("未发现正文变化", "")
-                .replace("没有正文变化", "").replace("未出现正文变化", "");
-        return stripped.contains("正文变化");
-    }
-
-    private boolean auditSaysBodyDamaged(boolean auditBodyChanged, String reason, String evidence) {
-        // 结构化审计字段是最高优先级证据：body_changed=true 必须统计为正文变化，不能
-        // 被模型 evidence 中可能自相矛盾的“未变”字样反向覆盖。字段为 false 时，仍保留
-        // 文字兜底，用于发现 reason/evidence 中额外报告的正文损伤。
-        return auditBodyChanged || mentionsBodyDamage(reason, evidence);
     }
 
     private String text(JsonNode root, String field, String fallback) {
