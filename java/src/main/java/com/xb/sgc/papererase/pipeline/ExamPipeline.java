@@ -205,6 +205,21 @@ public final class ExamPipeline {
         if ("no_pagenum".equals(locate.status) || locate.regions.isEmpty()) {
             return new PageOutcome(page.getPageId(), "no_pagenum", "locate_no_pagenum", original, normalizedImage, normalizedImage, transforms, Collections.<EraseRegion>emptyList(), locate, null);
         }
+        PageWork work = new PageWork(exam, page, original, normalizedImage, transforms, pageImage, context);
+        return processLocatedPage(work, locate, readingRotation);
+    }
+
+    /**
+     * Locate 已完成后的页面核心。未来 MQ 的 locate 消费完成后，只需恢复 PageWork 与已校验的
+     * LocateResponse，即可从这个边界继续后续 Relocate、擦除和 Audit，而不复制任何安全分支。
+     */
+    private PageOutcome processLocatedPage(PageWork work, LocateResponse locate, int readingRotation) {
+        ExamInput exam = work.exam;
+        PageInput page = work.page;
+        BufferedImage original = work.original;
+        BufferedImage normalizedImage = work.normalized;
+        PageTransforms transforms = work.transforms;
+        RunContext context = work.context;
         // 首次整页 locate 的原始语义框是证据基线；trim/refine 后不得覆盖它。
         List<EraseRegion> initialLocateRegions = copyRegions(locate.regions);
 
@@ -230,18 +245,15 @@ public final class ExamPipeline {
             // 3.2 局部坐标精修：仅对可由高清 ROI 重新定位的轻微几何风险发起二检。
             // 模型已给出明确页码语义但像素框/正文边界未过门禁时，先让模型在完整边缘高清图
             // 中重测；绝不由 Java 放宽规则或自行移动候选框。
-            Refinement refinement = shouldRefineRejected(validation) ?
-                    relocateRejectedRegions(exam, page, normalizedImage, locate, pageImage, context,
-                            allowsConflictingBoundaryReplacementAfterRefine(validation)) : null;
+            Refinement refinement = shouldRefineRejected(validation) ? relocateRejectedRegions(work, locate) : null;
             if (refinement == null) {
                 // 诊断 audit：门禁拦下的框先白填试擦（仅内存），让 VLM 复核该框是否真伤正文。
                 // 人工审核由此可区分"伤正文"（业务保持原图）与"门禁过敏"（框本身可用）。
-                AuditResponse gateAudit = diagnosticAudit(exam, page, normalizedImage, locate, pageImage, context);
+                AuditResponse gateAudit = diagnosticAudit(work, locate);
                 if (gateAudit != null && gateAudit.original_target_is_non_body
                         && !gateAudit.body_changed && gateAudit.target_removed) {
                     // 诊断 audit 确认框不伤正文：给一次坐标精修重试，仍由像素门禁决定最终是否放行。
-                    refinement = relocateRejectedRegions(exam, page, normalizedImage, locate, pageImage, context,
-                            allowsConflictingBoundaryReplacementAfterRefine(validation));
+                    refinement = relocateRejectedRegions(work, locate);
                     if (refinement != null) {
                         context.event(PipelineStage.VALIDATION, exam.getExamId(), page.getPageId(), "accepted",
                                 "coordinate_refined_after_gate_audit", 0);
@@ -271,7 +283,7 @@ public final class ExamPipeline {
              * 进而与精框产生表面冲突。这里允许局部重定位内既有的 16px 投影空白带规则
              * 处理该冲突；它仍要求同边、投影重叠、框内有墨和完整空白带，不能放宽普通定位。
              */
-            Refinement refinement = relocateRejectedRegions(exam, page, normalizedImage, locate, pageImage, context, true);
+            Refinement refinement = relocateRejectedRegions(work, locate);
             if (refinement == null) {
                 return manual(page, original, normalizedImage, transforms, "coordinate_refine_denied", locate);
             }
@@ -288,8 +300,7 @@ public final class ExamPipeline {
                 || hasCoordinateRescue;
         boolean localRelocationConfirmed = false;
         if (requiresRelocation) {
-            RelocationResult relocated = relocateAndMap(exam, page, original, normalizedImage, transforms, locate, pageImage,
-                    context);
+            RelocationResult relocated = relocateAndMap(work, locate);
             if (relocated.denied != null) {
                 return relocated.denied;
             }
@@ -297,9 +308,8 @@ public final class ExamPipeline {
             validation = relocated.validation;
             localRelocationConfirmed = true;
         }
-        return eraseAndAudit(exam, page, original, normalizedImage, transforms, locate, pageImage,
-                validation.getRegions(), false, initialLocateRegions,
-                localRelocationConfirmed, refinedByVlm, context);
+        return eraseAndAudit(work, new EraseAuditState(locate, validation.getRegions(), false,
+                initialLocateRegions, localRelocationConfirmed, refinedByVlm));
     }
 
     /** 只接受真正无可见墨迹的页面；任何 RGB 通道低于 245 的像素都会保持原有人工门禁。 */
@@ -380,25 +390,6 @@ public final class ExamPipeline {
         return true;
     }
 
-    /**
-     * 局部精修后的正文边界替换资格：初始框可因笔画贴边而触发 mask-touch，但不能夹带
-     * 坐标非法、非边缘或其它正文风险。实际替换仍要求精修后只剩正文空白带冲突，并由
-     * RegionValidator 继续证明同边、文字锚点、候选墨迹和 8px 安全带。
-     */
-    boolean allowsConflictingBoundaryReplacementAfterRefine(RegionValidator.ValidationResult validation) {
-        if (validation == null || validation.getReasons().isEmpty()) {
-            return false;
-        }
-        for (String reason : validation.getReasons()) {
-            if (!"body blank gap is insufficient".equals(reason)
-                    && !"body blank gap contains ink".equals(reason)
-                    && !"ink mask touches candidate box".equals(reason)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
     private boolean hasEmptyTargetBox(BufferedImage image, List<RegionValidator.PixelRegion> regions) {
         for (RegionValidator.PixelRegion region : regions) {
             InkMaskEraser.EraseOutcome probe = InkMaskEraser.erase(image, region);
@@ -436,41 +427,12 @@ public final class ExamPipeline {
     }
 
     /**
-     * 重新locate以实现几何坐标精修
-     *
-     * @param exam
-     * @param page
-     * @param image
-     * @param group
-     * @param locate
-     * @param pageImage
-     * @param context
-     * @param allowConflictingBoundaryReplacement
-     * @return
+     * 对未通过几何门禁的候选逐个执行一次 ROI 重定位，并重新应用既有像素门禁。
      */
-    private Refinement relocateRejectedRegions(ExamInput exam, PageInput page, BufferedImage image, LocateResponse locate,
-                                         VlmClient.PageImage pageImage, RunContext context,
-                                         boolean allowConflictingBoundaryReplacement) {
-        if (locate.regions.size() == 1) {
-            //todo me:单region走20%边缘带精修（20%底部+高对比+放大3倍）
-            EraseRegion originalRegion = locate.regions.get(0);
-            // 单 region 需要坐标精修时，原候选既可能为空框，也可能只是几何位置不安全。
-            // 为避免继续受原候选坐标偏差影响，直接使用同一物理边缘的完整 ROI 重新定位。
-            // VLM只负责重新测量坐标，映射守卫和 RegionValidator 仍决定最终是否采用。
-            EdgeRoi edgeRoi = fullEdgeRoi(page.getPageId(), originalRegion, image);
-            if (edgeRoi == null) {
-                return null;
-            }
-            Refinement refined = relocateOneRegion(exam, page, image, locate, pageImage, originalRegion, edgeRoi, context,
-                    "coordinate_refine", allowConflictingBoundaryReplacement);
-            return refined != null && !hasEmptyTargetBox(image, refined.validation.getRegions()) ? refined : null;
-        }
-
-        /*
-         * 双页/双栏扫描会在同一张物理图中出现多个独立页码。它们不能共用一个局部 ROI，
-         * 但每个框都可以独立经过同一模型精定位与像素门禁。只要其中任意一框无法证明安全，
-         * 整页仍失败关闭；绝不因另一个框通过而擦除它。
-         */
+    private Refinement relocateRejectedRegions(PageWork work, LocateResponse locate) {
+        BufferedImage image = work.normalized;
+        // 单 region 只是“待精修 region 数量为 1”的普通情形；必须和多 region 使用同一
+        // 空框/非空框路由，避免相同候选事实因页面框数不同而得到不同模型视野。
         LocateResponse combined = copyLocateWithoutRegions(locate);
         List<RegionValidator.PixelRegion> approved = new ArrayList<RegionValidator.PixelRegion>();
         for (EraseRegion originalRegion : locate.regions) {
@@ -492,24 +454,12 @@ public final class ExamPipeline {
                 return null;
             }
 
-            //todo me:以后看代码时就记：
-            //candidateCenteredROI 的前提是：“我大致相信第一次坐标位置，只想高清重新量一下”。
-            //fullEdgeROI 的前提是：“我已经不能相信第一次坐标中心了，但仍相信它属于这个物理边缘和这个语义目标”。
-
-            // 每个 region 独立决定精修视野：仅已证明为空框的候选使用完整边缘带；其它
-            // 验证拒绝情形仍保留原候选中心 ROI，避免扩大既有精修的可见范围。
-            BodyBoundary regionBoundary = originalRegion.nearest_body_boundary;
-            EdgeRoi edgeRoi = emptyTargetBox
-                    //todo me:已通过校验但无墨，即空框则20%边缘带精修+高对比+放大3倍）
-                    ? fullEdgeRoi(page.getPageId(), originalRegion, image)
-                    //todo me:【候选框为中心四周扩2*min(region宽/高)】同时包含正文坐标+高对比度/扩大3倍
-                    : candidateCenteredRoi(page.getPageId(), originalRegion, regionBoundary, image);
-            if (edgeRoi == null) {
+            RefinementRequest request = coordinateRefinementRequest(work, single, originalRegion,
+                    emptyTargetBox);
+            if (request == null) {
                 return null;
             }
-            Refinement refined = relocateOneRegion(exam, page, image, single, pageImage, originalRegion, edgeRoi, context,
-                    "coordinate_refine", emptyTargetBox ? allowConflictingBoundaryReplacement
-                            : allowsConflictingBoundaryReplacementAfterRefine(singleValidation));
+            Refinement refined = relocateOneRegion(work, request);
             // 每个 region 只做一次 ROI 重定位：ROI 类型已按失败事实选好（空框走完整边缘带，
             // 其它几何风险走候选中心），失败即整页人工审核；不再级联第二种 ROI 重复试错。
             if (refined == null || hasEmptyTargetBox(image, refined.validation.getRegions())) {
@@ -520,6 +470,18 @@ public final class ExamPipeline {
             combined.evidence = combined.evidence + "; " + refined.locate.evidence;
         }
         return new Refinement(combined, RegionValidator.ValidationResult.acceptedResult(approved));
+    }
+
+    /** 为单个候选按失败事实选择精修视野；该规则不依赖当前页共有几个 region。 */
+    private RefinementRequest coordinateRefinementRequest(PageWork work, LocateResponse locate,
+                                                          EraseRegion region, boolean emptyTargetBox) {
+        EdgeRoi roi = emptyTargetBox
+                ? fullEdgeRoi(work.page.getPageId(), region, work.normalized)
+                : candidateCenteredRoi(work.page.getPageId(), region, region.nearest_body_boundary, work.normalized);
+        if (roi == null) {
+            return null;
+        }
+        return new RefinementRequest(locate, region, roi, "coordinate_refine");
     }
 
     private LocateResponse copyLocateWithoutRegions(LocateResponse source) {
@@ -536,17 +498,17 @@ public final class ExamPipeline {
      * 审计仅发现残字时，对每个已批准候选分别做一次放大精定位；正文异常绝不进入本分支。
      * 双页扫描的两个页码必须独立映射和验证，任一精修失败仍整页失败关闭。
      */
-    private Refinement relocateAfterAuditResidual(ExamInput exam, PageInput page, BufferedImage image,
-                                             LocateResponse locate, VlmClient.PageImage pageImage, RunContext context) {
+    private Refinement relocateAfterAuditResidual(PageWork work, LocateResponse locate) {
+        BufferedImage image = work.normalized;
         if (locate.regions.isEmpty()) {
             return null;
         }
         if (locate.regions.size() == 1) {
             EraseRegion originalRegion = locate.regions.get(0);
-            EdgeRoi roi = candidateCenteredRoi(page.getPageId(), originalRegion,
+            EdgeRoi roi = candidateCenteredRoi(work.page.getPageId(), originalRegion,
                     originalRegion.nearest_body_boundary, image);
-            Refinement refined = roi == null ? null : relocateOneRegion(exam, page, image, locate, pageImage, originalRegion, roi, context,
-                    "audit_coordinate_refine", false);
+            Refinement refined = roi == null ? null : relocateOneRegion(work,
+                    new RefinementRequest(locate, originalRegion, roi, "audit_coordinate_refine"));
             return refined != null && !hasEmptyTargetBox(image, refined.validation.getRegions()) ? refined : null;
         }
 
@@ -559,13 +521,13 @@ public final class ExamPipeline {
         for (EraseRegion originalRegion : locate.regions) {
             LocateResponse single = copyLocateWithoutRegions(locate);
             single.regions.add(originalRegion);
-            EdgeRoi roi = candidateCenteredRoi(page.getPageId(), originalRegion,
+            EdgeRoi roi = candidateCenteredRoi(work.page.getPageId(), originalRegion,
                     originalRegion.nearest_body_boundary, image);
             if (roi == null) {
                 return null;
             }
-            Refinement refined = relocateOneRegion(exam, page, image, single, pageImage,
-                    originalRegion, roi, context, "audit_coordinate_refine", false);
+            Refinement refined = relocateOneRegion(work,
+                    new RefinementRequest(single, originalRegion, roi, "audit_coordinate_refine"));
             // 审计残留只允许一次候选中心 ROI 重定位；失败即保持人工审核，不再级联完整边缘带。
             if (refined == null || hasEmptyTargetBox(image, refined.validation.getRegions())) {
                 return null;
@@ -577,30 +539,29 @@ public final class ExamPipeline {
         return new Refinement(combined, RegionValidator.ValidationResult.acceptedResult(approved));
     }
 
-    private Refinement relocateOneRegion(ExamInput exam, PageInput page, BufferedImage image, LocateResponse locate,
-                                   VlmClient.PageImage pageImage, EraseRegion originalRegion, EdgeRoi edgeRoi,
-                                   RunContext context, String stage, boolean allowConflictingBoundaryReplacement) {
+    private Refinement relocateOneRegion(PageWork work, RefinementRequest request) {
+        BufferedImage image = work.normalized;
         long startedAt = System.currentTimeMillis();
-        context.event(stage, exam.getExamId(), page.getPageId(), "started", originalRegion.region_id, 0);
+        work.event(request.stage, "started", request.originalRegion.region_id, 0);
         // 不污染首次定位结果，只用请求副本把“必须返回 ROI 坐标”这个意图显式传给模型。
-        EraseRegion requestRegion = copyRegion(originalRegion);
+        EraseRegion requestRegion = copyRegion(request.originalRegion);
         requestRegion.safety_margin = "coordinate_refinement_requested";
         RelocateResponse relocated;
         try {
-            relocated = vlm.relocateCoordinateRefinement(pageImage, requestRegion, edgeRoi.image);
+            relocated = vlm.relocateCoordinateRefinement(work.pageImage, requestRegion, request.roi.image);
         } catch (RuntimeException firstFailure) {
             // 仅对完全相同的局部请求重试一次传输/协议失败；已得到的模型语义结论不会重试。
-            context.event(stage, exam.getExamId(), page.getPageId(), EventStatus.RETRY.wireValue(),
+            work.event(request.stage, EventStatus.RETRY.wireValue(),
                     "same_roi_after_transport_or_protocol_failure", 0);
             try {
-                relocated = vlm.relocateCoordinateRefinement(pageImage, requestRegion, edgeRoi.image);
+                relocated = vlm.relocateCoordinateRefinement(work.pageImage, requestRegion, request.roi.image);
             } catch (RuntimeException secondFailure) {
-                context.event(stage, exam.getExamId(), page.getPageId(), EventStatus.FAILED.wireValue(),
+                work.event(request.stage, EventStatus.FAILED.wireValue(),
                         shortError(secondFailure), 0);
                 return null;
             }
         }
-        context.event(stage, exam.getExamId(), page.getPageId(), "completed", "target_found=" + relocated.target_found + "; "
+        work.event(request.stage, "completed", "target_found=" + relocated.target_found + "; "
                         + shortText(relocated.evidence),
                 System.currentTimeMillis() - startedAt);
         // 局部精修的候选框与正文边界必须来自同一张 ROI：整页边界可能落在双页扫描的另一栏，
@@ -608,22 +569,17 @@ public final class ExamPipeline {
         // 同一套 8px 连续空白带与实质墨迹门禁；ROI 未给出对应方向边界时，只允许既有
         // 像素空白带推断尝试证明安全，仍无法证明就失败关闭，不回退到其他 region 的边界。
         if (!relocated.target_found || relocated.refined_region == null) {
-            context.event(stage, exam.getExamId(), page.getPageId(), "denied",
+            work.event(request.stage, "denied",
                     "relocate_target_not_found", 0);
             return null;
         }
-        return validateMappedSingleRefinement(locate, originalRegion, relocated.refined_region, relocated.nearest_body_boundary,
-                edgeRoi, image,
-                allowConflictingBoundaryReplacement, context, stage, exam, page, relocated);
+        return validateMappedSingleRefinement(work, request, relocated);
     }
 
-    private Refinement validateMappedSingleRefinement(LocateResponse locate, EraseRegion originalRegion,
-                                                       LocalRegion localRegion, BodyBoundary localBoundary,
-                                                       EdgeRoi edgeRoi, BufferedImage image,
-                                                       boolean allowConflictingBoundaryReplacement, RunContext context,
-                                                       String stage, ExamInput exam, PageInput page,
+    private Refinement validateMappedSingleRefinement(PageWork work, RefinementRequest request,
                                                        RelocateResponse relocated) {
-        EraseRegion refined = mapRefinedRegion(originalRegion, localRegion, edgeRoi, image);
+        BufferedImage image = work.normalized;
+        EraseRegion refined = mapRefinedRegion(request.originalRegion, relocated.refined_region, request.roi, image);
         // 局部模型为抗锯齿/可读性通常会在朝正文一侧多给少量空白内边距。正文安全距离
         // 必须从实际目标墨迹计算：这里只删除获批框内已证明为空白的 padding，不扩框、不
         // 搜索新文字，再交给同一套像素门禁复核，因而不会降低正文保护。
@@ -631,22 +587,22 @@ public final class ExamPipeline {
             refined = RegionValidator.trimBodyFacingBlankPadding(refined, image);
         }
         LocateResponse refinedLocate = new LocateResponse();
-        refinedLocate.page_id = locate.page_id;
+        refinedLocate.page_id = request.locate.page_id;
         refinedLocate.reading_rotation = 0;
-        refinedLocate.direction_confidence = locate.direction_confidence;
-        refinedLocate.status = locate.status;
+        refinedLocate.direction_confidence = request.locate.direction_confidence;
+        refinedLocate.status = request.locate.status;
         refinedLocate.regions.add(refined);
-        BodyBoundary mappedBoundary = localBoundary == null ? null
-                : mapBoundary(localBoundary, edgeRoi.transform, image.getWidth(), image.getHeight());
+        BodyBoundary mappedBoundary = relocated.nearest_body_boundary == null ? null
+                : mapBoundary(relocated.nearest_body_boundary, request.roi.transform, image.getWidth(), image.getHeight());
         refined.nearest_body_boundary = hasDirectionalBoundaryForRegion(refined, mappedBoundary)
                 ? mappedBoundary : null;
-        refinedLocate.evidence = locate.evidence + "; coordinate_relocated=" + relocated.evidence;
+        refinedLocate.evidence = request.locate.evidence + "; coordinate_relocated=" + relocated.evidence;
         RegionValidator.ValidationResult validation = RegionValidator.validate(
                 new RegionValidator.PageLocateResult(refinedLocate.page_id, refinedLocate.status, refinedLocate.regions), image);
         if (!validation.isAccepted() && isOnlyBodyGapConflict(validation)) {
             EraseRegion trimmed = "local_vlm_coordinate_refined".equals(refined.safety_margin)
                     ? refined : RegionValidator.trimBodyFacingBlankPadding(refined, image);
-            BodyBoundary effectiveBoundary = RegionValidator.replaceConflictingBodyBoundary(originalRegion, trimmed,
+            BodyBoundary effectiveBoundary = RegionValidator.replaceConflictingBodyBoundary(request.originalRegion, trimmed,
                     refined.nearest_body_boundary, image);
             if (effectiveBoundary != null) {
                 refined = trimmed;
@@ -658,7 +614,7 @@ public final class ExamPipeline {
                         new RegionValidator.PageLocateResult(refinedLocate.page_id, refinedLocate.status, refinedLocate.regions), image);
             }
         }
-        context.event(stage, exam.getExamId(), page.getPageId(),
+        work.event(request.stage,
                 validation.isAccepted() ? "mapped" : "rejected",
                 "region=" + refined.x1 + "," + refined.y1 + "," + refined.x2 + "," + refined.y2
                         + "; body=" + boundaryEvidence(refined.nearest_body_boundary)
@@ -807,28 +763,27 @@ public final class ExamPipeline {
     }
 
     /** 对每个风险候选执行一次逐 region ROI Relocate，并把几何结果映射回整图。 */
-    private RelocationResult relocateAndMap(ExamInput exam, PageInput page, BufferedImage original, BufferedImage normalized,
-                                            PageTransforms transforms, LocateResponse locate,
-                                            VlmClient.PageImage pageImage, RunContext context) {
+    private RelocationResult relocateAndMap(PageWork work, LocateResponse locate) {
+        BufferedImage normalized = work.normalized;
         LocateResponse relocatedLocate = copyLocateWithoutRegions(locate);
         for (EraseRegion region : locate.regions) {
             long startedAt = System.currentTimeMillis();
-            context.event(PipelineStage.RELOCATE, exam.getExamId(), page.getPageId(), "started", region.region_id, 0);
+            work.context.event(PipelineStage.RELOCATE, work.exam.getExamId(), work.page.getPageId(), "started", region.region_id, 0);
 
             RoiTransform transform = relocateRoiTransform(normalized, region);
-            RelocateResponse relocation = relocateWithSingleRetry(exam, page, pageImage, region,
-                    new VlmClient.RoiImage(page.getPageId(), region.region_id, crop(normalized, transform)), context, region.region_id);
+            RelocateResponse relocation = relocateWithSingleRetry(work, region,
+                    new VlmClient.RoiImage(work.page.getPageId(), region.region_id, crop(normalized, transform)));
             if (relocation == null) {
-                return RelocationResult.denied(manual(page, original, normalized, transforms, "relocate_error", locate));
+                return RelocationResult.denied(manual(work.page, work.original, normalized, work.transforms, "relocate_error", locate));
             }
-            context.event(PipelineStage.RELOCATE, exam.getExamId(), page.getPageId(), "completed",
+            work.context.event(PipelineStage.RELOCATE, work.exam.getExamId(), work.page.getPageId(), "completed",
                     relocation.target_found ? "target_found" : "target_not_found",
                     System.currentTimeMillis() - startedAt);
 
             if (!relocation.target_found || relocation.refined_region == null) {
-                context.event(PipelineStage.RELOCATE, exam.getExamId(), page.getPageId(), EventStatus.DENIED,
+                work.context.event(PipelineStage.RELOCATE, work.exam.getExamId(), work.page.getPageId(), EventStatus.DENIED,
                         "target_not_found; evidence=" + shortText(relocation.evidence), 0);
-                return RelocationResult.denied(manual(page, original, normalized, transforms,
+                return RelocationResult.denied(manual(work.page, work.original, normalized, work.transforms,
                         "relocate_target_not_found", locate));
             }
             EraseRegion mapped = mapRelocatedRegion(region, relocation.refined_region,
@@ -842,7 +797,7 @@ public final class ExamPipeline {
                 // 局部几何结果不满足 Java 门禁时保留已经通过首次校验的原框，
                 // 不因迁就局部模型的紧框而放宽或自行扩框。
                 relocatedLocate.regions.add(copyRegion(region));
-                context.event(PipelineStage.RELOCATE, exam.getExamId(), page.getPageId(), EventStatus.REJECTED,
+                work.context.event(PipelineStage.RELOCATE, work.exam.getExamId(), work.page.getPageId(), EventStatus.REJECTED,
                         "mapped_relocation_rejected_original_geometry_retained:"
                                 + (mappedValidation.isAccepted() ? "refined box has no erasable target ink"
                                 : mappedValidation.getReasons().toString()), 0);
@@ -851,9 +806,9 @@ public final class ExamPipeline {
         RegionValidator.ValidationResult validation = RegionValidator.validate(
                 new RegionValidator.PageLocateResult(relocatedLocate.page_id, relocatedLocate.status, relocatedLocate.regions), normalized);
         if (!validation.isAccepted()) {
-            context.event(PipelineStage.RELOCATE, exam.getExamId(), page.getPageId(), EventStatus.REJECTED,
+            work.context.event(PipelineStage.RELOCATE, work.exam.getExamId(), work.page.getPageId(), EventStatus.REJECTED,
                     "mapped_relocate_regions=" + relocatedLocate.regions.size() + "; reasons=" + validation.getReasons(), 0);
-            return RelocationResult.denied(manual(page, original, normalized, transforms,
+            return RelocationResult.denied(manual(work.page, work.original, normalized, work.transforms,
                     "relocate_validation_rejected: " + validation.getReasons(), relocatedLocate));
         }
         return RelocationResult.accepted(relocatedLocate, validation);
@@ -916,18 +871,16 @@ public final class ExamPipeline {
     /**
      * 对同一 ROI 的网络或协议失败仅重发一次；模型已给出的安全/不安全结论不通过重试推翻。
      */
-    private RelocateResponse relocateWithSingleRetry(ExamInput exam, PageInput page, VlmClient.PageImage pageImage,
-                                                     EraseRegion region, VlmClient.RoiImage roi,
-                                                     RunContext context, String regionId) {
+    private RelocateResponse relocateWithSingleRetry(PageWork work, EraseRegion region, VlmClient.RoiImage roi) {
         try {
-            return vlm.relocateCoordinateRefinement(pageImage, region, roi);
+            return vlm.relocateCoordinateRefinement(work.pageImage, region, roi);
         } catch (RuntimeException firstFailure) {
-            context.event(PipelineStage.RELOCATE, exam.getExamId(), page.getPageId(), EventStatus.RETRY,
-                    "same_roi_after_transport_or_protocol_failure:" + regionId, 0);
+            work.context.event(PipelineStage.RELOCATE, work.exam.getExamId(), work.page.getPageId(), EventStatus.RETRY,
+                    "same_roi_after_transport_or_protocol_failure:" + region.region_id, 0);
             try {
-                return vlm.relocateCoordinateRefinement(pageImage, region, roi);
+                return vlm.relocateCoordinateRefinement(work.pageImage, region, roi);
             } catch (RuntimeException secondFailure) {
-                context.event(PipelineStage.RELOCATE, exam.getExamId(), page.getPageId(), EventStatus.FAILED,
+                work.context.event(PipelineStage.RELOCATE, work.exam.getExamId(), work.page.getPageId(), EventStatus.FAILED,
                         shortError(secondFailure), 0);
                 return null;
             }
@@ -939,11 +892,10 @@ public final class ExamPipeline {
      * audit 再用原图/擦除图确认“正文未变、目标已消失”；审计残留只允许一次局部坐标精修，
      * 正文变化永远不进入重试放行路径。
      */
-    private PageOutcome eraseAndAudit(ExamInput exam, PageInput page, BufferedImage original, BufferedImage normalized, PageTransforms transforms,
-                                      LocateResponse locate, VlmClient.PageImage pageImage,
-                                      List<RegionValidator.PixelRegion> pixelRegions,
-                                      boolean auditRetried, List<EraseRegion> initialLocateRegions,
-                                      boolean localRelocationConfirmed, boolean vlmCoordinateRefined, RunContext context) {
+    private PageOutcome eraseAndAudit(PageWork work, EraseAuditState state) {
+        LocateResponse locate = state.locate;
+        List<RegionValidator.PixelRegion> pixelRegions = state.pixelRegions;
+        BufferedImage normalized = work.normalized;
         // 5. 擦除执行：只接收 RegionValidator 已批准的像素框。
         BufferedImage candidate = normalized;
         List<RegionValidator.PixelRegion> erasedRegions = new ArrayList<RegionValidator.PixelRegion>();
@@ -957,95 +909,92 @@ public final class ExamPipeline {
                 // 只接受严格几何包含；部分重叠、近似 IoU 或其他失败原因仍然失败关闭。
                 if ("no target ink found".equals(erase.getReason())
                         && isContainedByAny(pixelRegion, erasedRegions)) {
-                    context.event(PipelineStage.ERASE, exam.getExamId(), page.getPageId(), "skipped",
+                    work.context.event(PipelineStage.ERASE, work.exam.getExamId(), work.page.getPageId(), "skipped",
                             "already_erased_by_containing_approved_region:" + pixelRegion.getRegionId(), 0);
                     continue;
                 }
-                context.event(PipelineStage.ERASE, exam.getExamId(), page.getPageId(), "rejected", erase.getReason(), 0);
+                work.context.event(PipelineStage.ERASE, work.exam.getExamId(), work.page.getPageId(), "rejected", erase.getReason(), 0);
                 // 诊断 audit：擦除门禁（长线/竖线/贴边等）拦下的框先白填试擦（仅内存），让 VLM
                 // 复核该框是否真伤正文；人工审核由此区分"伤正文"与"门禁过敏"。
-                AuditResponse gateAudit = diagnosticAudit(exam, page, normalized, locate, pageImage, context);
-                if (!auditRetried && gateAudit != null && gateAudit.original_target_is_non_body
+                AuditResponse gateAudit = diagnosticAudit(work, locate);
+                if (!state.auditRetried && gateAudit != null && gateAudit.original_target_is_non_body
                         && !gateAudit.body_changed && gateAudit.target_removed) {
-                    // 诊断 audit 确认框不伤正文：给一次坐标精修重试（例如把通栏分隔线排出框外），
-                    // 精修后重走完整擦除+审计；重试后 audit 仍以三项硬条件为准，红线不变。
-                    Refinement retry = relocateRejectedRegions(exam, page, normalized, locate, pageImage, context, false);
+                    // 诊断 audit 只证明“把原拒绝框整块白填”在视觉上可能安全，既不产出新坐标，
+                    // 也没有经过 InkMaskEraser 和 PixelDiffGate，绝不能直接交付。它仅授予一次
+                    // 坐标重测资格；精修后必须重走完整擦除和最终 audit，三项硬条件不变。
+                    Refinement retry = relocateRejectedRegions(work, locate);
                     if (retry != null) {
-                        context.event(PipelineStage.ERASE, exam.getExamId(), page.getPageId(), "accepted",
+                        work.context.event(PipelineStage.ERASE, work.exam.getExamId(), work.page.getPageId(), "accepted",
                                 "coordinate_refined_after_gate_audit", 0);
-                        return eraseAndAudit(exam, page, original, normalized, transforms, retry.locate, pageImage,
-                                retry.validation.getRegions(), true, initialLocateRegions,
-                                localRelocationConfirmed, true, context);
+                        return eraseAndAudit(work, state.withRefinement(retry));
                     }
                 }
-                return new PageOutcome(page.getPageId(), "manual_review",
+                return new PageOutcome(work.page.getPageId(), "manual_review",
                         "erase_failed: " + erase.getReason() + gateAuditSuffix(gateAudit),
-                        original, normalized, normalized, transforms, locate.regions, locate, gateAudit);
+                        work.original, normalized, normalized, work.transforms, locate.regions, locate, gateAudit);
             }
             candidate = erase.getCandidate();
             erasedRegions.add(pixelRegion);
         }
-        context.event(PipelineStage.ERASE, exam.getExamId(), page.getPageId(), "completed", "region_count=" + pixelRegions.size(), 0);
+        work.context.event(PipelineStage.ERASE, work.exam.getExamId(), work.page.getPageId(), "completed", "region_count=" + pixelRegions.size(), 0);
         // 6. 像素完整性：擦除器内部已执行 PixelDiffGate，任何批准掩码外变化都会回退原图。
         long auditStartedAt = System.currentTimeMillis();
 
-        context.event(PipelineStage.AUDIT, exam.getExamId(), page.getPageId(), "started", null, 0);
+        work.context.event(PipelineStage.AUDIT, work.exam.getExamId(), work.page.getPageId(), "started", null, 0);
         // 7. audit 视觉审计：对原图、擦除图和局部 ROI 同时复核正文与目标。
-        VlmClient.PageImage erasedPageImage = new VlmClient.PageImage(page.getPageId(), candidate);
+        VlmClient.PageImage erasedPageImage = new VlmClient.PageImage(work.page.getPageId(), candidate);
         // Audit 必须看到真正发生写入的最终 PixelRegion，而不是可能已被 trim/rescue/refine
         // 过时的 VLM 粗框；ROI 额外保留固定上下文供模型判断正文与目标的相对关系。
-        List<VlmClient.RoiImage> auditRois = auditRois(page.getPageId(), pixelRegions, normalized, candidate);
+        List<VlmClient.RoiImage> auditRois = auditRois(work.page.getPageId(), pixelRegions, normalized, candidate);
 
         //todo me:擦除后审计（核心逻辑）：送给大模型的图片有：原图/擦除后图、扩充24px的每个region对应的原图ROI以及擦除后的ROI（每个region一个）
-        AuditResponse audit = vlm.audit(pageImage, erasedPageImage, locate.regions, auditRois);
-        List<ExamOutcome.ApprovedRegion> approvedEvidence = approvedRegions(initialLocateRegions, locate, pixelRegions,
-                normalized, localRelocationConfirmed, vlmCoordinateRefined);
-        context.event(PipelineStage.AUDIT, exam.getExamId(), page.getPageId(), "completed", audit.decision,
+        AuditResponse audit = vlm.audit(work.pageImage, erasedPageImage, locate.regions, auditRois);
+        List<ExamOutcome.ApprovedRegion> approvedEvidence = approvedRegions(state.initialLocateRegions, locate, pixelRegions,
+                normalized, state.localRelocationConfirmed, state.vlmCoordinateRefined);
+        work.context.event(PipelineStage.AUDIT, work.exam.getExamId(), work.page.getPageId(), "completed", audit.decision,
                 System.currentTimeMillis() - auditStartedAt);
         // 真实客户端由 ResponseParser 拦截非法协议；这里再次校验，避免替身或未来客户端绕过解析器时
         // 将“三项硬条件”和 decision 矛盾的审计结果误带入交付分支。
         boolean auditHardConditionsPassed = audit.original_target_is_non_body
                 && !audit.body_changed && audit.target_removed;
         if ("pass".equals(audit.decision) != auditHardConditionsPassed) {
-            return new PageOutcome(page.getPageId(), "manual_review", "audit_protocol_inconsistent", original, normalized, normalized, transforms, locate.regions, locate, audit, approvedEvidence);
+            return new PageOutcome(work.page.getPageId(), "manual_review", "audit_protocol_inconsistent", work.original, normalized, normalized, work.transforms, locate.regions, locate, audit, approvedEvidence);
         }
         // 原始目标确认非正文、正文不变、目标确实消失是三项交付硬条件；背景色仅是质量告警。
         if (!audit.original_target_is_non_body) {
             // 语义判定为正文/不确定时不得以“坐标精修”尝试挽救，避免把正文当残留页码继续擦除。
-            return new PageOutcome(page.getPageId(), "manual_review", "audit_original_target_is_body", original, normalized, normalized, transforms, locate.regions, locate, audit, approvedEvidence);
+            return new PageOutcome(work.page.getPageId(), "manual_review", "audit_original_target_is_body", work.original, normalized, normalized, work.transforms, locate.regions, locate, audit, approvedEvidence);
         }
         if (audit.body_changed && audit.target_removed) {
             // 7.1 正文变化且目标确已移除：没有任何可重试的残留目标，不允许通过色差降级放行。
-            return new PageOutcome(page.getPageId(), "manual_review", "audit_failed", original, normalized, normalized, transforms, locate.regions, locate, audit, approvedEvidence);
+            return new PageOutcome(work.page.getPageId(), "manual_review", "audit_failed", work.original, normalized, normalized, work.transforms, locate.regions, locate, audit, approvedEvidence);
         }
         if (!audit.target_removed) {
             // 7.2 目标残留可做一次局部坐标精修；正文变化与目标残留同时出现时也走这一次重试，
             // 因为“残留目标”是唯一可由高清 ROI 重新证明的失效模式，而重试后的 audit 仍以
             // body_changed=false 为硬条件，正文安全性不因重试而放宽。
-            if (!auditRetried) {
-                Refinement refinement = relocateAfterAuditResidual(exam, page, normalized, locate, pageImage, context);
+            if (!state.auditRetried) {
+                Refinement refinement = relocateAfterAuditResidual(work, locate);
                 if (refinement != null) {
-                    context.event(PipelineStage.AUDIT_COORDINATE_REFINE, exam.getExamId(), page.getPageId(), "accepted", "target_residual", 0);
-                    return eraseAndAudit(exam, page, original, normalized, transforms, refinement.locate, pageImage,
-                            refinement.validation.getRegions(), true, initialLocateRegions,
-                            localRelocationConfirmed, true, context);
+                    work.context.event(PipelineStage.AUDIT_COORDINATE_REFINE, work.exam.getExamId(), work.page.getPageId(), "accepted", "target_residual", 0);
+                    return eraseAndAudit(work, state.withRefinement(refinement));
                 }
             }
             if (audit.body_changed) {
                 // 重试后仍同时报“正文变化 + 目标残留”：证据互相矛盾，失败关闭不改判。
-                return new PageOutcome(page.getPageId(), "manual_review", "audit_failed", original, normalized, normalized, transforms, locate.regions, locate, audit, approvedEvidence);
+                return new PageOutcome(work.page.getPageId(), "manual_review", "audit_failed", work.original, normalized, normalized, work.transforms, locate.regions, locate, audit, approvedEvidence);
             }
-            return new PageOutcome(page.getPageId(), "manual_review", "audit_target_not_removed", original, normalized, normalized, transforms, locate.regions, locate, audit, approvedEvidence);
+            return new PageOutcome(work.page.getPageId(), "manual_review", "audit_target_not_removed", work.original, normalized, normalized, work.transforms, locate.regions, locate, audit, approvedEvidence);
         }
         if (!"pass".equals(audit.decision)) {
             // Parser 已做真值表校验；此处仍先失败关闭，避免未来协议调整后背景色告警抢先放行。
-            return new PageOutcome(page.getPageId(), "manual_review", "audit_failed", original, normalized, normalized, transforms, locate.regions, locate, audit, approvedEvidence);
+            return new PageOutcome(work.page.getPageId(), "manual_review", "audit_failed", work.original, normalized, normalized, work.transforms, locate.regions, locate, audit, approvedEvidence);
         }
         if (!audit.background_acceptable) {
             // 7.3 背景色只记录告警，正文安全已满足即可交付擦除图。
-            return new PageOutcome(page.getPageId(), "safe_to_erase", "audit_pass_with_color_warning", original, normalized, candidate, transforms, locate.regions, locate, audit, approvedEvidence);
+            return new PageOutcome(work.page.getPageId(), "safe_to_erase", "audit_pass_with_color_warning", work.original, normalized, candidate, work.transforms, locate.regions, locate, audit, approvedEvidence);
         }
-        return new PageOutcome(page.getPageId(), "safe_to_erase", "audit_pass", original, normalized, candidate, transforms, locate.regions, locate, audit, approvedEvidence);
+        return new PageOutcome(work.page.getPageId(), "safe_to_erase", "audit_pass", work.original, normalized, candidate, work.transforms, locate.regions, locate, audit, approvedEvidence);
     }
 
     private static boolean isContainedByAny(RegionValidator.PixelRegion candidate,
@@ -1192,8 +1141,8 @@ public final class ExamPipeline {
      * 内存副本上白填试擦，连同原图和 ROI 交给 VLM audit 复核。试擦图不落地、不参与交付；
      * 返回值仅用于给人工审核页标注"伤正文/门禁过敏"，以及决定是否再给一次坐标精修重试。
      */
-    private AuditResponse diagnosticAudit(ExamInput exam, PageInput page, BufferedImage normalized,
-                                          LocateResponse locate, VlmClient.PageImage pageImage, RunContext context) {
+    private AuditResponse diagnosticAudit(PageWork work, LocateResponse locate) {
+        BufferedImage normalized = work.normalized;
         if (locate == null || locate.regions == null || locate.regions.isEmpty()) {
             return null;
         }
@@ -1214,16 +1163,16 @@ public final class ExamPipeline {
             for (EraseRegion region : locate.regions) {
                 RoiTransform transform = RoiTransform.fromNormalizedCandidate(
                         normalized.getWidth(), normalized.getHeight(), region, null, 24);
-                rois.add(new VlmClient.RoiImage(page.getPageId(), region.region_id, auditRoi(normalized, transform), "ORIGINAL"));
-                rois.add(new VlmClient.RoiImage(page.getPageId(), region.region_id, auditRoi(trial, transform), "ERASED"));
+                rois.add(new VlmClient.RoiImage(work.page.getPageId(), region.region_id, auditRoi(normalized, transform), "ORIGINAL"));
+                rois.add(new VlmClient.RoiImage(work.page.getPageId(), region.region_id, auditRoi(trial, transform), "ERASED"));
             }
-            AuditResponse audit = vlm.audit(pageImage,
-                    new VlmClient.PageImage(page.getPageId(), trial), locate.regions, rois);
-            context.event(PipelineStage.AUDIT, exam.getExamId(), page.getPageId(), "completed",
+            AuditResponse audit = vlm.audit(work.pageImage,
+                    new VlmClient.PageImage(work.page.getPageId(), trial), locate.regions, rois);
+            work.context.event(PipelineStage.AUDIT, work.exam.getExamId(), work.page.getPageId(), "completed",
                     "gate_diagnostic:" + audit.decision, 0);
             return audit;
         } catch (RuntimeException failure) {
-            context.event(PipelineStage.AUDIT, exam.getExamId(), page.getPageId(), EventStatus.FAILED,
+            work.context.event(PipelineStage.AUDIT, work.exam.getExamId(), work.page.getPageId(), EventStatus.FAILED,
                     "gate_diagnostic:" + shortError(failure), 0);
             return null;
         }
@@ -1282,6 +1231,73 @@ public final class ExamPipeline {
         return images;
     }
 
+    /** 单页处理期间不变的输入与运行期事件上下文。 */
+    private static final class PageWork {
+        final ExamInput exam;
+        final PageInput page;
+        final BufferedImage original;
+        final BufferedImage normalized;
+        final PageTransforms transforms;
+        final VlmClient.PageImage pageImage;
+        final RunContext context;
+
+        PageWork(ExamInput exam, PageInput page, BufferedImage original, BufferedImage normalized,
+                 PageTransforms transforms, VlmClient.PageImage pageImage, RunContext context) {
+            this.exam = exam;
+            this.page = page;
+            this.original = original;
+            this.normalized = normalized;
+            this.transforms = transforms;
+            this.pageImage = pageImage;
+            this.context = context;
+        }
+
+        void event(String stage, String status, String reason, long elapsedMillis) {
+            context.event(stage, exam.getExamId(), page.getPageId(), status, reason, elapsedMillis);
+        }
+    }
+
+    /** 单个 region 的局部精修请求：语义锚点、可见 ROI 与本次门禁策略必须成组传递。 */
+    private static final class RefinementRequest {
+        final LocateResponse locate;
+        final EraseRegion originalRegion;
+        final EdgeRoi roi;
+        final String stage;
+
+        RefinementRequest(LocateResponse locate, EraseRegion originalRegion, EdgeRoi roi, String stage) {
+            this.locate = locate;
+            this.originalRegion = originalRegion;
+            this.roi = roi;
+            this.stage = stage;
+        }
+    }
+
+    /** 擦除与审计期间随精修结果更新的候选状态。 */
+    private static final class EraseAuditState {
+        final LocateResponse locate;
+        final List<RegionValidator.PixelRegion> pixelRegions;
+        final boolean auditRetried;
+        final List<EraseRegion> initialLocateRegions;
+        final boolean localRelocationConfirmed;
+        final boolean vlmCoordinateRefined;
+
+        EraseAuditState(LocateResponse locate, List<RegionValidator.PixelRegion> pixelRegions,
+                        boolean auditRetried, List<EraseRegion> initialLocateRegions,
+                        boolean localRelocationConfirmed, boolean vlmCoordinateRefined) {
+            this.locate = locate;
+            this.pixelRegions = pixelRegions;
+            this.auditRetried = auditRetried;
+            this.initialLocateRegions = initialLocateRegions;
+            this.localRelocationConfirmed = localRelocationConfirmed;
+            this.vlmCoordinateRefined = vlmCoordinateRefined;
+        }
+
+        EraseAuditState withRefinement(Refinement refinement) {
+            return new EraseAuditState(refinement.locate, refinement.validation.getRegions(), true,
+                    initialLocateRegions, localRelocationConfirmed, true);
+        }
+    }
+
     /** 绑定局部图与其到标准化整页坐标的变换，禁止把 ROI 坐标直接用于原图。 */
     private static final class EdgeRoi {
         final RoiTransform transform;
@@ -1330,7 +1346,7 @@ public final class ExamPipeline {
         EXAM("exam"), IMAGE_LOAD("image_load"), PAGE("page"), PAGE_ERROR("page_error"),
 NORMALIZE("normalize"), LOCATE("locate"),
         VALIDATION("validation"), RELOCATE("relocate"), ERASE("erase"), AUDIT("audit"),
-        AUDIT_COORDINATE_REFINE("audit_coordinate_refine"), OUTPUT("output");
+        AUDIT_COORDINATE_REFINE("audit_coordinate_refine"), MODEL_FALLBACK("model_fallback"), OUTPUT("output");
 
         private final String wireValue;
 

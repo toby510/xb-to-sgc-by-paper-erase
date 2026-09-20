@@ -17,10 +17,12 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import javax.imageio.ImageIO;
+import java.io.ByteArrayInputStream;
 import java.awt.Color;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -205,17 +207,23 @@ public class ExamPipelineTest {
     }
 
     @Test
-    public void permitsMaskTouchAsInitialEligibilityButKeepsOtherValidationRisksClosed() {
+    public void keepsMaskTouchOutOfBodyGapReplacementPath() {
         ExamPipeline pipeline = new ExamPipeline(FakeVlm.stable());
 
-        assertTrue(pipeline.allowsConflictingBoundaryReplacementAfterRefine(
-                RegionValidator.ValidationResult.rejectedResult("ink mask touches candidate box")));
-        assertTrue(pipeline.allowsConflictingBoundaryReplacementAfterRefine(
-                RegionValidator.ValidationResult.rejectedResult("body blank gap is insufficient")));
-        assertFalse(pipeline.allowsConflictingBoundaryReplacementAfterRefine(
-                RegionValidator.ValidationResult.rejectedResult("coordinates must satisfy x1 < x2 and y1 < y2")));
         assertFalse("mask-touch is only an initial eligibility; it is not a final gap replacement condition",
                 pipeline.isOnlyBodyGapConflict(RegionValidator.ValidationResult.rejectedResult("ink mask touches candidate box")));
+    }
+
+    @Test
+    public void usesCandidateCenteredRoiForSingleNonEmptyGeometryRejectedCandidate() throws Exception {
+        FakeVlm fake = FakeVlm.stable();
+        fake.geometryRejectedPages.add("p1");
+
+        new ExamPipeline(fake).process(exam(1, false), new ExamPipeline.RunContext());
+
+        assertTrue(fake.relocateCalls.toString(), !fake.relocateCalls.isEmpty());
+        assertTrue("single non-empty geometry rejection must use the candidate-centered ROI, not the full edge band",
+                fake.relocateRoiHeights.get(0) < 120);
     }
 
     private EraseRegion region(String id, double x1, double y1, double x2, double y2) {
@@ -278,6 +286,7 @@ public class ExamPipelineTest {
 
         final List<String> locatePageIds = new ArrayList<String>();
         final List<String> relocateCalls = new ArrayList<String>();
+        final List<Integer> relocateRoiHeights = new ArrayList<Integer>();
         final List<String> auditPageIds = new ArrayList<String>();
         final List<String> lowConfidencePages = new ArrayList<String>();
         final List<String> noCandidatePages = new ArrayList<String>();
@@ -291,6 +300,7 @@ public class ExamPipelineTest {
         final List<String> lowDirectionConfidencePages = new ArrayList<String>();
         final List<String> locateProtocolFailurePages = new ArrayList<String>();
         final List<String> validationRejectedPages = new ArrayList<String>();
+        final List<String> geometryRejectedPages = new ArrayList<String>();
         final List<String> tightLocatePages = new ArrayList<String>();
         final List<String> duplicateRegionPages = new ArrayList<String>();
         final java.util.Map<String, Integer> auditCalls = new java.util.HashMap<String, Integer>();
@@ -322,7 +332,8 @@ public class ExamPipelineTest {
             }
             response.status = "safe_to_erase";
             BodyBoundary boundary = new BodyBoundary();
-            boundary.y = "p2".equals(page.getPageId()) ? 0.80 : 0.90;
+            boundary.y = "p2".equals(page.getPageId()) ? 0.80
+                    : geometryRejectedPages.contains(page.getPageId()) ? 0.965 : 0.90;
             boundary.basis = "java";
             EraseRegion region = new EraseRegion();
             region.region_id = "r1";
@@ -375,6 +386,7 @@ public class ExamPipelineTest {
                                                              VlmClient.RoiImage roi) {
             String regionId = semanticAnchor == null ? "edge" : semanticAnchor.region_id;
             relocateCalls.add(page.getPageId() + ":" + regionId);
+            relocateRoiHeights.add(roiHeight(roi));
             RelocateResponse response = new RelocateResponse();
             response.page_id = page.getPageId();
             response.region_id = regionId;
@@ -458,6 +470,16 @@ public class ExamPipelineTest {
             region.x2 = x2;
             region.y2 = y2;
             return region;
+        }
+
+        private static int roiHeight(VlmClient.RoiImage roi) {
+            try {
+                String dataUrl = roi.dataUrl();
+                byte[] bytes = Base64.getDecoder().decode(dataUrl.substring(dataUrl.indexOf(',') + 1));
+                return ImageIO.read(new ByteArrayInputStream(bytes)).getHeight();
+            } catch (Exception e) {
+                throw new AssertionError("cannot inspect test ROI", e);
+            }
         }
 
         /**

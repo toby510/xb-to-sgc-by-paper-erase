@@ -27,15 +27,32 @@ public class VlmConfigTest {
 
         VlmConfig config = VlmConfig.load(Paths.get("../config/vlm-providers.json"), env);
 
-        assertEquals("qwen3.8-max", config.role("locate").getModel());
-        assertEquals("qwen3.8-max", config.role("relocate").getModel());
-        assertEquals("qwen3.8-max", config.role("audit").getModel());
+        assertEquals("qwen3.8-flash", config.role("locate").getModel());
+        assertEquals("qwen3.8-flash", config.role("relocate").getModel());
+        assertEquals("qwen3.8-flash", config.role("audit").getModel());
         // relocate 没有 provider 级角色覆盖，模型与密钥都必须回落到 provider 配置而不是静默缺失。
         assertEquals("provider-secret", config.role("relocate").getApiKey());
         assertEquals(2, config.role("locate").getRetries());
         assertTrue(config.role("audit").getEndpoint().contains("/chat/completions"));
         assertFalse(config.role("locate").safeSummary().contains("locate-secret"));
         assertFalse(config.role("relocate").safeSummary().contains("provider-secret"));
+        assertTrue(config.getManualReviewFallback().isEnabled());
+        assertEquals("dashscope", config.getManualReviewFallback().getProvider());
+        assertEquals("qwen3.8-max", config.getManualReviewFallback().getModel());
+    }
+
+    @Test
+    public void loadsManualReviewFallbackWithSharedDashscopeCredentialAndMaxModel() throws Exception {
+        Map<String, String> env = new HashMap<String, String>();
+        env.put("MST_QWEN_API_KEY", "shared-dashscope-secret");
+
+        VlmConfig fallback = VlmConfig.loadManualReviewFallback(Paths.get("../config/vlm-providers.json"), env);
+
+        assertEquals("openai-compatible", fallback.getProviderKind());
+        assertEquals("qwen3.8-max", fallback.role("locate").getModel());
+        assertEquals("qwen3.8-max", fallback.role("relocate").getModel());
+        assertEquals("qwen3.8-max", fallback.role("audit").getModel());
+        assertEquals("shared-dashscope-secret", fallback.role("audit").getApiKey());
     }
 
     @Test

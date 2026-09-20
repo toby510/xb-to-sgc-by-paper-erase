@@ -20,14 +20,16 @@ public final class VlmConfig {
     private final int minBodyGapPixels;
     private final String providerKind;
     private final String contractPath;
+    private final ManualReviewFallbackConfig manualReviewFallback;
 
     private VlmConfig(Map<String, RoleConfig> roles, int maxPreviewLongEdge, int minBodyGapPixels,
-                      String providerKind, String contractPath) {
+                      String providerKind, String contractPath, ManualReviewFallbackConfig manualReviewFallback) {
         this.roles = Collections.unmodifiableMap(new HashMap<String, RoleConfig>(roles));
         this.maxPreviewLongEdge = maxPreviewLongEdge;
         this.minBodyGapPixels = minBodyGapPixels;
         this.providerKind = providerKind;
         this.contractPath = contractPath;
+        this.manualReviewFallback = manualReviewFallback;
     }
 
     public static VlmConfig load(Path configPath) throws IOException {
@@ -90,7 +92,57 @@ public final class VlmConfig {
             roles.put(role, new RoleConfig(role, prompt, model, endpoint, apiKey, retries, maxOutputTokens, imageDetail,
                     thinkingType, reasoningEffort));
         }
-        return new VlmConfig(roles, previewLongEdge, minBodyGap, providerKind, contractPath);
+        ManualReviewFallbackConfig fallback = ManualReviewFallbackConfig.from(root.path("manual_review_fallback"), env);
+        return new VlmConfig(roles, previewLongEdge, minBodyGap, providerKind, contractPath, fallback);
+    }
+
+    /**
+     * 读取独立的人工审核补救配置，并为其指定 provider/model 构造完整角色客户端配置。
+     * 主流程配置不被修改；补救不可用时由调用方保留主流程人工审核结果。
+     */
+    public static VlmConfig loadManualReviewFallback(Path configPath, Map<String, String> env) throws IOException {
+        JsonNode root = new ObjectMapper().readTree(configPath.toFile());
+        ManualReviewFallbackConfig fallback = ManualReviewFallbackConfig.from(root.path("manual_review_fallback"), env);
+        if (!fallback.isEnabled()) {
+            throw new IllegalStateException("manual review fallback is disabled");
+        }
+        JsonNode provider = root.path("providers").path(fallback.getProvider());
+        if (provider.isMissingNode()) {
+            throw new IllegalStateException("manual review fallback provider is missing");
+        }
+        String providerKind = text(provider.path("kind"));
+        if (!"openai-compatible".equals(providerKind) && !"ark-responses".equals(providerKind)) {
+            throw new IllegalStateException("manual review fallback provider kind is unsupported");
+        }
+        int previewLongEdge = root.path("defaults").path("max_preview_long_edge").asInt(1536);
+        int minBodyGap = root.path("defaults").path("min_body_gap_pixels").asInt(0);
+        int defaultRetries = root.path("defaults").path("network_retries").asInt(2);
+        String contractPath = text(root.path("defaults").path("vlm_contract"));
+        Map<String, RoleConfig> roles = new HashMap<String, RoleConfig>();
+        for (String role : ROLES) {
+            JsonNode roleRef = root.path("roles").path(role);
+            JsonNode roleOverride = provider.path("roles").path(role);
+            String prompt = text(roleRef.path("prompt"));
+            String endpoint = resolveEndpoint(provider, roleOverride, env);
+            String apiKey = resolveApiKey(roleOverride.path("api_key"), provider.path("api_key"), env);
+            int retries = roleOverride.path("network_retries").asInt(defaultRetries);
+            int maxOutputTokens = roleOverride.path("max_output_tokens").asInt(0);
+            String imageDetail = text(roleOverride.path("image_detail"));
+            String thinkingType = resolveText(roleOverride.path("thinking").path("type"),
+                    provider.path("thinking").path("type"), env, null);
+            String reasoningEffort = resolveText(roleOverride.path("reasoning").path("effort"),
+                    provider.path("reasoning").path("effort"), env, null);
+            if (blank(prompt) || blank(endpoint) || blank(apiKey)) {
+                throw new IllegalStateException("manual review fallback " + role + " configuration is incomplete");
+            }
+            if ("ark-responses".equals(providerKind)
+                    && !("auto".equals(imageDetail) || "high".equals(imageDetail) || "low".equals(imageDetail))) {
+                throw new IllegalStateException("manual review fallback " + role + " Ark image detail is required");
+            }
+            roles.put(role, new RoleConfig(role, prompt, fallback.getModel(), endpoint, apiKey, retries,
+                    maxOutputTokens, imageDetail, thinkingType, reasoningEffort));
+        }
+        return new VlmConfig(roles, previewLongEdge, minBodyGap, providerKind, contractPath, fallback);
     }
 
     private static String resolveEndpoint(JsonNode provider, JsonNode roleOverride, Map<String, String> env) {
@@ -191,6 +243,38 @@ public final class VlmConfig {
     /** 当前运行冻结的 VLM 协议文档路径；空值仅用于兼容历史配置。 */
     public String getContractPath() {
         return contractPath;
+    }
+
+    public ManualReviewFallbackConfig getManualReviewFallback() {
+        return manualReviewFallback;
+    }
+
+    /** 独立配置的模型补救开关，不覆盖主 provider 或任何主流程角色配置。 */
+    public static final class ManualReviewFallbackConfig {
+        private final boolean enabled;
+        private final String provider;
+        private final String model;
+
+        private ManualReviewFallbackConfig(boolean enabled, String provider, String model) {
+            this.enabled = enabled;
+            this.provider = provider;
+            this.model = model;
+        }
+
+        private static ManualReviewFallbackConfig from(JsonNode node, Map<String, String> env) {
+            boolean enabled = node.path("enabled").asBoolean(false);
+            String provider = text(node.path("provider"));
+            String model = resolveTextNode(node.path("model"), env);
+            if (!enabled) return new ManualReviewFallbackConfig(false, provider, model);
+            if (blank(provider) || blank(model)) {
+                throw new IllegalStateException("manual review fallback provider and model are required when enabled");
+            }
+            return new ManualReviewFallbackConfig(true, provider, model);
+        }
+
+        public boolean isEnabled() { return enabled; }
+        public String getProvider() { return provider; }
+        public String getModel() { return model; }
     }
 
     /** 单个 VLM 角色配置：提示词、模型参数和请求级开关。 */

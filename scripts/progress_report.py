@@ -50,6 +50,9 @@ def collect(run_dir: str) -> dict:
     progress_file = os.path.join(run_dir, "_progress.ndjson")
     if not os.path.exists(progress_file):
         return stats
+    page_events = {}
+    fallback_events = {}
+    processed_exams = set()
     with open(progress_file, "r", encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
@@ -58,17 +61,38 @@ def collect(run_dir: str) -> dict:
             event = json.loads(line)
             stats["last_ts"] = max(stats["last_ts"], event.get("timestamp_ms", 0))
             if event.get("stage") == "page":
-                status = event.get("status")
-                if status == "safe_to_erase":
-                    stats["safe"] += 1
-                elif status == "no_pagenum":
-                    stats["no_pagenum"] += 1
-                elif status == "manual_review":
-                    stats["manual"] += 1
-                    reason = event.get("reason") or "unknown"
-                    stats["reasons"][reason] = stats["reasons"].get(reason, 0) + 1
+                key = (event.get("exam_id"), event.get("page_id"))
+                if key[0] and key[1] and event.get("status") in {"safe_to_erase", "no_pagenum", "manual_review"}:
+                    page_events[key] = event
+            elif event.get("stage") == "model_fallback":
+                key = (event.get("exam_id"), event.get("page_id"))
+                if key[0] and key[1] and event.get("status") in {"accepted", "not_accepted"}:
+                    fallback_events[key] = event
             elif event.get("stage") == "exam" and event.get("status") == "processed":
-                stats["exams"] += 1
+                exam_id = event.get("exam_id")
+                if exam_id:
+                    processed_exams.add(exam_id)
+
+    # MAX accepted replaces the same page's Flash manual_review; rejected keeps Flash final state.
+    for key, event in fallback_events.items():
+        if event.get("status") == "accepted":
+            reason = event.get("reason", "")
+            page_events[key] = {
+                "status": "safe_to_erase" if "fallback_status=safe_to_erase" in reason else "no_pagenum",
+                "reason": reason,
+            }
+
+    for event in page_events.values():
+        status = event.get("status")
+        if status == "safe_to_erase":
+            stats["safe"] += 1
+        elif status == "no_pagenum":
+            stats["no_pagenum"] += 1
+        elif status == "manual_review":
+            stats["manual"] += 1
+            reason = event.get("reason") or "unknown"
+            stats["reasons"][reason] = stats["reasons"].get(reason, 0) + 1
+    stats["exams"] = len(processed_exams)
     return stats
 
 

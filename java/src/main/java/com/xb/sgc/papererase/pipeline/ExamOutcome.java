@@ -100,6 +100,7 @@ public final class ExamOutcome {
         private final LocateResponse locate;
         private final AuditResponse audit;
         private List<ApprovedRegion> approvedRegions;
+        private ModelFallback modelFallback;
 
         public PageOutcome(String pageId, String status, String reason, BufferedImage original, BufferedImage normalized,
                            BufferedImage candidate, PageTransforms transforms,
@@ -177,6 +178,36 @@ public final class ExamOutcome {
         }
 
         public List<ApprovedRegion> getApprovedRegions() { return approvedRegions; }
+
+        /** 主模型人工审核后的独立补救链路；为空代表本页未触发模型升级。 */
+        public ModelFallback getModelFallback() { return modelFallback; }
+
+        public void setModelFallback(ModelFallback modelFallback) {
+            this.modelFallback = modelFallback;
+        }
+    }
+
+    /** 仅记录模型层级补救的输入/输出终态，不携带图片、提示词或任何密钥。 */
+    public static final class ModelFallback {
+        public final String source_model;
+        public final String source_status;
+        public final String source_reason;
+        public final String fallback_model;
+        public final String fallback_status;
+        public final String fallback_reason;
+        public final String final_source;
+
+        public ModelFallback(String sourceModel, String sourceStatus, String sourceReason,
+                             String fallbackModel, String fallbackStatus, String fallbackReason,
+                             String finalSource) {
+            this.source_model = sourceModel;
+            this.source_status = sourceStatus;
+            this.source_reason = sourceReason;
+            this.fallback_model = fallbackModel;
+            this.fallback_status = fallbackStatus;
+            this.fallback_reason = fallbackReason;
+            this.final_source = finalSource;
+        }
     }
 
     /** 原图与旋正图之间的尺寸和阅读方向元数据，用于输出坐标还原。 */

@@ -8,6 +8,15 @@
   "fail_closed": true,
   "vlm_contract": "references/00-协议/VLM-CONTRACT-v2.md"
  },
+ "manual_review_fallback": {
+  "enabled": true,
+  "provider": "dashscope",
+  "model": {
+   "env": "XB_PAPER_ERASE_MANUAL_REVIEW_FALLBACK_MODEL",
+   "default": "qwen3.8-max"
+  },
+  "说明": "Flash 页面最终转人工审核后，以原图完整重跑 locate、relocate、erase、audit 一次；只有 MAX 也通过既有正文与审计门禁才替换最终页面状态。"
+ },
  "roles": {
   "locate": {
    "说明": "页码目标行定位：整页模式识别独立页眉/页脚页码行，并为每个 region 分别测量最近正文边界；局部 ROI 模式同步精确复测当前 region 及其正文边界。结果始终只是候选。",
@@ -38,13 +47,13 @@
    ],
    "model": {
     "env": "XB_PAPER_ERASE_QWEN_MODEL",
-    "default": "qwen3.8-max"
+    "default": "qwen3.8-flash"
    },
    "roles": {
     "locate": {
      "model": {
       "env": "XB_PAPER_ERASE_LOCATE_MODEL",
-      "default": "qwen3.8-max"
+      "default": "qwen3.8-flash"
      },
      "base_url": {
       "env": "XB_PAPER_ERASE_LOCATE_BASE_URL",
@@ -62,7 +71,7 @@
     "audit": {
      "model": {
       "env": "XB_PAPER_ERASE_AUDIT_MODEL",
-      "default": "qwen3.8-max"
+      "default": "qwen3.8-flash"
      },
      "base_url": {
       "env": "XB_PAPER_ERASE_AUDIT_BASE_URL",

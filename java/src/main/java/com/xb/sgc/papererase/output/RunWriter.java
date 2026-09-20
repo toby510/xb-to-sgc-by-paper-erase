@@ -241,6 +241,12 @@ public class RunWriter {
         run.put("vlm_contract", config.getContractPath());
         run.put("min_body_gap_pixels", config.getMinBodyGapPixels());
         run.put("model", config.role("locate").getModel());
+        Map<String, Object> fallback = new LinkedHashMap<String, Object>();
+        fallback.put("enabled", config.getManualReviewFallback().isEnabled());
+        fallback.put("provider", config.getManualReviewFallback().getProvider());
+        fallback.put("model", config.getManualReviewFallback().getModel());
+        fallback.put("semantics", "manual_review pages restart from original image; only a full fallback pass replaces the final page outcome");
+        run.put("manual_review_fallback", fallback);
         run.put("planned_exam_count", plannedExamCount);
         run.put("planned_page_count", plannedPageCount);
         run.put("code", gitMetadata(skillRoot));
@@ -362,6 +368,7 @@ public class RunWriter {
         json.put("reason", outcome.getReason());
         json.put("regions", outcome.getRegions());
         json.put("approved_regions", outcome.getApprovedRegions());
+        json.put("model_fallback", outcome.getModelFallback());
         json.put("locate", outcome.getLocate());
         json.put("audit", outcome.getAudit());
         Map<String, Object> transforms = new LinkedHashMap<String, Object>();
