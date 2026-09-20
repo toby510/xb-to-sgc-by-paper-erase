@@ -60,13 +60,14 @@ public class ReportWriter {
     }
 
     public void write(List<ExamInput> inputs, List<ExamOutcome> outcomes, Path runDir) throws IOException {
+        RunWriter.rebuildBadFromErased(runDir);
         writeRows(rowsFromOutcomes(inputs, outcomes, runDir), runDir);
     }
 
     /** 只读取既有 run 目录产物重建报告，不触发 VLM、不改擦除结果。 */
     public void writeFromRunDirectory(Path runDir) throws IOException {
-        writeRows(rowsFromRunDirectory(runDir), runDir);
         RunWriter.rebuildBadFromErased(runDir);
+        writeRows(rowsFromRunDirectory(runDir), runDir);
     }
 
     private void writeRows(List<ReportRow> rows, Path runDir) throws IOException {
@@ -77,6 +78,8 @@ public class ReportWriter {
         int noPageNum = 0;
         int passed = 0;
         int abnormal = 0;
+        int fallbackAttempts = 0;
+        int fallbackSuccesses = 0;
         for (ReportRow row : rows) {
             if (row.bodyDamaged) {
                 bodyDamaged++;
@@ -92,6 +95,12 @@ public class ReportWriter {
             }
             if (!row.normal()) {
                 abnormal++;
+            }
+            if (row.fallbackAttempted) {
+                fallbackAttempts++;
+            }
+            if (row.fallbackAccepted) {
+                fallbackSuccesses++;
             }
         }
 
@@ -118,8 +127,15 @@ public class ReportWriter {
         report.append("| 擦除正文数量 | ").append(bodyDamaged).append(" | ").append(rate(bodyDamaged, total)).append(" |\n\n");
         report.append("| 准确率 | 通过数量/总数据量 | 结果 |\n");
         report.append("| --- | ---: | ---: |\n");
-        report.append("| 成功擦除或正确无页码且未伤正文 | ").append(passed).append('/').append(total)
+        report.append("| 成功擦除或正确无页码且未伤正文（含 MAX 兜底最终结果） | ").append(passed).append('/').append(total)
                 .append(" | ").append(rate(passed, total)).append(" |\n");
+        report.append("\n| 兜底指标 | 数量 | 占比 |\n");
+        report.append("| --- | ---: | ---: |\n");
+        report.append("| Flash 初始人工审核 | ").append(fallbackAttempts).append(" | ").append(rate(fallbackAttempts, total)).append(" |\n");
+        report.append("| MAX 兜底补救成功/补救条数 | ").append(fallbackSuccesses).append('/').append(fallbackAttempts)
+                .append(" | ").append(rate(fallbackSuccesses, fallbackAttempts)).append(" |\n");
+        report.append("| MAX 兜底后最终人工审核 | ").append(countStatus(rows, "manual_review"))
+                .append(" | ").append(rate(countStatus(rows, "manual_review"), total)).append(" |\n");
 
         appendUsageAndPerformance(report, RunMetrics.read(runDir, pricing));
 
@@ -316,6 +332,8 @@ public class ReportWriter {
                 row.reason = nvl(pageOutcome.getReason());
                 row.original = base.resolve(stem + "_原图.png");
                 row.erased = base.resolve(stem + "_擦除后.png");
+                applyFallbackMetadata(row, pageOutcome.getModelFallback());
+                preferBadArtifact(row, runDir, stem);
                 if (pageOutcome.getAudit() != null) {
                     row.auditEvidence = nvl(pageOutcome.getAudit().evidence);
                     // 正文损伤只以审计的结构化字段为准，与 RunMetrics 保持同一口径：
@@ -357,6 +375,8 @@ public class ReportWriter {
             row.reason = text(root, "reason", "");
             row.original = examDir.resolve(stem + "_原图.png");
             row.erased = examDir.resolve(stem + "_擦除后.png");
+            applyFallbackMetadata(row, root.get("model_fallback"));
+            preferBadArtifact(row, runDir, stem);
             JsonNode audit = root.get("audit");
             if (audit != null && audit.isObject()) {
                 row.auditEvidence = text(audit, "evidence", "");
@@ -458,6 +478,45 @@ public class ReportWriter {
             return "处理异常；原始原因=" + reason;
         }
         return "非成功状态；原始状态=" + row.status + "，原因=" + reason + briefEvidence(evidence);
+    }
+
+    private int countStatus(List<ReportRow> rows, String status) {
+        int count = 0;
+        for (ReportRow row : rows) {
+            if (status.equals(row.status)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private void preferBadArtifact(ReportRow row, Path runDir, String stem) {
+        if (!"manual_review".equals(row.status)) {
+            return;
+        }
+        Path badDir = runDir.resolve("bad").resolve(row.subject).resolve(row.examId);
+        Path badOriginal = badDir.resolve(stem + "_原图.png");
+        Path badErased = badDir.resolve(stem + "_擦除后.png");
+        if (Files.isRegularFile(badOriginal) && Files.isRegularFile(badErased)) {
+            row.original = badOriginal;
+            row.erased = badErased;
+        }
+    }
+
+    private void applyFallbackMetadata(ReportRow row, ExamOutcome.ModelFallback fallback) {
+        if (fallback == null) {
+            return;
+        }
+        row.fallbackAttempted = true;
+        row.fallbackAccepted = "max_fallback".equals(fallback.final_source);
+    }
+
+    private void applyFallbackMetadata(ReportRow row, JsonNode fallback) {
+        if (fallback == null || !fallback.isObject()) {
+            return;
+        }
+        row.fallbackAttempted = true;
+        row.fallbackAccepted = "max_fallback".equals(text(fallback, "final_source", ""));
     }
 
     private String briefEvidence(String evidence) {
@@ -775,6 +834,8 @@ public class ReportWriter {
         Path erased;
         boolean bodyDamaged;
         String auditEvidence;
+        boolean fallbackAttempted;
+        boolean fallbackAccepted;
 
         boolean normal() {
             return "safe_to_erase".equals(status) || "no_pagenum".equals(status);

@@ -95,7 +95,7 @@ public class RunWriterTest {
         assertTrue(report.contains("### 图片全流程与整卷耗时分布"));
         assertTrue(report.contains("| risk | 1 |"));
         assertTrue(report.contains("1001_2_擦除后.png"));
-        assertTrue(report.contains("<img src=\"../erased/语文/1001/1001_2_擦除后.png\">"));
+        assertTrue(report.contains("<img src=\"../bad/语文/1001/1001_2_擦除后.png\">"));
 
         deleteRecursively(runDir.resolve("bad"));
         new ReportWriter().writeFromRunDirectory(runDir);
