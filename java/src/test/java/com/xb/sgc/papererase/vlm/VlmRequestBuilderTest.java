@@ -70,6 +70,8 @@ public class VlmRequestBuilderTest {
         JsonNode content = root.path("messages").path(0).path("content");
 
         assertEquals("qwen3.8-max", root.path("model").asText());
+        assertEquals(0.7, root.path("temperature").asDouble(), 0.000001);
+        assertEquals(0.8, root.path("top_p").asDouble(), 0.000001);
         // 关掉 qwen3.8-max 的结构化 reasoning：开则单次 130~470s、26~47KB 思考，
         // 关则 ~10s 且坐标像素级一致、答案更完整。
         assertEquals(false, root.path("enable_thinking").asBoolean());

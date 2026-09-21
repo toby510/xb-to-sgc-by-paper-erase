@@ -294,7 +294,9 @@ public interface VlmClient {
 
                 Map<String, Object> body = new LinkedHashMap<String, Object>();
                 body.put("model", model);
-                body.put("temperature", 0);
+                // 与百炼官网体验页默认采样参数保持一致。
+                body.put("temperature", 0.7);
+                body.put("top_p", 0.8);
                 // qwen3.8-max 默认开启结构化 reasoning，对每页都做 26~47KB 离线思考
                 // （单次 130~470s），实测同图同答：开 reasoning=170.6s，关=9.1s 且坐标
                 // 像素级一致、答案字段更完整。生产环境统一关掉。
