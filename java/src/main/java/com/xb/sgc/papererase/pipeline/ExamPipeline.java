@@ -1256,7 +1256,7 @@ public final class ExamPipeline {
     /** _progress.ndjson 的稳定阶段名；wireValue 保持历史字符串兼容。 */
     public enum PipelineStage {
         EXAM("exam"), IMAGE_LOAD("image_load"), PAGE("page"), PAGE_ERROR("page_error"),
-NORMALIZE("normalize"), LOCATE("locate"),
+        NORMALIZE("normalize"), LOCATE("locate"),
         VALIDATION("validation"), RELOCATE("relocate"), ERASE("erase"), AUDIT("audit"),
         AUDIT_COORDINATE_REFINE("audit_coordinate_refine"), MODEL_FALLBACK("model_fallback"), OUTPUT("output");
 

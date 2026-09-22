@@ -212,14 +212,11 @@ public final class Main {
      * Flash 候选框，也不绕过 RegionValidator、PixelDiffGate 或最终 audit。
      */
     private static final class ManualReviewFallbackRunner {
-        private final String sourceModel;
         private final String fallbackModel;
         private final ExamPipeline fallbackPipeline;
         private final String unavailableReason;
 
-        private ManualReviewFallbackRunner(String sourceModel, String fallbackModel,
-                                           ExamPipeline fallbackPipeline, String unavailableReason) {
-            this.sourceModel = sourceModel;
+        private ManualReviewFallbackRunner(String fallbackModel, ExamPipeline fallbackPipeline, String unavailableReason) {
             this.fallbackModel = fallbackModel;
             this.fallbackPipeline = fallbackPipeline;
             this.unavailableReason = unavailableReason;
@@ -227,20 +224,16 @@ public final class Main {
 
         static ManualReviewFallbackRunner create(VlmConfig primary, Path skillRoot, VlmUsageFileSink usageSink) {
             VlmConfig.ManualReviewFallbackConfig fallback = primary.getManualReviewFallback();
-            String sourceModel = primary.role("locate").getModel();
             if (!fallback.isEnabled()) {
-                return new ManualReviewFallbackRunner(sourceModel, fallback.getModel(), null, null);
+                return new ManualReviewFallbackRunner(fallback.getModel(), null, null);
             }
             try {
                 VlmConfig fallbackConfig = VlmConfig.loadManualReviewFallback(
                         skillRoot.resolve("config/vlm-providers.json"), System.getenv());
                 VlmClient client = VlmClient.create(fallbackConfig, skillRoot, usageSink);
-                return new ManualReviewFallbackRunner(sourceModel, fallbackConfig.role("locate").getModel(),
-                        new ExamPipeline(client), null);
+                return new ManualReviewFallbackRunner(fallbackConfig.role("locate").getModel(), new ExamPipeline(client), null);
             } catch (Exception failure) {
-                // MAX 配置/客户端故障不得反向中断 Flash 的既有结果；页面仍保留人工审核。
-                return new ManualReviewFallbackRunner(sourceModel, fallback.getModel(), null,
-                        failure.getClass().getSimpleName());
+                return new ManualReviewFallbackRunner(fallback.getModel(), null, failure.getClass().getSimpleName());
             }
         }
 
@@ -256,14 +249,12 @@ public final class Main {
                     continue;
                 }
                 if (fallbackPipeline == null) {
-                    source.setModelFallback(new ExamOutcome.ModelFallback(sourceModel, source.getStatus(), source.getReason(),
-                            fallbackModel, "unavailable", unavailableReason, "flash"));
-                    pages.add(source);
+                    pages.add(fallbackManualReview(source, "max_fallback_unavailable:" + unavailableReason));
                     continue;
                 }
                 long startedAt = System.currentTimeMillis();
                 context.event(ExamPipeline.PipelineStage.MODEL_FALLBACK, exam.getExamId(), page.getPageId(),
-                        ExamPipeline.EventStatus.STARTED, "from=" + sourceModel + "; to=" + fallbackModel, 0);
+                        ExamPipeline.EventStatus.STARTED, "model=" + fallbackModel, 0);
                 ExamOutcome.PageOutcome retried;
                 try {
                     retried = fallbackPipeline.process(singlePageExam(exam, page), context).page(page.getPageId());
@@ -271,27 +262,15 @@ public final class Main {
                     context.event(ExamPipeline.PipelineStage.MODEL_FALLBACK, exam.getExamId(), page.getPageId(),
                             ExamPipeline.EventStatus.FAILED, failure.getClass().getSimpleName(),
                             System.currentTimeMillis() - startedAt);
-                    source.setModelFallback(new ExamOutcome.ModelFallback(sourceModel, source.getStatus(), source.getReason(),
-                            fallbackModel, "error", failure.getClass().getSimpleName(), "flash"));
-                    pages.add(source);
+                    pages.add(fallbackManualReview(source, "max_fallback_error:" + failure.getClass().getSimpleName()));
                     continue;
                 }
-                boolean maxNoPagenumConsistent = "no_pagenum".equals(retried.getStatus())
-                        && (source.getLocate() == null || source.getLocate().regions == null
-                        || source.getLocate().regions.isEmpty());
-                // Flash 已看见页码候选时，MAX 的 no_pagenum 与其直接矛盾；此时不能把可能
-                // 漏擦的页面伪装成成功。只有 Flash 也没有页码语义证据才接受无页码结论。
-                boolean rescued = "safe_to_erase".equals(retried.getStatus()) || maxNoPagenumConsistent;
-                String finalSource = rescued ? "max_fallback" : "flash";
-                ExamOutcome.ModelFallback evidence = new ExamOutcome.ModelFallback(sourceModel, source.getStatus(), source.getReason(),
-                        fallbackModel, retried.getStatus(), retried.getReason(), finalSource);
-                ExamOutcome.PageOutcome finalOutcome = rescued ? retried : source;
-                finalOutcome.setModelFallback(evidence);
+                retried.setFallbackUsed(true);
                 context.event(ExamPipeline.PipelineStage.MODEL_FALLBACK, exam.getExamId(), page.getPageId(),
-                        rescued ? ExamPipeline.EventStatus.ACCEPTED : ExamPipeline.EventStatus.NOT_ACCEPTED,
-                        "fallback_status=" + retried.getStatus() + "; reason=" + retried.getReason(),
+                        ExamPipeline.EventStatus.ACCEPTED,
+                        "status=" + retried.getStatus() + "; reason=" + retried.getReason(),
                         System.currentTimeMillis() - startedAt);
-                pages.add(finalOutcome);
+                pages.add(retried);
             }
             return new ExamOutcome(exam.getExamId(), primary.getStatus(), primary.getReason(), pages);
         }
@@ -300,6 +279,14 @@ public final class Main {
             return new ExamInput(source.getSubject(), source.getExamId(), source.getSchoolId(),
                     Collections.singletonList(page), source.isPageSequenceIncomplete(), source.getAnomalies());
         }
+    }
+
+    private static ExamOutcome.PageOutcome fallbackManualReview(ExamOutcome.PageOutcome source, String reason) {
+        ExamOutcome.PageOutcome outcome = new ExamOutcome.PageOutcome(source.getPageId(), "manual_review", reason,
+                source.getOriginal(), source.getNormalized(), source.getNormalized(), source.getTransforms(),
+                source.getRegions(), source.getLocate(), source.getAudit(), source.getApprovedRegions());
+        outcome.setFallbackUsed(true);
+        return outcome;
     }
 
     /**

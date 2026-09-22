@@ -332,7 +332,7 @@ public class ReportWriter {
                 row.reason = nvl(pageOutcome.getReason());
                 row.original = base.resolve(stem + "_原图.png");
                 row.erased = base.resolve(stem + "_擦除后.png");
-                applyFallbackMetadata(row, pageOutcome.getModelFallback());
+                applyFallbackMetadata(row, pageOutcome.isFallbackUsed());
                 preferBadArtifact(row, runDir, stem);
                 if (pageOutcome.getAudit() != null) {
                     row.auditEvidence = nvl(pageOutcome.getAudit().evidence);
@@ -375,7 +375,7 @@ public class ReportWriter {
             row.reason = text(root, "reason", "");
             row.original = examDir.resolve(stem + "_原图.png");
             row.erased = examDir.resolve(stem + "_擦除后.png");
-            applyFallbackMetadata(row, root.get("model_fallback"));
+            applyFallbackMetadata(row, root);
             preferBadArtifact(row, runDir, stem);
             JsonNode audit = root.get("audit");
             if (audit != null && audit.isObject()) {
@@ -503,20 +503,24 @@ public class ReportWriter {
         }
     }
 
-    private void applyFallbackMetadata(ReportRow row, ExamOutcome.ModelFallback fallback) {
-        if (fallback == null) {
-            return;
-        }
-        row.fallbackAttempted = true;
-        row.fallbackAccepted = "max_fallback".equals(fallback.final_source);
+    private void applyFallbackMetadata(ReportRow row, boolean fallbackUsed) {
+        row.fallbackAttempted = fallbackUsed;
+        row.fallbackAccepted = fallbackUsed && row.normal();
     }
 
-    private void applyFallbackMetadata(ReportRow row, JsonNode fallback) {
-        if (fallback == null || !fallback.isObject()) {
+    private void applyFallbackMetadata(ReportRow row, JsonNode root) {
+        JsonNode fallbackUsed = root.get("fallback_used");
+        if (fallbackUsed != null && fallbackUsed.isBoolean()) {
+            row.fallbackAttempted = fallbackUsed.booleanValue();
+            row.fallbackAccepted = row.fallbackAttempted && row.normal();
             return;
         }
-        row.fallbackAttempted = true;
-        row.fallbackAccepted = "max_fallback".equals(text(fallback, "final_source", ""));
+        // 兼容已生成的历史 run：新 run 不再输出 model_fallback 对比对象。
+        JsonNode legacyFallback = root.get("model_fallback");
+        if (legacyFallback != null && legacyFallback.isObject()) {
+            row.fallbackAttempted = true;
+            row.fallbackAccepted = "max_fallback".equals(text(legacyFallback, "final_source", ""));
+        }
     }
 
     private String briefEvidence(String evidence) {

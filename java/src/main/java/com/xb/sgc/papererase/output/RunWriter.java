@@ -368,7 +368,7 @@ public class RunWriter {
         json.put("reason", outcome.getReason());
         json.put("regions", outcome.getRegions());
         json.put("approved_regions", outcome.getApprovedRegions());
-        json.put("model_fallback", outcome.getModelFallback());
+        json.put("fallback_used", outcome.isFallbackUsed());
         json.put("locate", outcome.getLocate());
         json.put("audit", outcome.getAudit());
         Map<String, Object> transforms = new LinkedHashMap<String, Object>();

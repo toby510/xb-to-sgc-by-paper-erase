@@ -44,8 +44,7 @@ public class RunWriterTest {
         PageTransforms tx = new PageTransforms(12, 12, 12, 12, 0);
         PageOutcome maxRescued = new PageOutcome("1001:1", "safe_to_erase", "audit_pass", white, white, green, tx,
                 Collections.<EraseRegion>emptyList(), null, null);
-        maxRescued.setModelFallback(new ExamOutcome.ModelFallback("qwen3.8-flash", "manual_review", "risk",
-                "qwen3.8-max", "safe_to_erase", "audit_pass", "max_fallback"));
+        maxRescued.setFallbackUsed(true);
         ExamOutcome outcome = new ExamOutcome("1001", "processed", "ok", Arrays.asList(
                 maxRescued,
                 new PageOutcome("1001:2", "manual_review", "risk", white, blue, blue, tx,
@@ -60,10 +59,9 @@ public class RunWriterTest {
         assertTrue(Files.isRegularFile(base.resolve("1001_1_原图.png")));
         assertTrue(Files.isRegularFile(base.resolve("1001_1_擦除后.png")));
         assertTrue(Files.isRegularFile(base.resolve("1001_2_regions.json")));
-        JsonNode fallback = new ObjectMapper().readTree(base.resolve("1001_1_regions.json").toFile())
-                .path("model_fallback");
-        assertEquals("max_fallback", fallback.path("final_source").asText());
-        assertEquals("qwen3.8-max", fallback.path("fallback_model").asText());
+        JsonNode evidence = new ObjectMapper().readTree(base.resolve("1001_1_regions.json").toFile());
+        assertTrue(evidence.path("fallback_used").asBoolean(false));
+        assertTrue(evidence.path("model_fallback").isMissingNode());
         // consensus output removed in pattern-cleanup refactor
         assertTrue(Files.isRegularFile(runDir.resolve("word_output/语文/1001/1001_原图.docx")));
         assertTrue(Files.isRegularFile(runDir.resolve("word_output/语文/1001/1001_擦除后_待人工审核.docx")));
