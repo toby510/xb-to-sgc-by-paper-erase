@@ -99,8 +99,8 @@ public class ExamPipelineTest {
         assertFalse(fake.auditPageIds.contains("p5"));
         assertTrue(fake.auditPageIds.contains("p6"));
         assertFalse("deterministic validation rejection must not spend relocate calls", fake.relocateCalls.contains("p9:r1"));
-        // 门禁拒绝的框只做一次内存内诊断 audit（用于区分“伤正文”与“门禁过敏”），绝不交付擦除图。
-        assertEquals(1, Collections.frequency(fake.auditPageIds, "p9"));
+        // 门禁拒绝直接失败关闭；不得额外白填试擦或调用诊断性 audit。
+        assertEquals(0, Collections.frequency(fake.auditPageIds, "p9"));
         for (ExamOutcome.PageOutcome page : outcome.getPages()) {
             assertTrue("final status leaked internal state: " + page.getStatus(),
                     "safe_to_erase".equals(page.getStatus())

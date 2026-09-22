@@ -247,25 +247,11 @@ public final class ExamPipeline {
             // 中重测；绝不由 Java 放宽规则或自行移动候选框。
             Refinement refinement = shouldRefineRejected(validation) ? relocateRejectedRegions(work, locate) : null;
             if (refinement == null) {
-                // 诊断 audit：门禁拦下的框先白填试擦（仅内存），让 VLM 复核该框是否真伤正文。
-                // 人工审核由此可区分"伤正文"（业务保持原图）与"门禁过敏"（框本身可用）。
-                AuditResponse gateAudit = diagnosticAudit(work, locate);
-                if (gateAudit != null && gateAudit.original_target_is_non_body
-                        && !gateAudit.body_changed && gateAudit.target_removed) {
-                    // 诊断 audit 确认框不伤正文：给一次坐标精修重试，仍由像素门禁决定最终是否放行。
-                    refinement = relocateRejectedRegions(work, locate);
-                    if (refinement != null) {
-                        context.event(PipelineStage.VALIDATION, exam.getExamId(), page.getPageId(), "accepted",
-                                "coordinate_refined_after_gate_audit", 0);
-                    }
-                }
-                if (refinement == null) {
-                    // 拒绝原因必须跟随页面结论一起落盘：只有“validation_rejected”无法区分
-                    // 是空白带不足、安全带有墨还是墨迹贴框，事后无法定位到具体门禁。
-                    return new PageOutcome(page.getPageId(), "manual_review",
-                            "validation_rejected: " + validation.getReasons() + gateAuditSuffix(gateAudit),
-                            original, normalizedImage, normalizedImage, transforms, locate.regions, locate, gateAudit);
-                }
+                // 拒绝原因必须跟随页面结论一起落盘：只有“validation_rejected”无法区分
+                // 是空白带不足、安全带有墨还是墨迹贴框，事后无法定位到具体门禁。
+                return new PageOutcome(page.getPageId(), "manual_review",
+                        "validation_rejected: " + validation.getReasons(),
+                        original, normalizedImage, normalizedImage, transforms, locate.regions, locate, null);
             }
             locate = refinement.locate;
             validation = refinement.validation;
@@ -914,24 +900,9 @@ public final class ExamPipeline {
                     continue;
                 }
                 work.context.event(PipelineStage.ERASE, work.exam.getExamId(), work.page.getPageId(), "rejected", erase.getReason(), 0);
-                // 诊断 audit：擦除门禁（长线/竖线/贴边等）拦下的框先白填试擦（仅内存），让 VLM
-                // 复核该框是否真伤正文；人工审核由此区分"伤正文"与"门禁过敏"。
-                AuditResponse gateAudit = diagnosticAudit(work, locate);
-                if (!state.auditRetried && gateAudit != null && gateAudit.original_target_is_non_body
-                        && !gateAudit.body_changed && gateAudit.target_removed) {
-                    // 诊断 audit 只证明“把原拒绝框整块白填”在视觉上可能安全，既不产出新坐标，
-                    // 也没有经过 InkMaskEraser 和 PixelDiffGate，绝不能直接交付。它仅授予一次
-                    // 坐标重测资格；精修后必须重走完整擦除和最终 audit，三项硬条件不变。
-                    Refinement retry = relocateRejectedRegions(work, locate);
-                    if (retry != null) {
-                        work.context.event(PipelineStage.ERASE, work.exam.getExamId(), work.page.getPageId(), "accepted",
-                                "coordinate_refined_after_gate_audit", 0);
-                        return eraseAndAudit(work, state.withRefinement(retry));
-                    }
-                }
                 return new PageOutcome(work.page.getPageId(), "manual_review",
-                        "erase_failed: " + erase.getReason() + gateAuditSuffix(gateAudit),
-                        work.original, normalized, normalized, work.transforms, locate.regions, locate, gateAudit);
+                        "erase_failed: " + erase.getReason(),
+                        work.original, normalized, normalized, work.transforms, locate.regions, locate, null);
             }
             candidate = erase.getCandidate();
             erasedRegions.add(pixelRegion);
@@ -1134,65 +1105,6 @@ public final class ExamPipeline {
      */
     private BufferedImage crop(BufferedImage image, RoiTransform transform) {
         return image.getSubimage(transform.getX(), transform.getY(), transform.getWidth(), transform.getHeight());
-    }
-
-    /**
-     * 诊断性 audit：region 在交付前被几何/擦除门禁拦截、尚未产生真实擦除图时，把候选框在
-     * 内存副本上白填试擦，连同原图和 ROI 交给 VLM audit 复核。试擦图不落地、不参与交付；
-     * 返回值仅用于给人工审核页标注"伤正文/门禁过敏"，以及决定是否再给一次坐标精修重试。
-     */
-    private AuditResponse diagnosticAudit(PageWork work, LocateResponse locate) {
-        BufferedImage normalized = work.normalized;
-        if (locate == null || locate.regions == null || locate.regions.isEmpty()) {
-            return null;
-        }
-        try {
-            BufferedImage trial = new BufferedImage(normalized.getWidth(), normalized.getHeight(), BufferedImage.TYPE_INT_RGB);
-            Graphics2D graphics = trial.createGraphics();
-            graphics.drawImage(normalized, 0, 0, null);
-            graphics.setColor(java.awt.Color.WHITE);
-            for (EraseRegion region : locate.regions) {
-                int left = (int) Math.floor(region.x1 * trial.getWidth());
-                int top = (int) Math.floor(region.y1 * trial.getHeight());
-                int right = (int) Math.ceil(region.x2 * trial.getWidth());
-                int bottom = (int) Math.ceil(region.y2 * trial.getHeight());
-                graphics.fillRect(left, top, Math.max(1, right - left), Math.max(1, bottom - top));
-            }
-            graphics.dispose();
-            List<VlmClient.RoiImage> rois = new ArrayList<VlmClient.RoiImage>();
-            for (EraseRegion region : locate.regions) {
-                RoiTransform transform = RoiTransform.fromNormalizedCandidate(
-                        normalized.getWidth(), normalized.getHeight(), region, null, 24);
-                rois.add(new VlmClient.RoiImage(work.page.getPageId(), region.region_id, auditRoi(normalized, transform), "ORIGINAL"));
-                rois.add(new VlmClient.RoiImage(work.page.getPageId(), region.region_id, auditRoi(trial, transform), "ERASED"));
-            }
-            AuditResponse audit = vlm.audit(work.pageImage,
-                    new VlmClient.PageImage(work.page.getPageId(), trial), locate.regions, rois);
-            work.context.event(PipelineStage.AUDIT, work.exam.getExamId(), work.page.getPageId(), "completed",
-                    "gate_diagnostic:" + audit.decision, 0);
-            return audit;
-        } catch (RuntimeException failure) {
-            work.context.event(PipelineStage.AUDIT, work.exam.getExamId(), work.page.getPageId(), EventStatus.FAILED,
-                    "gate_diagnostic:" + shortError(failure), 0);
-            return null;
-        }
-    }
-
-    /** 把诊断 audit 结论压缩成 reason 后缀，便于人工审核按 reason 直接分流。 */
-    private static String gateAuditSuffix(AuditResponse audit) {
-        if (audit == null) {
-            return "; gate_audit=unavailable";
-        }
-        if (audit.body_changed) {
-            return "; gate_audit=body_damaged";
-        }
-        if (!audit.original_target_is_non_body) {
-            return "; gate_audit=target_is_body";
-        }
-        if (!audit.target_removed) {
-            return "; gate_audit=target_residual";
-        }
-        return "; gate_audit=clean";
     }
 
     private PageOutcome manual(PageInput page, BufferedImage original, BufferedImage normalized, PageTransforms transforms,
