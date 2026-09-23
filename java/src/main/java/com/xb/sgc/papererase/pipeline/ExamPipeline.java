@@ -171,7 +171,6 @@ public final class ExamPipeline {
             return manual(page, original, original, transform(original, original, firstLocate.reading_rotation),
                     "low_direction_confidence", firstLocate);
         }
-
         int readingRotation = firstLocate.reading_rotation;
         OrientationNormalizer.NormalizedImage normalized = OrientationNormalizer.normalize(original, readingRotation);
         BufferedImage normalizedImage = normalized.getImage();
