@@ -4,10 +4,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.xb.sgc.papererase.model.ExamModels.ExamInput;
 import com.xb.sgc.papererase.model.ExamModels.PageInput;
+import com.xb.sgc.papererase.image.OrientationNormalizer;
 import com.xb.sgc.papererase.pipeline.ExamOutcome;
 import com.xb.sgc.papererase.pipeline.ExamOutcome.PageOutcome;
+import com.xb.sgc.papererase.pipeline.ExamOutcome.PageTransforms;
 
 import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -106,12 +109,14 @@ public class RunWriter {
             if ("manual_review".equals(pageOutcome.getStatus()) || "error".equals(pageOutcome.getStatus())) {
                 if (!pageOutcome.getRegions().isEmpty()) {
                     // 门禁未过也必须让用户看到按模型坐标擦除的效果；它只是不具备交付资格。
-                    ManualReviewWatermarker.writeCoordinateErasePreview(pageOutcome.getNormalized(), pageOutcome.getRegions(), erasedPath);
+                    writeDeliveredImage(ManualReviewWatermarker.coordinateErasePreview(
+                            pageOutcome.getNormalized(), pageOutcome.getRegions()), pageOutcome, erasedPath);
                 } else {
-                    ManualReviewWatermarker.writeNotDeliverableCopy(pageOutcome.getCandidate(), erasedPath);
+                    writeDeliveredImage(ManualReviewWatermarker.notDeliverableCopy(
+                            pageOutcome.getCandidate()), pageOutcome, erasedPath);
                 }
             } else {
-                ImageIO.write(pageOutcome.getCandidate(), "png", erasedPath.toFile());
+                writeDeliveredImage(pageOutcome.getCandidate(), pageOutcome, erasedPath);
             }
             erasedWordPages.add(erasedPath);
             Path evidencePath = erasedDir.resolve(stem + "_regions.json");
@@ -143,6 +148,31 @@ public class RunWriter {
             }
         }
         return false;
+    }
+
+    /**
+     * 落盘交付图：把旋正坐标系里的图恢复到**原始扫描方向**再写 PNG，保证交付图与原图同尺寸、
+     * 同方向；{@code rotation == 0} 的页面不做任何额外搬运。
+     *
+     * <p>尺寸必须等于原始扫描尺寸，否则说明旋转链路不自洽，直接失败而不是写出方向错误的交付图。</p>
+     *
+     * @param image 旋正坐标系下的图（擦除结果或人工审核预览图）
+     * @param outcome 该页结果，提供原始宽高与本次旋正角度
+     * @param output 目标 PNG 路径
+     */
+    private static void writeDeliveredImage(BufferedImage image, PageOutcome outcome, Path output) throws IOException {
+        PageTransforms transforms = outcome.getTransforms();
+        int rotation = transforms == null ? 0 : transforms.getReadingRotation();
+        BufferedImage delivered = OrientationNormalizer.restoreToOriginal(image, rotation);
+        if (transforms != null
+                && (delivered.getWidth() != transforms.getOriginalWidth()
+                || delivered.getHeight() != transforms.getOriginalHeight())) {
+            throw new IllegalStateException("delivered image size mismatch after orientation restore: page="
+                    + outcome.getPageId() + " rotation=" + rotation + " delivered=" + delivered.getWidth() + "x"
+                    + delivered.getHeight() + " expected=" + transforms.getOriginalWidth() + "x"
+                    + transforms.getOriginalHeight());
+        }
+        ImageIO.write(delivered, "png", output.toFile());
     }
 
     /**
@@ -377,6 +407,9 @@ public class RunWriter {
         transforms.put("normalized_width", outcome.getTransforms().getNormalizedWidth());
         transforms.put("normalized_height", outcome.getTransforms().getNormalizedHeight());
         transforms.put("reading_rotation", outcome.getTransforms().getReadingRotation());
+        // 交付图已恢复成原始扫描方向：这里记录落盘时额外施加的旋转角（0 表示未发生旋正）。
+        // 证据 JSON 内的坐标仍全部相对旋正坐标系，读图时按该角度换算。
+        transforms.put("delivered_image_rotation", (360 - outcome.getTransforms().getReadingRotation()) % 360);
         json.put("transforms", transforms);
         return json;
     }

@@ -8,6 +8,7 @@ import java.util.Arrays;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertSame;
 
 public class OrientationNormalizerTest {
     @Test
@@ -24,6 +25,27 @@ public class OrientationNormalizerTest {
         // 270 = 逆时针：原图顶行 R G B 变成旋正图最左列（自下而上）。
         assertNormalized(OrientationNormalizer.normalize(image, 270), 2, 3,
                 new int[]{blue(), magenta(), green(), cyan(), red(), yellow()});
+    }
+
+    @Test
+    public void restoreToOriginalIsExactInverseOfNormalize() {
+        BufferedImage image = makeImage();
+
+        for (int rotation : new int[]{90, 180, 270}) {
+            BufferedImage normalized = OrientationNormalizer.normalize(image, rotation).getImage();
+            BufferedImage restored = OrientationNormalizer.restoreToOriginal(normalized, rotation);
+
+            assertEquals(image.getWidth(), restored.getWidth());
+            assertEquals(image.getHeight(), restored.getHeight());
+            for (int y = 0; y < image.getHeight(); y++) {
+                for (int x = 0; x < image.getWidth(); x++) {
+                    assertEquals("rotation=" + rotation + " pixel " + x + "," + y,
+                            image.getRGB(x, y), restored.getRGB(x, y));
+                }
+            }
+        }
+        // 未发生旋正的页面不做任何搬运，直接返回入参，避免无谓的整页拷贝。
+        assertSame(image, OrientationNormalizer.restoreToOriginal(image, 0));
     }
 
     @Test

@@ -60,10 +60,27 @@ public final class ManualReviewWatermarker {
      * @throws IOException 输出文件无法写入
      */
     public static void writeCoordinateErasePreview(BufferedImage source, List<EraseRegion> regions, Path output) throws IOException {
-        if (source == null || regions == null || regions.isEmpty() || output == null) {
+        if (output == null) {
             throw new IllegalArgumentException("source, regions and output are required");
         }
         Files.createDirectories(output.getParent());
+        ImageIO.write(coordinateErasePreview(source, regions), "png", output.toFile());
+    }
+
+    /**
+     * 按 VLM 原始归一化坐标生成仅供人工核对的模拟擦除图（内存版本）。
+     *
+     * <p>与 {@link #writeCoordinateErasePreview} 内容一致，只是把结果交给调用方：交付层需要先
+     * 把图恢复到原始扫描方向再落盘，因此标注必须在同一坐标系内先画好、随图一起旋转。</p>
+     *
+     * @param source 旋正坐标系原图
+     * @param regions VLM 返回的整图 0..1 候选框列表
+     * @return 画好候选框与"不可交付"说明的核对图
+     */
+    public static BufferedImage coordinateErasePreview(BufferedImage source, List<EraseRegion> regions) {
+        if (source == null || regions == null || regions.isEmpty()) {
+            throw new IllegalArgumentException("source and regions are required");
+        }
         BufferedImage copy = new BufferedImage(source.getWidth(), source.getHeight(), BufferedImage.TYPE_INT_RGB);
         Graphics2D g = copy.createGraphics();
         try {
@@ -81,12 +98,17 @@ public final class ManualReviewWatermarker {
         } finally {
             g.dispose();
         }
-        ImageIO.write(copy, "png", output.toFile());
+        return copy;
     }
 
     /** 为没有模型候选坐标的人工页保留原候选图，并在角落标明不可交付。 */
     public static void writeNotDeliverableCopy(BufferedImage source, Path output) throws IOException {
         Files.createDirectories(output.getParent());
+        ImageIO.write(notDeliverableCopy(source), "png", output.toFile());
+    }
+
+    /** 为没有模型候选坐标的人工页生成核对图（内存版本），由交付层恢复方向后落盘。 */
+    public static BufferedImage notDeliverableCopy(BufferedImage source) {
         BufferedImage copy = new BufferedImage(source.getWidth(), source.getHeight(), BufferedImage.TYPE_INT_RGB);
         Graphics2D g = copy.createGraphics();
         try {
@@ -95,7 +117,7 @@ public final class ManualReviewWatermarker {
         } finally {
             g.dispose();
         }
-        ImageIO.write(copy, "png", output.toFile());
+        return copy;
     }
 
     private static void drawNotDeliverableNotice(Graphics2D g, int width, int height) {
